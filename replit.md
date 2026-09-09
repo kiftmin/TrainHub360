@@ -1,44 +1,58 @@
-# [Project name]
+# TrainHub360
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+TrainHub360 helps corporate L&D teams manage programmes, prove competence, and keep workforce readiness visible.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
+- `pnpm --filter @workspace/api-server run dev` — run the API server
+- `pnpm --filter @workspace/trainhub360 run dev` — run the web app
 - `pnpm run typecheck` — full typecheck across all packages
 - `pnpm run build` — typecheck + build all packages
 - `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- Required secret: `DB_CONNECTION_STRING` — external Microsoft SQL Server connection string
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
+- API: Express 5 + `mssql`
+- DB: external Microsoft SQL Server via `process.env.DB_CONNECTION_STRING`
 - Validation: Zod (`zod/v4`), `drizzle-zod`
 - API codegen: Orval (from OpenAPI spec)
 - Build: esbuild (CJS bundle)
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/trainhub360/src/App.tsx` — responsive web shell and product routes
+- `artifacts/trainhub360/src/index.css` — TrainHub360 visual tokens and motion
+- `artifacts/api-server/src/routes/trainhub.ts` — tenant-scoped training API routes
+- `artifacts/api-server/src/lib/mssql.ts` — SQL Server pool, schema bootstrap, seed data, and explicit demo fallback
+- `lib/api-spec/openapi.yaml` — API contract source of truth
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- The API is contract-first: change `lib/api-spec/openapi.yaml`, then run codegen before using new client hooks.
+- Every SQL query takes an organization scope from the request context and every tenant table stores `organization_id`.
+- Course competence is gated by applied/scenario score; recall score alone cannot mark a course competent.
+- Review credit keeps manager sign-off enabled and server-enforced; assessment, timeliness, and application weights must sum to 100%.
+- If the configured SQL Server cannot be reached, the API labels responses as `demo-workspace` so the UI stays usable without disguising the connection state.
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Manager overview with compliance health, competence rate, expiring credentials, drop-off, time-to-competency, trainer utilization, activity, and programme pulse.
+- Learning catalogue with course creation and applied-threshold tracking.
+- Assessment submission that distinguishes applied and recall evidence.
+- Unified calendar for online/offline sessions plus 1:1 booking.
+- Threaded programme messaging with urgent flags.
+- Optional performance review credit settings and CSV export.
 
 ## User preferences
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+- Use `DB_CONNECTION_STRING` from Replit Secrets; never place the connection string in source or logs.
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- The SQL Server endpoint must be reachable from the running workflow for persistent data. When it is unavailable, demo data is in-memory and is not durable.
+- Use the shared proxy paths (`/api/...`) from the browser; do not hardcode localhost in app code.
 
 ## Pointers
 

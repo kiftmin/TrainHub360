@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "TrainHub360"
+description = "A multi-tenant corporate training management platform that helps L&D teams prove competence, manage programmes, and track workforce readiness."
+version = "1.0.0"
+id = "artifacts/trainhub360"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18739
+
+[services.development]
+run = "pnpm --filter @workspace/trainhub360 run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/trainhub360", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/trainhub360/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18739"
+BASE_PATH = "/"

@@ -3,6 +3,7 @@ import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
+import { isDemoMode } from "./lib/mssql";
 
 const app: Express = express();
 
@@ -28,6 +29,11 @@ app.use(
 app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+app.use((_req, res, next) => {
+  if (isDemoMode()) res.setHeader("x-trainhub-data-source", "demo-workspace");
+  next();
+});
 
 app.use("/api", router);
 

@@ -3,13 +3,23 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: TrainHub360 corporate training management API
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: workspace
+    description: Current organization and workspace context
+  - name: dashboard
+    description: Programme and organization KPI summaries
+  - name: learning
+    description: Courses, programmes, and competency assessments
+  - name: engagement
+    description: Messaging, bookings, and calendar
+  - name: review-credit
+    description: Optional performance review credit module
 paths:
   /healthz:
     get:
@@ -24,6 +34,262 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /workspace:
+    get:
+      operationId: getWorkspace
+      tags: [workspace]
+      summary: Get current workspace context
+      responses:
+        "200":
+          description: Current workspace
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workspace"
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get KPI dashboard summary
+      responses:
+        "200":
+          description: Dashboard KPI summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+  /programmes:
+    get:
+      operationId: listProgrammes
+      tags: [learning]
+      summary: List programmes visible to the current user
+      responses:
+        "200":
+          description: Programmes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Programme"
+  /courses:
+    get:
+      operationId: listCourses
+      tags: [learning]
+      summary: List courses in the active workspace
+      parameters:
+        - name: programmeId
+          in: query
+          required: false
+          schema:
+            type: ["string", "null"]
+      responses:
+        "200":
+          description: Courses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Course"
+    post:
+      operationId: createCourse
+      tags: [learning]
+      summary: Create a course
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CourseInput"
+      responses:
+        "201":
+          description: Created course
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Course"
+  /courses/{courseId}/attempts:
+    post:
+      operationId: submitAssessmentAttempt
+      tags: [learning]
+      summary: Submit an assessment attempt
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssessmentAttemptInput"
+      responses:
+        "200":
+          description: Assessment result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssessmentResult"
+  /sessions:
+    get:
+      operationId: listSessions
+      tags: [engagement]
+      summary: List upcoming training sessions
+      responses:
+        "200":
+          description: Sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TrainingSession"
+  /threads:
+    get:
+      operationId: listMessageThreads
+      tags: [engagement]
+      summary: List message threads for the active workspace
+      responses:
+        "200":
+          description: Message threads
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MessageThread"
+  /threads/{threadId}/messages:
+    get:
+      operationId: listThreadMessages
+      tags: [engagement]
+      summary: List messages in a thread
+      parameters:
+        - name: threadId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Thread messages
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ThreadMessage"
+    post:
+      operationId: sendThreadMessage
+      tags: [engagement]
+      summary: Send a message in a thread
+      parameters:
+        - name: threadId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ThreadMessageInput"
+      responses:
+        "201":
+          description: Sent message
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThreadMessage"
+  /bookings:
+    get:
+      operationId: listBookings
+      tags: [engagement]
+      summary: List one-to-one bookings
+      responses:
+        "200":
+          description: Bookings
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Booking"
+    post:
+      operationId: createBooking
+      tags: [engagement]
+      summary: Book a one-to-one session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BookingInput"
+      responses:
+        "201":
+          description: Created booking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+  /calendar:
+    get:
+      operationId: listCalendarEvents
+      tags: [engagement]
+      summary: List the unified training calendar
+      responses:
+        "200":
+          description: Calendar events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CalendarEvent"
+  /review-credit/settings:
+    get:
+      operationId: getReviewCreditSettings
+      tags: [review-credit]
+      summary: Get review credit configuration
+      responses:
+        "200":
+          description: Review credit settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewCreditSettings"
+    patch:
+      operationId: updateReviewCreditSettings
+      tags: [review-credit]
+      summary: Update review credit configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReviewCreditSettingsUpdate"
+      responses:
+        "200":
+          description: Updated settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReviewCreditSettings"
+  /review-credit/export:
+    get:
+      operationId: exportReviewCredits
+      tags: [review-credit]
+      summary: Export review credit evidence as CSV
+      responses:
+        "200":
+          description: CSV export
+          content:
+            text/csv:
+              schema:
+                type: string
 components:
   schemas:
     HealthStatus:
@@ -33,4 +299,230 @@ components:
           type: string
       required:
         - status
+    Workspace:
+      type: object
+      required: [organization, activeProgramme, user, dataSource]
+      properties:
+        organization:
+          $ref: "#/components/schemas/Organization"
+        activeProgramme:
+          $ref: "#/components/schemas/Programme"
+        user:
+          $ref: "#/components/schemas/CurrentUser"
+        dataSource:
+          type: string
+    Organization:
+      type: object
+      required: [id, name, plan, learnerCount, programmeCount]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        plan: { type: string }
+        learnerCount: { type: integer }
+        programmeCount: { type: integer }
+    CurrentUser:
+      type: object
+      required: [id, name, email, role, initials]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        role: { type: string }
+        initials: { type: string }
+    Programme:
+      type: object
+      required: [id, name, type, status, learnerCount, courseCount, progress, owner]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        type: { type: string }
+        status: { type: string }
+        learnerCount: { type: integer }
+        courseCount: { type: integer }
+        progress: { type: number }
+        owner: { type: string }
+    Course:
+      type: object
+      required: [id, title, programmeId, programmeName, category, progress, status, appliedThreshold, appliedScore, dueDate, trainer]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        programmeId: { type: string }
+        programmeName: { type: string }
+        category: { type: string }
+        progress: { type: number }
+        status: { type: string }
+        appliedThreshold: { type: number }
+        appliedScore: { type: ["number", "null"] }
+        dueDate: { type: ["string", "null"] }
+        trainer: { type: string }
+        duration: { type: ["string", "null"] }
+    CourseInput:
+      type: object
+      required: [title, programmeId, category]
+      properties:
+        title: { type: string }
+        programmeId: { type: string }
+        category: { type: string }
+        appliedThreshold: { type: number }
+        dueDate: { type: ["string", "null"] }
+    DashboardSummary:
+      type: object
+      required: [complianceHealth, completionRate, competencyRate, expiringCredentials, dropOffRate, timeToCompetency, trainerUtilization, weeklyActivity, dropOffHeatmap, expiringItems]
+      properties:
+        complianceHealth: { type: number }
+        completionRate: { type: number }
+        competencyRate: { type: number }
+        expiringCredentials: { type: integer }
+        dropOffRate: { type: number }
+        timeToCompetency: { type: number }
+        trainerUtilization: { type: number }
+        weeklyActivity:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityPoint"
+        dropOffHeatmap:
+          type: array
+          items:
+            $ref: "#/components/schemas/HeatmapPoint"
+        expiringItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExpiringCredential"
+    ActivityPoint:
+      type: object
+      required: [label, active, completed]
+      properties:
+        label: { type: string }
+        active: { type: integer }
+        completed: { type: integer }
+    HeatmapPoint:
+      type: object
+      required: [label, value]
+      properties:
+        label: { type: string }
+        value: { type: number }
+    ExpiringCredential:
+      type: object
+      required: [name, course, expires, status]
+      properties:
+        name: { type: string }
+        course: { type: string }
+        expires: { type: string }
+        status: { type: string }
+    TrainingSession:
+      type: object
+      required: [id, title, programme, date, time, mode, attendees, status]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        programme: { type: string }
+        date: { type: string }
+        time: { type: string }
+        mode: { type: string }
+        location: { type: ["string", "null"] }
+        videoLink: { type: ["string", "null"] }
+        attendees: { type: integer }
+        status: { type: string }
+    MessageThread:
+      type: object
+      required: [id, subject, context, participant, preview, updatedAt, unread, urgent]
+      properties:
+        id: { type: string }
+        subject: { type: string }
+        context: { type: string }
+        participant: { type: string }
+        preview: { type: string }
+        updatedAt: { type: string }
+        unread: { type: boolean }
+        urgent: { type: boolean }
+    ThreadMessage:
+      type: object
+      required: [id, threadId, author, body, createdAt, urgent]
+      properties:
+        id: { type: string }
+        threadId: { type: string }
+        author: { type: string }
+        body: { type: string }
+        createdAt: { type: string }
+        urgent: { type: boolean }
+    ThreadMessageInput:
+      type: object
+      required: [body]
+      properties:
+        body: { type: string }
+        urgent: { type: boolean }
+    Booking:
+      type: object
+      required: [id, trainer, course, date, time, duration, status]
+      properties:
+        id: { type: string }
+        trainer: { type: string }
+        course: { type: string }
+        date: { type: string }
+        time: { type: string }
+        duration: { type: string }
+        status: { type: string }
+        meetingLink: { type: ["string", "null"] }
+    BookingInput:
+      type: object
+      required: [trainer, date, time]
+      properties:
+        trainer: { type: string }
+        course: { type: string }
+        date: { type: string }
+        time: { type: string }
+    CalendarEvent:
+      type: object
+      required: [id, title, date, time, type, accent]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        date: { type: string }
+        time: { type: string }
+        type: { type: string }
+        accent: { type: string }
+        location: { type: ["string", "null"] }
+        meetingLink: { type: ["string", "null"] }
+    AssessmentAttemptInput:
+      type: object
+      required: [appliedScore, recallScore]
+      properties:
+        appliedScore: { type: number, minimum: 0, maximum: 100 }
+        recallScore: { type: number, minimum: 0, maximum: 100 }
+    AssessmentResult:
+      type: object
+      required: [appliedScore, recallScore, passed, competenceMet, message]
+      properties:
+        appliedScore: { type: number }
+        recallScore: { type: number }
+        passed: { type: boolean }
+        competenceMet: { type: boolean }
+        message: { type: string }
+    ReviewCreditSettings:
+      type: object
+      required: [enabled, maxWeighting, assessmentWeight, timelinessWeight, applicationWeight, requireManagerSignoff, collectApplicationScores, eligibleProgrammeTypes]
+      properties:
+        enabled: { type: boolean }
+        maxWeighting: { type: number }
+        assessmentWeight: { type: number }
+        timelinessWeight: { type: number }
+        applicationWeight: { type: number }
+        requireManagerSignoff: { type: boolean }
+        collectApplicationScores: { type: boolean }
+        eligibleProgrammeTypes:
+          type: array
+          items: { type: string }
+    ReviewCreditSettingsUpdate:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        maxWeighting: { type: number }
+        assessmentWeight: { type: number }
+        timelinessWeight: { type: number }
+        applicationWeight: { type: number }
+        collectApplicationScores: { type: boolean }
+        eligibleProgrammeTypes:
+          type: array
+          items: { type: string }
 
