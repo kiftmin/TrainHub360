@@ -18,6 +18,10 @@ tags:
     description: Courses, programmes, and competency assessments
   - name: engagement
     description: Messaging, bookings, and calendar
+  - name: auth
+  - name: enrolments
+  - name: analytics
+  - name: governance
   - name: review-credit
     description: Optional performance review credit module
 paths:
@@ -290,6 +294,282 @@ paths:
             text/csv:
               schema:
                 type: string
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login with email/password (JWT)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthRequest"
+      responses:
+        "200":
+          description: JWT tokens
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+  /auth/sso:
+    post:
+      operationId: ssoLogin
+      tags: [auth]
+      summary: SSO/SAML token exchange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SsoRequest"
+      responses:
+        "200":
+          description: JWT tokens
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+  /enrolments:
+    get:
+      operationId: listEnrolments
+      tags: [enrolments]
+      summary: List enrolments
+      responses:
+        "200":
+          description: Enrolments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Enrolment"
+    post:
+      operationId: createEnrolment
+      tags: [enrolments]
+      summary: Create enrolment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrolmentInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Enrolment"
+  /enrolments/{enrolmentId}:
+    patch:
+      operationId: updateEnrolment
+      tags: [enrolments]
+      summary: Update enrolment (recomputes score, audit-logged)
+      parameters:
+        - name: enrolmentId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EnrolmentUpdate"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Enrolment"
+    delete:
+      operationId: deleteEnrolment
+      tags: [enrolments]
+      summary: Delete enrolment (requires second-admin approval per governance)
+      parameters:
+        - name: enrolmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Deleted }
+  /enrolments/{enrolmentId}/score:
+    get:
+      operationId: getEnrolmentScore
+      tags: [enrolments]
+      summary: Get computed review-credit score for an enrolment
+      parameters:
+        - name: enrolmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Score breakdown
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EnrolmentScore"
+  /programmes/{programmeId}/modules:
+    get:
+      operationId: listModules
+      tags: [learning]
+      summary: List modules in a programme course set
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Modules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Module"
+    post:
+      operationId: createModule
+      tags: [learning]
+      summary: Create module (micro-learning unit)
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModuleInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Module"
+  /modules/{moduleId}/assessments:
+    get:
+      operationId: listAssessments
+      tags: [learning]
+      summary: List assessments (recall vs applied)
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Assessments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Assessment"
+    post:
+      operationId: createAssessment
+      tags: [learning]
+      summary: Create assessment tagged recall|applied
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssessmentInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assessment"
+  /kpi/summary:
+    get:
+      operationId: getKpiSummary
+      tags: [analytics]
+      summary: KPI aggregates (competencyRate, dropOff, timeToCompetency, trainerUtilization)
+      responses:
+        "200":
+          description: KPI summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+  /audit/logs:
+    get:
+      operationId: listAuditLogs
+      tags: [governance]
+      summary: Query audit trail (admin only)
+      responses:
+        "200":
+          description: Audit logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLog"
+  /nudge/run:
+    post:
+      operationId: runNudge
+      tags: [engagement]
+      summary: Trigger calendar-gap nudge pass (internal)
+      responses:
+        "200":
+          description: Nudges sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NudgeResult"
+  /help/ai:
+    post:
+      operationId: aiHelp
+      tags: [engagement]
+      summary: In-context AI help stub for stuck learners
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/HelpRequest"
+      responses:
+        "200":
+          description: Help answer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HelpResponse"
+  /organizations/{orgId}/review-credits:
+    get:
+      operationId: getReviewCredits
+      tags: [review-credit]
+      summary: REST export of review-credit aggregates for HRIS
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Review credit rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReviewCreditRow"
 components:
   schemas:
     HealthStatus:
@@ -526,3 +806,108 @@ components:
           type: array
           items: { type: string }
 
+    AuthRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string }
+        password: { type: string }
+    AuthResponse:
+      type: object
+      required: [accessToken, user]
+      properties:
+        accessToken: { type: string }
+        user: { $ref: "#/components/schemas/CurrentUser" }
+    SsoRequest:
+      type: object
+      required: [samlAssertion]
+      properties:
+        samlAssertion: { type: string }
+    Enrolment:
+      type: object
+      required: [id, learnerId, courseId, status]
+      properties:
+        id: { type: string }
+        learnerId: { type: string }
+        courseId: { type: string }
+        status: { type: string }
+        enrolmentScore: { type: ["number", "null"] }
+        managerSignOff: { type: ["boolean", "null"] }
+    EnrolmentInput:
+      type: object
+      required: [learnerId, courseId]
+      properties:
+        learnerId: { type: string }
+        courseId: { type: string }
+        deadlineDate: { type: ["string", "null"] }
+    EnrolmentUpdate:
+      type: object
+      properties:
+        status: { type: string }
+        appliedAssessmentScore: { type: number }
+        applicationScore: { type: number }
+        managerSignOff: { type: boolean }
+    EnrolmentScore:
+      type: object
+      required: [enrolmentId, score, breakdown]
+      properties:
+        enrolmentId: { type: string }
+        score: { type: number }
+        breakdown: { type: object }
+    Module:
+      type: object
+      required: [id, courseId, title]
+      properties:
+        id: { type: string }
+        courseId: { type: string }
+        title: { type: string }
+    ModuleInput:
+      type: object
+      required: [courseId, title]
+      properties:
+        courseId: { type: string }
+        title: { type: string }
+    Assessment:
+      type: object
+      required: [id, moduleId, type]
+      properties:
+        id: { type: string }
+        moduleId: { type: string }
+        type: { type: string, enum: [recall, applied] }
+    AssessmentInput:
+      type: object
+      required: [type]
+      properties:
+        type: { type: string, enum: [recall, applied] }
+        maxScore: { type: number }
+    AuditLog:
+      type: object
+      required: [id, action, entity, timestamp]
+      properties:
+        id: { type: string }
+        action: { type: string }
+        entity: { type: string }
+        timestamp: { type: string }
+    NudgeResult:
+      type: object
+      required: [sent]
+      properties:
+        sent: { type: integer }
+    HelpRequest:
+      type: object
+      required: [question]
+      properties:
+        question: { type: string }
+        courseId: { type: string }
+    HelpResponse:
+      type: object
+      required: [answer]
+      properties:
+        answer: { type: string }
+    ReviewCreditRow:
+      type: object
+      required: [learnerId, raw, final]
+      properties:
+        learnerId: { type: string }
+        raw: { type: number }
+        final: { type: number }

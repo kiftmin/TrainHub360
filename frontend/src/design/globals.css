@@ -1,0 +1,7 @@
+:root { color-scheme: dark; --card: hsla(0,0%,100%,0.06); }
+body { font-family: Inter, system-ui, sans-serif; background: hsl(222 47% 7%); color: #f5f5f5; margin: 0; }
+.card { background: var(--card); backdrop-filter: blur(14px); border: 1px solid hsla(0,0%,100%,0.12); border-radius: 16px; padding: 16px; transition: transform .2s ease, box-shadow .2s ease; }
+.card:hover { transform: translateY(-2px); box-shadow: 0 8px 30px hsla(217,91%,60%,.25); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .6; } }
+.btn { background: hsl(217 91% 60%); border-radius: 10px; padding: 8px 14px; border: 0; color: white; cursor: pointer; }
+

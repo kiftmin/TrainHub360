@@ -1,0 +1,196 @@
+# Prompt for an Agent – Align TrainHub360 Code with the Corporate‑Training‑Platform Proposal  
+
+**Goal**  
+Bring the entire `c:\projects\TrainHub360` codebase into full alignment with the specifications described in **`corporate‑training‑platform‑proposal.md`**. The result must be a production‑ready backend, a premium front‑end, and supporting infrastructure that implements every feature, data model, and design principle outlined in the proposal.
+
+---  
+
+## 1️⃣ Scope Overview  
+
+| Area | Current State | Target State (per proposal) |
+|------|---------------|----------------------------|
+| **API Specification** | Minimal OpenAPI (health, workspace, dashboard, courses, sessions, threads, bookings, review‑credit settings/export) | Full API covering **Enrolments, Assessments, Review‑Credit engine, KPI analytics, RBAC, Governance/Audit, Nudge intelligence, In‑context help, SSO/SAML, Performance‑review integration** |
+| **Database Schema** | Empty `schema/index.ts` placeholder | Drizzle schema with tables for **Organization, Programme, Course, Module, Assessment, Enrolment, ReviewCredit, KPIMetrics, MessageThread, Booking, CalendarEvent, AuditLog, Role, Permission** |
+| **Auth & RBAC** | None | JWT/SAML authentication, per‑programme Role‑Based Access Control |
+| **Governance / Audit Trail** | None | Middleware that logs every state‑changing request; audit tables + APIs to query logs |
+| **Review‑Credit Module** | Settings & export endpoints only | Scoring engine (weights, exclusions, manager sign‑off, overrides), CSV/REST/Webhook export, UI for configuration |
+| **KPIs & Analytics** | `DashboardSummary` schema only | Background jobs that compute **competencyRate, dropOffRate, timeToCompetency, trainerUtilization, weeklyActivity, etc.** and expose via API |
+| **Engagement Layer** | Basic threads, bookings, calendar | Urgent flag with SLA, real‑time trainer availability, calendar‑gap nudges, DM threading, AI‑assisted help |
+| **Course Builder / Micro‑learning** | Simple `Course` model | Hierarchical **Modules → Lessons**, assessment‑type tagging (`recall` vs `applied`), competence‑weighted completion |
+| **Front‑End UI** | None (only generated TS client) | Premium React app (Next.js or Vite) using the **design system** (glassmorphism, dark mode, micro‑animations, Google Fonts) with dashboards, enrolment flows, messaging, booking UI, admin settings |
+| **Testing** | None | Unit, integration, and end‑to‑end tests (Jest + React Testing Library / Cypress) |
+| **CI/CD & DevOps** | None | Dockerfile, `docker‑compose.yml`, GitHub Actions for lint/build/test/deploy, health‑check endpoint |
+| **Documentation** | OpenAPI + generated TS types | README, architecture diagram (Mermaid), deployment guide, API usage guide, design rationale |
+
+---  
+
+## 2️⃣ Deliverables  
+
+1. **Backend**  
+   - Complete **Drizzle** schema (see file list below).  
+   - Fully implemented **Express** (or Fastify) routes matching the expanded OpenAPI spec.  
+   - **Auth** middleware (JWT + SAML) and **RBAC** checks.  
+   - **Audit** middleware + `audit_log` table.  
+   - **Review‑Credit** service (`src/services/reviewCredit.ts`).  
+   - **KPI** calculators (cron jobs in `src/jobs/`).  
+   - **Nudge** engine (service that reads calendar gaps).  
+   - Comprehensive **unit & integration tests** under `tests/`.  
+
+2. **Front‑End**  
+   - New React project in `frontend/` (bootstrapped with `npx -y create-vite@latest ./`).  
+   - Design system (`frontend/src/design/`) with tokens, dark‑mode, glass‑morphism, Google Font **Inter**.  
+   - Pages: Dashboard, Programme view, Course builder, Enrolment flow, Messaging, Booking, Review‑Credit admin.  
+   - API client generated from `openapi.yaml` (`frontend/src/api/`).  
+   - End‑to‑end tests (`frontend/e2e/`).  
+
+3. **Infrastructure**  
+   - `Dockerfile` for backend, `Dockerfile.dev` for front‑end, `docker‑compose.yml` to spin up DB, backend, front‑end.  
+   - GitHub Actions workflow (`.github/workflows/ci.yml`).  
+
+4. **Documentation**  
+   - `README.md` with setup, architecture, and deployment steps.  
+   - `ARCHITECTURE.md` containing a Mermaid diagram of the data model and service flow.  
+
+---  
+
+## 3️⃣ Implementation Plan – Ordered Steps  
+
+> **NOTE:** The agent should *process steps sequentially* and create a **commit** after each major milestone (e.g., schema, API, auth). Use conventional‑commit messages.
+
+### 3.1. Database Schema  
+
+| File | Description |
+|------|-------------|
+| `lib/db/src/schema/organization.ts` | `organizations` table (id, name, plan, learnerCount, programmeCount, review_credit_* fields). |
+| `lib/db/src/schema/programme.ts` | `programmes` table (id, orgId, name, type, status, learnerCount, courseCount, progress, owner). |
+| `lib/db/src/schema/course.ts` | `courses` table (id, programmeId, title, category, progress, status, appliedThreshold, dueDate, trainer, duration). |
+| `lib/db/src/schema/module.ts` | `modules` table (id, courseId, title, order). |
+| `lib/db/src/schema/assessment.ts` | `assessments` table (id, moduleId, type (`recall`|`applied`), maxScore). |
+| `lib/db/src/schema/enrolment.ts` | `enrolments` table with all fields from the proposal (review_credit_eligible, applied_assessment_score, completion_date, deadline_date, timeliness_score, application_score, manager_sign_off, etc.). |
+| `lib/db/src/schema/review_credit.ts` | Settings table (enabled, maxWeighting, assessmentWeight, timelinessWeight, applicationWeight, requireManagerSignoff, collectApplicationScores, eligibleProgrammeTypes). |
+| `lib/db/src/schema/kpi.ts` | Tables for KPI aggregates (dashboard_summary, activity_points, heatmap_points, expiring_credentials). |
+| `lib/db/src/schema/audit_log.ts` | Generic audit log (id, userId, action, entity, entityId, timestamp, details). |
+| `lib/db/src/schema/role.ts` & `permission.ts` | RBAC tables. |
+| `lib/db/src/schema/message_thread.ts` & `message.ts` | Messaging tables (urgent flag, SLA status). |
+| `lib/db/src/schema/booking.ts` | One‑to‑one booking table (trainer, course, date, time, duration, status, meetingLink). |
+| `lib/db/src/schema/calendar_event.ts` | Unified calendar events. |
+
+**Action:**  
+- Create each file under `lib/db/src/schema/`.  
+- Export the tables from `index.ts` (replace placeholder comments).  
+- Run `pnpm install drizzle-orm pg drizzle-zod` if not present.  
+
+### 3.2. API Expansion  
+
+1. **Add New Paths to `openapi.yaml`** (under `paths:`):  
+   - `/enrolments` (GET, POST, PATCH, DELETE)  
+   - `/enrolments/{enrolmentId}/score` (GET)  
+   - `/programmes/{programmeId}/modules` (CRUD)  
+   - `/modules/{moduleId}/assessments` (CRUD)  
+   - `/kpi/summary` (GET)  
+   - `/auth/sso` (POST) and `/auth/login` (POST)  
+   - `/audit/logs` (GET) – admin only  
+   - `/nudge/run` (POST) – internal trigger  
+   - `/help/ai` (POST) – stub for future AI assistance  
+
+2. **Generate Server Stubs** (using `orval` or `openapi-generator`).  
+3. **Implement Controllers** in `lib/api/...` (e.g., `enrolmentsController.ts`).  
+4. **Wire Up Services** (`src/services/*`) that interact with Drizzle.  
+5. **Add Middleware**:  
+   - `authMiddleware.ts` (JWT verification, SSO token exchange).  
+   - `rbacMiddleware.ts` (role checks per route).  
+   - `auditMiddleware.ts` (log request body & user).  
+
+### 3.3. Review‑Credit Engine  
+
+- Create `src/services/reviewCredit.ts` exposing:  
+  - `calculateEnrolmentScore(enrolment)`.  
+  - `aggregateReviewCredit(orgId, period)`.  
+  - `exportCSV(orgId, period)`.  
+- Hook into enrolment update events to recompute scores.  
+- Add API endpoints for settings (already present) and for triggering recalculation.  
+
+### 3.4. KPI & Analytics Jobs  
+
+- Use `node‑cron` or `zod` cron in `src/jobs/kpiJob.ts`.  
+- Jobs run nightly: compute DashboardSummary, store in `kpi_summary` table.  
+- Expose `GET /dashboard/summary` that reads from the KPI table (cached).  
+
+### 3.5. Engagement / Nudge  
+
+- Service `src/services/nudge.ts` that:  
+  - Reads learner calendar gaps (`/calendar` data).  
+  - Sends push/email notifications (stub with console log).  
+- Add `urgent` flag handling in messaging endpoints.  
+
+### 3.6. Front‑End Scaffold  
+
+1. **Initialize**: `cd c:\projects\TrainHub360 && npx -y create-vite@latest ./frontend --template react-ts`  
+2. **Design System** (`frontend/src/design/`):  
+   - `theme.ts` with HSL color tokens, dark mode toggle.  
+   - Global CSS with glass‑morphism utilities.  
+   - Import **Inter** via `<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">`.  
+3. **Pages & Routes** (`frontend/src/pages/`):  
+   - `Dashboard.tsx`, `ProgrammeDetail.tsx`, `CourseBuilder.tsx`, `EnrolmentFlow.tsx`, `Messaging.tsx`, `Booking.tsx`, `ReviewCreditAdmin.tsx`.  
+   - Use **TanStack Query** for data fetching (`frontend/src/api/`).  
+4. **Components** (`frontend/src/components/`):  
+   - `Header`, `Sidebar`, `Card`, `ProgressBar`, `MicroAnimationButton`, `Badge`, `Modal`, `Table`.  
+5. **Styling**: Apply glass‑morphism cards, smooth hover transitions, subtle micro‑animations (e.g., `@keyframes pulse`).  
+6. **Testing**: Add Jest + React Testing Library unit tests; Cypress e2e tests for critical flows.  
+
+### 3.7. CI/CD & Docker  
+
+- `Dockerfile` (backend) – copy source, run `pnpm install && pnpm build`.  
+- `Dockerfile.dev` (frontend) – use `node:18-alpine`.  
+- `docker-compose.yml` with services: `db` (Postgres), `backend`, `frontend`.  
+- GitHub Actions workflow:  
+  - **jobs**: lint → test → build → push Docker images (if repository has a registry).  
+
+### 3.8. Documentation  
+
+- `README.md` with sections: Overview, Quick‑Start (docker compose), API Docs (link to generated Swagger UI), Front‑End Build, Testing, Deployment.  
+- `ARCHITECTURE.md` containing a Mermaid diagram of the data model (use the tables defined above).  
+- Update the proposal file with a **Table of Contents** linking to each major section (use markdown anchors).  
+
+---  
+
+## 4️⃣ Verification & Acceptance Criteria  
+
+| Criterion | How to Verify |
+|-----------|---------------|
+| **All tables exist** | Run `npm run db:sync` (or equivalent) and inspect the Postgres schema. |
+| **API matches OpenAPI** | `npm run lint:openapi` and `npm test` (integration tests hitting each endpoint). |
+| **Auth & RBAC enforced** | Attempt unauthorized requests; expect `401/403`. |
+| **Audit logs created** | Perform state‑changing actions; query `/audit/logs` and verify entries. |
+| **Review‑Credit calculations correct** | Create sample enrolments (use fixtures); call `/review-credit/export` and compare CSV to expected values. |
+| **KPIs displayed** | Load Dashboard UI; numbers should reflect DB‑derived aggregates. |
+| **Front‑End design meets premium criteria** | Visually check dark mode, glass‑morphism, smooth hover/animation, Google Font usage. |
+| **Tests pass** | `npm run test` (backend) and `npm run test:ui` (frontend) both exit with 0. |
+| **CI pipeline succeeds** | Push to a branch; GitHub Actions complete without failures. |
+| **Documentation builds** | `npm run docs` produces a clean markdown site; links are clickable. |
+
+---  
+
+## 5️⃣ Execution Notes for the Agent  
+
+- **Work incrementally** – commit after each major sub‑task (e.g., “feat(db): add enrolments table”).  
+- **Keep code style consistent** – use Prettier/ESLint (already configured in repo).  
+- **Preserve existing comments** in files unless a change is required.  
+- **Do not overwrite** any existing generated files (`api-client-react/src/generated/*`) unless a new OpenAPI version mandates regeneration.  
+- **Run lint & tests locally** before pushing commits.  
+- **When adding new NPM packages**, run `pnpm add <pkg>` inside the workspace root.  
+- **All new source files** must be placed under the appropriate directory (`lib/db/src/schema`, `lib/api/...`, `frontend/src/...`).  
+- **Create artifacts** for any design assets (e.g., color palette screenshots) in the artifact directory (`C:\Users\Bradley\.gemini\antigravity-ide\brain\<conversation-id>\artifacts`).  
+
+---  
+
+### 🎯 End Result  
+
+After the agent follows this prompt, the repository will contain:
+
+1. A **complete, type‑safe backend** implementing every feature described in the proposal.  
+2. A **premium React front‑end** that delivers a modern, engaging UI.  
+3. **Robust infrastructure** (Docker, CI/CD) enabling reproducible builds and deployments.  
+4. **Full test coverage** and **documentation** that allow onboarding new developers and exposing the product to customers.  
+
+The code will be fully **in line with the corporate‑training‑platform proposal**, ready for stakeholder review and production rollout.

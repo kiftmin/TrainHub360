@@ -1,0 +1,31 @@
+{
+  "name": "@workspace/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "test": "node --test tests/",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "drizzle-orm": "catalog:",
+    "zod": "catalog:",
+    "jsonwebtoken": "^9.0.2",
+    "cors": "^2.8.5",
+    "@workspace/db": "workspace:*",
+    "@workspace/api-zod": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "catalog:",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/cors": "^2.8.17",
+    "tsx": "catalog:",
+    "typescript": "~5.9.3"
+  }
+}
+

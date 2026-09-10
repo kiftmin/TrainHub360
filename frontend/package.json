@@ -1,0 +1,25 @@
+{
+  "name": "trainhub360-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "test:ui": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0",
+    "@tanstack/react-query": "^5.90.21",
+    "wouter": "^3.3.5"
+  },
+  "devDependencies": {
+    "vite": "^7.3.2",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "~5.9.3",
+    "vitest": "^3.0.0"
+  }
+}
+
