@@ -1,9 +1,10 @@
 services:
   backend:
     build: .
+    env_file: .env
     environment:
-      DATABASE_URL: $${DATABASE_URL-sqlserver://69.30.247.60:1433;database=TrainHub360;user=sa;password=REPLACE_ME;trustServerCertificate=true}
-      JWT_SECRET: $${JWT_SECRET-dev-secret}
+      DATABASE_URL: $${DATABASE_URL}
+      JWT_SECRET: $${JWT_SECRET}
       PORT: 4000
     ports: ["4000:4000"]
   frontend:
