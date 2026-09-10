@@ -95,3 +95,13 @@ router.post("/help/ai", (req, res) => {
   res.json({ answer: `Explainer stub for: ${req.body.question}. Connect an LLM provider for production answers.` });
 });
 
+
+router.get("/readyz", async (_req, res) => {
+  try {
+    const { checkDb } = await import("../db.js");
+    const dbStatus = await checkDb();
+    res.json({ status: dbStatus.ok ? "ready" : "degraded", db: dbStatus });
+  } catch (e) {
+    res.json({ status: "degraded", db: { ok: false, error: (e as Error).message } });
+  }
+});

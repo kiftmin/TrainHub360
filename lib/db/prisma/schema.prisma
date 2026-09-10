@@ -1,0 +1,267 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+model Organization {
+  id                                   String    @id @default(cuid())
+  name                                 String
+  plan                                 String    @default("standard")
+  learnerCount                         Float     @default(0) @map("learner_count")
+  programmeCount                       Float     @default(0) @map("programme_count")
+  reviewCreditModuleEnabled            Boolean   @default(false) @map("review_credit_module_enabled")
+  reviewCreditMaxWeighting             Float     @default(10) @map("review_credit_max_weighting")
+  reviewCreditPeriodStart              DateTime? @map("review_credit_period_start") @db.Date
+  reviewCreditPeriodEnd                DateTime? @map("review_credit_period_end") @db.Date
+  reviewCreditWeightAssessment         Float     @default(50) @map("review_credit_weight_assessment")
+  reviewCreditWeightTimeliness         Float     @default(30) @map("review_credit_weight_timeliness")
+  reviewCreditWeightApplication        Float     @default(20) @map("review_credit_weight_application")
+  reviewCreditEligibleProgrammeTypes   String    @default("[]") @map("review_credit_eligible_programme_types")
+  reviewCreditRequireManagerSignoff    Boolean   @default(true) @map("review_credit_require_manager_signoff")
+  reviewCreditCollectApplicationScores Boolean   @default(true) @map("review_credit_collect_application_scores")
+  programmes                           Programme[]
+  users                                User[]
+  kpiSummaries                         KpiSummary[]
+
+  @@map("organizations")
+}
+
+model Programme {
+  id           String       @id @default(cuid())
+  orgId        String       @map("org_id")
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name         String
+  type         String
+  status       String       @default("active")
+  learnerCount Float        @default(0) @map("learner_count")
+  courseCount  Float        @default(0) @map("course_count")
+  progress     Float        @default(0)
+  owner        String
+  courses      Course[]
+  enrolments   Enrolment[]
+
+  @@map("programmes")
+}
+
+model Course {
+  id               String    @id @default(cuid())
+  programmeId      String    @map("programme_id")
+  programme        Programme @relation(fields: [programmeId], references: [id], onDelete: Cascade)
+  title            String
+  category         String    @default("General")
+  progress         Float     @default(0)
+  status           String    @default("draft")
+  appliedThreshold Float     @default(70) @map("applied_threshold")
+  dueDate          String?   @map("due_date")
+  trainer          String    @default("")
+  duration         String?
+  modules          Module[]
+  enrolments       Enrolment[]
+
+  @@map("courses")
+}
+
+model Module {
+  id        String       @id @default(cuid())
+  courseId  String       @map("course_id")
+  course    Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  title     String
+  order     Int          @default(0) @map("order_index")
+  assessments Assessment[]
+
+  @@map("modules")
+}
+
+model Assessment {
+  id       String @id @default(cuid())
+  moduleId String @map("module_id")
+  module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  type     String @default("recall")
+  maxScore Float  @default(100) @map("max_score")
+
+  @@map("assessments")
+}
+
+model Enrolment {
+  id                          String     @id @default(cuid())
+  learnerId                   String     @map("learner_id")
+  learner                     User       @relation(fields: [learnerId], references: [id])
+  courseId                    String     @map("course_id")
+  course                      Course     @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  programmeId                 String     @map("programme_id")
+  programme                   Programme  @relation(fields: [programmeId], references: [id])
+  status                      String     @default("enrolled")
+  reviewCreditEligible        Boolean    @default(true) @map("review_credit_eligible")
+  appliedAssessmentScore      Float?     @map("applied_assessment_score")
+  completionDate              DateTime?  @map("completion_date")
+  deadlineDate                DateTime?  @map("deadline_date")
+  timelinessScore             Float?     @map("timeliness_score")
+  applicationScore            Float?     @map("application_score")
+  applicationScoreSubmittedBy String?    @map("application_score_submitted_by")
+  applicationScoreSubmittedAt DateTime?  @map("application_score_submitted_at")
+  enrolmentScore              Float?     @map("enrolment_score")
+  reviewCreditExcluded        Boolean    @default(false) @map("review_credit_excluded")
+  reviewCreditExcludeReason   String?    @map("review_credit_exclude_reason")
+  reviewCreditLockedAt        DateTime?  @map("review_credit_locked_at")
+  managerSignOff              Boolean?   @map("manager_sign_off")
+  managerSignOffBy            String?    @map("manager_sign_off_by")
+  managerSignOffAt            DateTime?  @map("manager_sign_off_at")
+
+  @@map("enrolments")
+}
+
+model User {
+  id           String       @id @default(cuid())
+  orgId        String       @map("org_id")
+  organization Organization @relation(fields: [orgId], references: [id])
+  name         String
+  email        String       @unique
+  passwordHash String       @default("") @map("password_hash")
+  createdAt    DateTime     @default(now()) @map("created_at")
+  enrolments   Enrolment[]
+  roles        UserRole[]
+
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(cuid())
+  name        String           @unique
+  users       UserRole[]
+  permissions RolePermission[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id    String           @id @default(cuid())
+  name  String           @unique
+  roles RolePermission[]
+
+  @@map("permissions")
+}
+
+model UserRole {
+  userId      String  @map("user_id")
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  roleId      String  @map("role_id")
+  role        Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  programmeId String? @map("programme_id")
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  roleId       String     @map("role_id")
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permissionId String     @map("permission_id")
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?  @map("user_id")
+  action    String
+  entity    String
+  entityId  String?  @map("entity_id")
+  timestamp DateTime @default(now())
+  details   String?
+
+  @@map("audit_logs")
+}
+
+model MessageThread {
+  id          String    @id @default(cuid())
+  subject     String
+  context     String    @default("")
+  participant String    @default("")
+  programmeId String?   @map("programme_id")
+  urgent      Boolean   @default(false)
+  slaBreached Boolean   @default(false) @map("sla_breached")
+  updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at")
+  messages    Message[]
+
+  @@map("message_threads")
+}
+
+model Message {
+  id        String        @id @default(cuid())
+  threadId  String        @map("thread_id")
+  thread    MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  author    String
+  body      String        @db.NVarChar(Max)
+  urgent    Boolean       @default(false)
+  createdAt DateTime      @default(now()) @map("created_at")
+
+  @@map("messages")
+}
+
+model Booking {
+  id          String  @id @default(cuid())
+  trainer     String
+  course      String  @default("")
+  date        String
+  time        String
+  duration    String  @default("30m")
+  status      String  @default("confirmed")
+  meetingLink String? @map("meeting_link")
+
+  @@map("bookings")
+}
+
+model CalendarEvent {
+  id          String  @id @default(cuid())
+  title       String
+  date        String
+  time        String
+  type        String  @default("session")
+  accent      String  @default("blue")
+  location    String?
+  meetingLink String? @map("meeting_link")
+  userId      String? @map("user_id")
+
+  @@map("calendar_events")
+}
+
+model KpiSummary {
+  id           String       @id @default(cuid())
+  orgId        String       @map("org_id")
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  computedAt   DateTime     @default(now()) @map("computed_at")
+  payload      String       @db.NVarChar(Max)
+
+  @@map("kpi_summaries")
+}
+
+model ReviewCreditSetting {
+  orgId            String @id @map("org_id")
+  enabled          Int    @default(0)
+  maxWeighting     Float  @default(10) @map("max_weighting")
+  assessmentWeight Float  @default(50) @map("assessment_weight")
+  timelinessWeight Float  @default(30) @map("timeliness_weight")
+  applicationWeight Float @default(20) @map("application_weight")
+
+  @@map("review_credit_settings")
+}
+
+model Session {
+  id        String @id @default(cuid())
+  title     String
+  programme String @default("")
+  date      String
+  time      String
+  mode      String @default("online")
+  attendees Int    @default(0)
+  status    String @default("scheduled")
+
+  @@map("sessions")
+}
+

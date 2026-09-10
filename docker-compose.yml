@@ -1,24 +1,13 @@
 services:
-  db:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: trainhub360
-      POSTGRES_USER: trainhub
-      POSTGRES_PASSWORD: trainhub360
-    ports: ["5432:5432"]
-    volumes: [pgdata:/var/lib/postgresql/data]
   backend:
     build: .
     environment:
-      DATABASE_URL: postgres://trainhub:trainhub360@db:5432/trainhub360
-      JWT_SECRET: dev-secret
+      DATABASE_URL: $${DATABASE_URL-sqlserver://69.30.247.60:1433;database=TrainHub360;user=sa;password=REPLACE_ME;trustServerCertificate=true}
+      JWT_SECRET: $${JWT_SECRET-dev-secret}
       PORT: 4000
     ports: ["4000:4000"]
-    depends_on: [db]
   frontend:
     build:
       context: ./frontend
     ports: ["5173:5173"]
-volumes:
-  pgdata: {}
 
