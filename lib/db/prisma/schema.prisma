@@ -23,6 +23,7 @@ model Organization {
   reviewCreditEligibleProgrammeTypes   String    @default("[]") @map("review_credit_eligible_programme_types")
   reviewCreditRequireManagerSignoff    Boolean   @default(true) @map("review_credit_require_manager_signoff")
   reviewCreditCollectApplicationScores Boolean   @default(true) @map("review_credit_collect_application_scores")
+  webhookUrls  String    @default("[]") @map("webhook_urls") @db.NVarChar(Max)
   programmes                           Programme[]
   users                                User[]
   kpiSummaries                         KpiSummary[]
@@ -41,6 +42,7 @@ model Programme {
   courseCount  Float        @default(0) @map("course_count")
   progress     Float        @default(0)
   owner        String
+  budget       Float        @default(0)
   courses      Course[]
   enrolments   Enrolment[]
 
@@ -59,6 +61,10 @@ model Course {
   dueDate          String?   @map("due_date")
   trainer          String    @default("")
   duration         String?
+  version          Int       @default(1)
+  isArchived       Boolean   @default(false) @map("is_archived")
+  archivedAt       DateTime? @map("archived_at")
+  deletedAt        DateTime? @map("deleted_at")
   modules          Module[]
   enrolments       Enrolment[]
 
@@ -71,6 +77,10 @@ model Module {
   course    Course       @relation(fields: [courseId], references: [id], onDelete: Cascade)
   title     String
   order     Int          @default(0) @map("order_index")
+  version   Int          @default(1)
+  isArchived Boolean     @default(false) @map("is_archived")
+  archivedAt DateTime?   @map("archived_at")
+  deletedAt  DateTime?   @map("deleted_at")
   assessments Assessment[]
 
   @@map("modules")
@@ -82,6 +92,10 @@ model Assessment {
   module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
   type     String @default("recall")
   maxScore Float  @default(100) @map("max_score")
+  version   Int     @default(1)
+  isArchived Boolean @default(false) @map("is_archived")
+  archivedAt DateTime? @map("archived_at")
+  deletedAt  DateTime? @map("deleted_at")
 
   @@map("assessments")
 }
@@ -122,6 +136,8 @@ model User {
   email        String       @unique
   passwordHash String       @default("") @map("password_hash")
   createdAt    DateTime     @default(now()) @map("created_at")
+  iCalFeedUrl  String?      @map("ical_feed_url") @db.NVarChar(1024)
+  preferredNudgeDays String  @default("[\"MONDAY\",\"WEDNESDAY\",\"FRIDAY\"]") @map("preferred_nudge_days") @db.NVarChar(256)
   enrolments   Enrolment[]
   roles        UserRole[]
 
@@ -186,6 +202,11 @@ model MessageThread {
   programmeId String?   @map("programme_id")
   urgent      Boolean   @default(false)
   slaBreached Boolean   @default(false) @map("sla_breached")
+  slaHours              Int       @default(24) @map("sla_hours")
+  lastLearnerMessageAt  DateTime? @map("last_learner_message_at")
+  lastTrainerResponseAt DateTime? @map("last_trainer_response_at")
+  isEscalated           Boolean   @default(false) @map("is_escalated")
+  escalatedAt           DateTime? @map("escalated_at")
   updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at")
   messages    Message[]
 

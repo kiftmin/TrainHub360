@@ -205,6 +205,7 @@ export const qk = {
   reviewCreditSettings: ['review-credit', 'settings'] as const,
   auditLogs: ['audit', 'logs'] as const,
   enrolments: ['enrolments'] as const,
+  modules: (programmeId: string) => ['programmes', programmeId, 'modules'] as const,
 };
 
 function queryOpts<T>(queryKey: readonly unknown[], fn: () => Promise<T>, enabled = true): UseQueryOptions<T> {
@@ -269,6 +270,16 @@ export function useSubmitAttempt(courseId: string) {
       qc.invalidateQueries({ queryKey: ['courses'] });
     },
   });
+}
+
+export interface Module {
+  id: string;
+  courseId: string;
+  title: string;
+}
+
+export function useModules(programmeId: string, enabled = true) {
+  return useQuery(queryOpts(qk.modules(programmeId), () => api<Module[]>(`/programmes/${programmeId}/modules`), enabled));
 }
 
 export function useSessions() {

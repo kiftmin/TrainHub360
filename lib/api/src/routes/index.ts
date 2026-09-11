@@ -1,11 +1,17 @@
 import { Router } from "express";
 import { calculateEnrolmentScore, aggregateReviewCredit, exportCSV } from "../services/reviewCredit.js";
 import { findCalendarGaps, sendNudges } from "../services/nudge.js";
+import { explainConcept } from "../services/aiExplainer.js";
 import { signToken } from "../middleware/auth.js";
 import { requireRole } from "../middleware/rbac.js";
 import { computeKpis } from "../jobs/kpiJob.js";
+import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
+import { runNudgeJob } from "../jobs/nudgeJob.js";
+import { dispatchWebhook } from "../services/webhook.js";
 import { db } from "../db.js";
 import type { AuthedRequest } from "../middleware/auth.js";
+type EnrolmentRow = Awaited<ReturnType<typeof db.enrolment.findMany>>[number];
+type Enrolment = EnrolmentRow;
 
 export const router = Router();
 
@@ -18,12 +24,12 @@ router.post("/auth/login", async (req, res) => {
   const id = user?.id ?? "u1";
   const role = (await db.userRole.findFirst({ where: { userId: id }, include: { role: true } }).catch(() => null))?.role.name ?? "admin";
   const token = signToken({ id, role, orgId: user?.orgId ?? "org1" });
-  res.json({ accessToken: token, user: { id, name: user?.name ?? "Admin", email, role, initials: (user?.name ?? "AD").slice(0, 2).toUpperCase() } });
+  return res.json({ accessToken: token, user: { id, name: user?.name ?? "Admin", email, role, initials: (user?.name ?? "AD").slice(0, 2).toUpperCase() } });
 });
 router.post("/auth/sso", (req, res) => {
   if (!req.body?.samlAssertion) return res.status(400).json({ error: "samlAssertion required" });
   const token = signToken({ id: "sso-user", role: "learner", orgId: "org1" });
-  res.json({ accessToken: token, user: { id: "sso-user", name: "SSO User", email: "sso@corp.com", role: "learner", initials: "SU" } });
+  return res.json({ accessToken: token, user: { id: "sso-user", name: "SSO User", email: "sso@corp.com", role: "learner", initials: "SU" } });
 });
 
 router.get("/workspace", async (req, res) => {
@@ -58,7 +64,7 @@ router.patch("/enrolments/:id", async (req, res) => {
   const merged = { ...current, ...req.body };
   const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: merged.appliedAssessmentScore ?? null, completionDate: merged.completionDate ?? null, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
   const e = await db.enrolment.update({ where: { id: req.params.id }, data: { status: req.body.status ?? undefined, appliedAssessmentScore: req.body.appliedAssessmentScore ?? undefined, applicationScore: req.body.applicationScore ?? undefined, timelinessScore: b, enrolmentScore: score, managerSignOff: req.body.managerSignOff ?? undefined } });
-  res.json(e);
+  return res.json(e);
 });
 router.delete("/enrolments/:id", requireRole("admin", "owner"), async (req, res) => {
   await db.enrolment.delete({ where: { id: req.params.id } }).catch(() => null);
@@ -68,12 +74,19 @@ router.get("/enrolments/:id/score", async (req, res) => {
   const e = await db.enrolment.findUnique({ where: { id: req.params.id } });
   if (!e) return res.status(404).json({ error: "not found" });
   const r = calculateEnrolmentScore({ appliedAssessmentScore: e.appliedAssessmentScore, completionDate: e.completionDate, deadlineDate: e.deadlineDate, applicationScore: e.applicationScore });
-  res.json({ enrolmentId: req.params.id, score: r.score, breakdown: r });
+  return res.json({ enrolmentId: req.params.id, score: r.score, breakdown: r });
 });
 
 router.get("/programmes", async (_req, res) => res.json(await db.programme.findMany({ take: 200 }).catch(() => [])));
+function lifecycleFilter(includeArchived: boolean) {
+  return includeArchived ? { deletedAt: null } : { isArchived: false, deletedAt: null };
+}
+function canSeeArchived(role?: string) {
+  return role === "admin" || role === "owner";
+}
 router.get("/programmes/:id/modules", async (req, res) => {
-  res.json(await db.module.findMany({ where: { course: { programmeId: req.params.id } } }).catch(() => []));
+  const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
+  res.json(await db.module.findMany({ where: { course: { programmeId: req.params.id }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
 });
 router.post("/programmes/:id/modules", async (req, res) => {
   let courseId = req.body.courseId;
@@ -82,21 +95,46 @@ router.post("/programmes/:id/modules", async (req, res) => {
     if (!first) return res.status(400).json({ error: "courseId required (no courses in programme yet)" });
     courseId = first.id;
   }
-  res.status(201).json(await db.module.create({ data: { courseId, title: req.body.title ?? "New module" } }));
+  return res.status(201).json(await db.module.create({ data: { courseId, title: req.body.title ?? "New module" } }));
 });
 router.get("/modules/:id/assessments", async (req, res) => {
-  res.json(await db.assessment.findMany({ where: { moduleId: req.params.id } }).catch(() => []));
+  const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
+  res.json(await db.assessment.findMany({ where: { moduleId: req.params.id, ...lifecycleFilter(includeArchived) } }).catch(() => []));
 });
 router.post("/modules/:id/assessments", async (req, res) => {
   if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
-  res.status(201).json(await db.assessment.create({ data: { moduleId: req.params.id, type: req.body.type ?? "recall", maxScore: req.body.maxScore ?? 100 } }));
+  return res.status(201).json(await db.assessment.create({ data: { moduleId: req.params.id, type: req.body.type ?? "recall", maxScore: req.body.maxScore ?? 100 } }));
 });
 router.get("/courses", async (req, res) => {
   const programmeId = req.query.programmeId as string | undefined;
-  res.json(await db.course.findMany({ where: programmeId ? { programmeId } : undefined, take: 200 }).catch(() => []));
+  const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
+  res.json(await db.course.findMany({ where: { ...(programmeId ? { programmeId } : {}), ...lifecycleFilter(includeArchived) }, take: 200 }).catch(() => []));
 });
 router.post("/courses", async (req, res) => {
   res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
+});
+router.post("/courses/:id/archive", requireRole("admin", "owner"), async (req, res) => {
+  const course = await db.course.update({ where: { id: req.params.id }, data: { isArchived: true, archivedAt: new Date() } });
+  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "POST /courses/:id/archive", entity: "course", entityId: course.id, details: null } }).catch(() => null);
+  res.json(course);
+});
+router.delete("/courses/:id", requireRole("admin", "owner"), async (req, res) => {
+  const course = await db.course.update({ where: { id: req.params.id }, data: { deletedAt: new Date() } });
+  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "DELETE /courses/:id", entity: "course", entityId: course.id, details: null } }).catch(() => null);
+  res.status(204).end();
+});
+router.post("/courses/:courseId/modules/:moduleId/explain", async (req, res) => {
+  const { concept, userQuery } = req.body ?? {};
+  if (!concept || !userQuery) return res.status(400).json({ error: "concept and userQuery required" });
+  const me = (req as AuthedRequest).user;
+  if (me?.role === "learner") {
+    const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: req.params.courseId } }).catch(() => null);
+    if (!enrolled) return res.status(403).json({ error: "enrolment required" });
+  }
+  const course = await db.course.findUnique({ where: { id: req.params.courseId } }).catch(() => null);
+  const mod = await db.module.findUnique({ where: { id: req.params.moduleId } }).catch(() => null);
+  if (!mod) return res.status(404).json({ error: "module not found" });
+  return res.json(await explainConcept({ courseTitle: course?.title ?? "Course", moduleTitle: mod.title, concept, userQuery }));
 });
 router.post("/courses/:id/attempts", (req, res) => {
   const { appliedScore = 0, recallScore = 0 } = req.body ?? {};
@@ -104,12 +142,24 @@ router.post("/courses/:id/attempts", (req, res) => {
   res.json({ appliedScore, recallScore, passed, competenceMet: passed, message: passed ? "competence met" : "below applied threshold" });
 });
 router.get("/sessions", async (_req, res) => res.json(await db.session.findMany({ take: 200 }).catch(() => [])));
-router.get("/threads", async (_req, res) => res.json(await db.messageThread.findMany({ take: 200, orderBy: { updatedAt: "desc" } }).catch(() => [])));
+router.get("/threads", async (_req, res) => {
+  const threads = await db.messageThread.findMany({ take: 200, orderBy: { updatedAt: "desc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }).catch(() => []);
+  res.json(threads.map((t) => ({ ...t, averageResponseTimeHours: avgResponseHours(t.messages.map((m) => ({ author: m.author, createdAt: m.createdAt }))), slaStatus: slaStatusFor(t as SlaThread, avgResponseHours(t.messages.map((m) => ({ author: m.author, createdAt: m.createdAt })))) })));
+});
 router.get("/threads/:id/messages", async (req, res) => {
   res.json(await db.message.findMany({ where: { threadId: req.params.id }, orderBy: { createdAt: "asc" } }).catch(() => []));
 });
 router.post("/threads/:id/messages", async (req, res) => {
-  res.status(201).json(await db.message.create({ data: { threadId: req.params.id, author: req.body.author ?? "learner", body: req.body.body, urgent: req.body.urgent ?? false } }));
+  const role = (req as AuthedRequest).user?.role ?? req.body.authorRole ?? "learner";
+  const isLearner = role === "learner";
+  const msg = await db.message.create({ data: { threadId: req.params.id, author: req.body.author ?? role, body: req.body.body, urgent: req.body.urgent ?? false } });
+  await db.messageThread.update({
+    where: { id: req.params.id },
+    data: isLearner
+      ? { lastLearnerMessageAt: new Date(), updatedAt: new Date() }
+      : { lastTrainerResponseAt: new Date(), isEscalated: false, updatedAt: new Date() },
+  }).catch(() => null);
+  res.status(201).json(msg);
 });
 router.get("/bookings", async (_req, res) => res.json(await db.booking.findMany({ take: 200 }).catch(() => [])));
 router.post("/bookings", async (req, res) => {
@@ -122,7 +172,7 @@ router.get("/review-credit/settings", async (req, res) => {
   const orgId = (req.query.orgId as string) ?? (await db.organization.findFirst({ select: { id: true } }).catch(() => null))?.id ?? "org1";
   const s = await db.reviewCreditSetting.findUnique({ where: { orgId } }).catch(() => null);
   if (!s) return res.json({ ...defaultSettings, orgId });
-  res.json({ enabled: !!s.enabled, maxWeighting: s.maxWeighting, assessmentWeight: s.assessmentWeight, timelinessWeight: s.timelinessWeight, applicationWeight: s.applicationWeight, requireManagerSignoff: true, collectApplicationScores: true, eligibleProgrammeTypes: defaultSettings.eligibleProgrammeTypes, orgId });
+  return res.json({ enabled: !!s.enabled, maxWeighting: s.maxWeighting, assessmentWeight: s.assessmentWeight, timelinessWeight: s.timelinessWeight, applicationWeight: s.applicationWeight, requireManagerSignoff: true, collectApplicationScores: true, eligibleProgrammeTypes: defaultSettings.eligibleProgrammeTypes, orgId });
 });
 router.patch("/review-credit/settings", requireRole("admin", "owner"), async (req, res) => {
   const orgId = req.body.orgId ?? (await db.organization.findFirst({ select: { id: true } }).catch(() => null))?.id ?? "org1";
@@ -149,6 +199,42 @@ router.get("/organizations/:id/review-credits", async (req, res) => {
   });
   res.json(rows);
 });
+router.get("/organizations/:id/review-credits/export", requireRole("admin", "owner"), async (req, res) => {
+  const format = (req.query.format as string) === "csv" ? "csv" : "json";
+  const setting = await db.reviewCreditSetting.findUnique({ where: { orgId: req.params.id } }).catch(() => null);
+  const enrolments = await db.enrolment.findMany({ take: 1000 }).catch(() => []);
+  const byLearner: Record<string, Enrolment[]> = {};
+  for (const e of enrolments) {
+    if (e.reviewCreditExcluded || e.enrolmentScore == null) continue;
+    const list = byLearner[e.learnerId];
+    if (list) list.push(e);
+    else byLearner[e.learnerId] = [e];
+  }
+  const rows = Object.entries(byLearner).map(([learnerId, list]) => {
+    const agg = aggregateReviewCredit(list.map((e) => e.enrolmentScore as number), setting?.maxWeighting ?? 10);
+    return {
+      learnerId,
+      enrolmentIds: list.map((e) => e.id),
+      raw: agg.raw,
+      final: agg.final,
+      managerApprovals: list.map((e) => ({ enrolmentId: e.id, signOff: e.managerSignOff ?? false, by: e.managerSignOffBy ?? null, at: e.managerSignOffAt ?? null })),
+      lockedAt: list.map((e) => e.reviewCreditLockedAt).filter(Boolean),
+    };
+  });
+  if (format === "csv") {
+    res.header("content-type", "text/csv");
+    return res.send(exportCSV(rows.map((r) => ({ learnerId: r.learnerId, raw: r.raw, final: r.final, signoff: r.managerApprovals.every((a) => a.signOff) ? "signed" : "pending" }))));
+  }
+  return res.json(rows);
+});
+router.post("/review-credits/lock", requireRole("admin", "owner"), async (req, res) => {
+  const orgId = req.body.orgId ?? (await db.organization.findFirst({ select: { id: true } }).catch(() => null))?.id ?? "org1";
+  const now = new Date();
+  const updated = await db.enrolment.updateMany({ where: { reviewCreditLockedAt: null, reviewCreditExcluded: false }, data: { reviewCreditLockedAt: now } }).catch(() => ({ count: 0 }));
+  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "REVIEW_CYCLE_LOCKED", entity: "organization", entityId: orgId, details: null } }).catch(() => null);
+  const webhook = await dispatchWebhook(orgId, "review_credit_finalized", { lockedAt: now.toISOString(), lockedCount: updated.count });
+  res.json({ orgId, lockedAt: now.toISOString(), lockedCount: updated.count, webhook });
+});
 router.get("/audit/logs", requireRole("admin", "owner"), async (_req, res) => {
   res.json(await db.auditLog.findMany({ take: 200, orderBy: { timestamp: "desc" } }).catch(() => []));
 });
@@ -158,9 +244,15 @@ router.post("/nudge/run", async (_req, res) => {
   const sent = await sendNudges(gaps);
   res.json({ sent });
 });
+router.post("/sla/run", requireRole("admin", "owner"), async (_req, res) => {
+  res.json(await runSlaJob());
+});
+router.post("/nudge/dispatch", requireRole("admin", "owner"), async (_req, res) => {
+  res.json(await runNudgeJob());
+});
 router.post("/help/ai", (req, res) => {
   if (!req.body?.question) return res.status(400).json({ error: "question required" });
-  res.json({ answer: `Explainer stub for: ${req.body.question}. Connect an LLM provider for production answers.` });
+  return res.json({ answer: `Explainer stub for: ${req.body.question}. Connect an LLM provider for production answers.` });
 });
 
 router.get("/readyz", async (_req, res) => {
@@ -173,15 +265,16 @@ router.get("/readyz", async (_req, res) => {
   }
 });
 
-// Express 4 does not catch async handler rejections — wrap every route so DB
+// Express 4 does not catch async handler rejections ï¿½ wrap every route so DB
 // outages become 503s via the error middleware instead of crashing the process.
-for (const layer of (router as unknown as { stack: { route?: { stack: { handle: unknown }[] } } }).stack) {
+for (const layer of ((router as unknown as { stack: { route?: { stack: { handle: (req: unknown, res: unknown, next: (e?: unknown) => void) => unknown }[] } }[] }).stack)) {
   const route = layer.route;
   if (!route) continue;
   for (const l of route.stack) {
-    const orig = l.handle as (req: unknown, res: unknown, next: (e?: unknown) => void) => unknown;
+    const orig = l.handle;
     l.handle = (req: unknown, res: unknown, next: (e?: unknown) => void) =>
       Promise.resolve(orig(req, res, next)).catch(next);
   }
 }
+
 

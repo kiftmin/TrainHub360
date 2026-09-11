@@ -19,6 +19,7 @@ import {
   useCourses,
   useCreateCourse,
   useSubmitAttempt,
+  useModules,
   useSessions,
   useThreads,
   useThreadMessages,
@@ -36,6 +37,7 @@ import {
 } from '@/api/hooks';
 import { getToken, clearSession } from '@/api/client';
 import { Login } from '@/pages/Login';
+import { AiConceptExplainer } from '@/components/AiConceptExplainer';
 import {
   Activity, ArrowUpRight, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown,
   CircleAlert, Clock3, Download, FileCheck2, Gauge, GraduationCap, LayoutDashboard,
@@ -256,6 +258,8 @@ function Programmes() {
 function ProgrammeDetail({ id }: { id: string }) {
   const programmes = useProgrammes();
   const courses = useCourses(id);
+  const modules = useModules(id);
+  const [helpModuleId, setHelpModuleId] = useState<string | null>(null);
   const programme = programmes.data?.find((p) => p.id === id);
   return <div className="page-in">
     <PageHeading eyebrow="Programme detail" title={programme?.name || 'Programme'} detail={programme ? `${programme.type} · ${programme.owner} · ${programme.learnerCount} learners` : 'Loading programme…'} action={<Link href="/programmes" className="text-xs font-semibold text-primary hover:underline">Back to portfolio</Link>} />
@@ -266,6 +270,13 @@ function ProgrammeDetail({ id }: { id: string }) {
       <section className="rounded-xl border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>
         <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <div key={c.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-semibold">{c.title}</p><Status tone={c.status === 'published' ? 'good' : 'warn'}>{c.status}</Status></div><p className="mt-1 text-xs text-muted-foreground">{c.category} · {c.trainer}</p><div className="mt-3"><ProgressLine value={c.progress} /></div></div>)}
         {!courses.data?.length && <EmptyState title="No courses yet" detail="Courses assigned to this programme will appear here." />}</div></section>
+      <section className="rounded-xl border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Modules & concept help</p>
+        <div className="mt-4 space-y-3">{(modules.data || []).map((m) => {
+          const course = (courses.data || []).find((c) => c.id === m.courseId);
+          return <div key={m.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{m.title}</p><p className="mt-1 text-xs text-muted-foreground">{course?.title ?? 'Course module'}</p></div><Button size="sm" variant="outline" onClick={() => setHelpModuleId(helpModuleId === m.id ? null : m.id)} data-testid={`button-module-help-${m.id}`}>Stuck on this concept?</Button></div>
+          {helpModuleId === m.id && <div className="mt-3"><AiConceptExplainer courseId={m.courseId} moduleId={m.id} moduleTitle={m.title} /></div>}</div>;
+        })}
+        {!modules.data?.length && <EmptyState title="No modules yet" detail="Micro-learning modules will appear here once added." />}</div></section>
       <section className="rounded-xl border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Workspace detail</p><h2 className="mt-1 text-lg font-bold">Progress {pct(programme.progress)}</h2><div className="mt-4"><ProgressLine value={programme.progress} color="bg-emerald-600" /></div><div className="mt-5 space-y-2 text-sm"><p className="flex justify-between"><span className="text-muted-foreground">Status</span><Status tone={programme.status === 'active' ? 'good' : 'neutral'}>{programme.status}</Status></p><p className="flex justify-between"><span className="text-muted-foreground">Learners</span><span className="font-semibold">{programme.learnerCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Courses</span><span className="font-semibold">{programme.courseCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Owner</span><span className="font-semibold">{programme.owner}</span></p></div></section>
     </div>}
   </div>;

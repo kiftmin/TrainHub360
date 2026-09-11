@@ -7,7 +7,7 @@
                     "build":  "tsc -p tsconfig.json",
                     "dev":  "tsx src/index.ts",
                     "start":  "node dist/index.js",
-                    "test":  "node --test tests/",
+                    "test":  "node --test tests/reviewCredit.test.js tests/contentLifecycle.test.js tests/sla.test.js tests/nudge.test.js tests/phases.test.js",
                     "typecheck":  "tsc --noEmit -p tsconfig.json"
                 },
     "dependencies":  {
@@ -29,3 +29,6 @@
                             "typescript":  "~5.9.3"
                         }
 }
+
+
+
