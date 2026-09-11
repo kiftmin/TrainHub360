@@ -1,5 +1,15 @@
-import { createRoot } from "react-dom/client";
-import { App } from "./App";
-import "./design/globals.css";
+import { createRoot } from 'react-dom/client';
+import App from './App';
+import { ErrorBoundary } from '@/components/error-boundary';
 
-createRoot(document.getElementById("root")!).render(<App />);
+import './index.css';
+
+createRoot(document.getElementById('root')!, {
+  onCaughtError: (error, errorInfo) => {
+    console.error(error, errorInfo.componentStack);
+  },
+}).render(
+  <ErrorBoundary>
+    <App />
+  </ErrorBoundary>,
+);

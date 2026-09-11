@@ -1,5 +1,8 @@
 import { useState } from "react";
+import { ShieldCheck } from "lucide-react";
 import { setSession } from "../api/client";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 
 export function Login({ onDone }: { onDone: () => void }) {
   const [email, setEmail] = useState("admin@example.com");
@@ -28,23 +31,35 @@ export function Login({ onDone }: { onDone: () => void }) {
   }
 
   return (
-    <div className="card" style={{ maxWidth: 380, margin: "80px auto" }}>
-      <h1>Sign in</h1>
-      <p>Use your seeded admin email to get a session token.</p>
-      <form onSubmit={submit}>
-        <input
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-          placeholder="you@company.com"
-          type="email"
-          required
-          style={{ width: "100%", padding: 10, borderRadius: 10, border: "1px solid var(--border)", background: "hsla(0,0%,100%,.05)", color: "inherit", marginBottom: 12 }}
-        />
-        {error && <p style={{ color: "#f87171" }}>{error}</p>}
-        <button className="btn" disabled={busy} style={{ width: "100%" }}>
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
-      </form>
+    <div className="grain app-shell flex min-h-[100dvh] items-center justify-center p-6">
+      <div className="w-full max-w-md rounded-2xl border border-border/80 bg-card p-8 shadow-[0_20px_60px_rgba(25,51,57,.08)]">
+        <div className="flex items-center gap-3">
+          <div className="grid size-10 place-items-center rounded-lg bg-primary text-primary-foreground"><ShieldCheck className="size-5" /></div>
+          <div>
+            <p className="text-lg font-extrabold tracking-[-.03em]">TrainHub<span className="text-primary">360</span></p>
+            <p className="font-mono text-[9px] uppercase tracking-[.16em] text-muted-foreground">readiness OS</p>
+          </div>
+        </div>
+        <h1 className="mt-6 text-2xl font-extrabold tracking-[-.03em]">Welcome back.</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Sign in with your seeded admin email to open the workspace.</p>
+        <form onSubmit={submit} className="mt-6 space-y-4">
+          <label className="block text-xs font-semibold">Work email
+            <Input
+              className="mt-2"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@company.com"
+              type="email"
+              required
+            />
+          </label>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <Button className="w-full bg-primary text-primary-foreground" disabled={busy}>
+            {busy ? "Signing in…" : "Sign in"}
+          </Button>
+          <p className="text-center font-mono text-[10px] text-muted-foreground">JWT stored in localStorage · th360_token</p>
+        </form>
+      </div>
     </div>
   );
 }

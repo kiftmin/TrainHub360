@@ -1,0 +1,50 @@
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@plugin "@tailwindcss/typography";
+@custom-variant dark (&:is(.dark *));
+@theme inline {
+  --color-background: hsl(var(--background)); --color-foreground: hsl(var(--foreground));
+  --color-border: hsl(var(--border)); --color-input: hsl(var(--input)); --color-ring: hsl(var(--ring));
+  --color-card: hsl(var(--card)); --color-card-foreground: hsl(var(--card-foreground)); --color-card-border: hsl(var(--card-border));
+  --color-popover: hsl(var(--popover)); --color-popover-foreground: hsl(var(--popover-foreground)); --color-popover-border: hsl(var(--popover-border));
+  --color-primary: hsl(var(--primary)); --color-primary-foreground: hsl(var(--primary-foreground)); --color-primary-border: var(--primary-border);
+  --color-secondary: hsl(var(--secondary)); --color-secondary-foreground: hsl(var(--secondary-foreground)); --color-secondary-border: var(--secondary-border);
+  --color-muted: hsl(var(--muted)); --color-muted-foreground: hsl(var(--muted-foreground)); --color-muted-border: var(--muted-border);
+  --color-accent: hsl(var(--accent)); --color-accent-foreground: hsl(var(--accent-foreground)); --color-accent-border: var(--accent-border);
+  --color-destructive: hsl(var(--destructive)); --color-destructive-foreground: hsl(var(--destructive-foreground)); --color-destructive-border: var(--destructive-border);
+  --color-sidebar: hsl(var(--sidebar)); --color-sidebar-foreground: hsl(var(--sidebar-foreground)); --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-primary: hsl(var(--sidebar-primary)); --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground)); --color-sidebar-accent: hsl(var(--sidebar-accent)); --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground)); --color-sidebar-ring: hsl(var(--sidebar-ring));
+  --font-sans: var(--app-font-sans); --font-mono: var(--app-font-mono);
+  --radius-sm: calc(var(--radius) - 4px); --radius-md: calc(var(--radius) - 2px); --radius-lg: var(--radius); --radius-xl: calc(var(--radius) + 4px);
+}
+:root {
+  --background: 40 33% 97%; --foreground: 196 34% 16%; --border: 38 19% 86%;
+  --card: 40 33% 99%; --card-foreground: 196 34% 16%; --card-border: 38 19% 86%;
+  --sidebar: 194 39% 16%; --sidebar-foreground: 40 33% 96%; --sidebar-border: 194 30% 25%; --sidebar-primary: 43 95% 63%; --sidebar-primary-foreground: 194 39% 16%; --sidebar-accent: 194 30% 24%; --sidebar-accent-foreground: 40 33% 96%; --sidebar-ring: 43 95% 63%;
+  --popover: 40 33% 99%; --popover-foreground: 196 34% 16%; --popover-border: 38 19% 86%;
+  --primary: 193 47% 30%; --primary-foreground: 40 33% 98%;
+  --secondary: 40 27% 91%; --secondary-foreground: 196 34% 20%;
+  --muted: 40 20% 92%; --muted-foreground: 196 13% 45%;
+  --accent: 43 95% 63%; --accent-foreground: 194 39% 16%;
+  --destructive: 4 67% 49%; --destructive-foreground: 40 33% 98%;
+  --input: 38 19% 81%; --ring: 43 95% 55%;
+  --chart-1: 193 47% 30%; --chart-2: 43 95% 63%; --chart-3: 157 37% 39%; --chart-4: 4 67% 49%; --chart-5: 29 71% 55%;
+  --app-font-sans: 'Plus Jakarta Sans', sans-serif; --app-font-mono: 'DM Mono', monospace; --radius: .65rem;
+  --button-outline: rgba(20,51,61,.15); --badge-outline: rgba(20,51,61,.15); --elevate-1: rgba(20,51,61,.04); --elevate-2: rgba(20,51,61,.08); --opaque-button-border-intensity: -8;
+  --sidebar-primary-border: hsl(var(--sidebar-primary)); --sidebar-accent-border: hsl(var(--sidebar-accent)); --primary-border: hsl(var(--primary)); --secondary-border: hsl(var(--secondary)); --muted-border: hsl(var(--muted)); --accent-border: hsl(var(--accent)); --destructive-border: hsl(var(--destructive));
+}
+.dark { --background: 194 39% 10%; --foreground: 40 33% 95%; --card: 194 34% 14%; --card-foreground: 40 33% 95%; --card-border: 194 24% 25%; --border: 194 24% 25%; --sidebar: 194 45% 8%; --sidebar-foreground: 40 33% 95%; --sidebar-border: 194 24% 19%; --popover: 194 34% 14%; --popover-foreground: 40 33% 95%; --popover-border: 194 24% 25%; --primary: 43 95% 63%; --primary-foreground: 194 39% 12%; --secondary: 194 28% 22%; --secondary-foreground: 40 33% 95%; --muted: 194 28% 22%; --muted-foreground: 40 14% 70%; --accent: 193 47% 40%; --accent-foreground: 40 33% 98%; --destructive: 4 67% 55%; --destructive-foreground: 40 33% 98%; --input: 194 24% 30%; --ring: 43 95% 63%; --chart-1: 43 95% 63%; --chart-2: 193 47% 53%; --chart-3: 157 37% 50%; --chart-4: 4 67% 58%; --chart-5: 29 71% 62%; --sidebar-primary: 43 95% 63%; --sidebar-primary-foreground: 194 39% 12%; --sidebar-accent: 194 30% 19%; --sidebar-accent-foreground: 40 33% 95%; --sidebar-ring: 43 95% 63%; }
+@layer base { * { @apply border-border; } body { @apply font-sans antialiased bg-background text-foreground; } }
+@layer utilities {
+  .hover-elevate:hover { background-image: linear-gradient(var(--elevate-1),var(--elevate-1)); }
+  .active-elevate-2:active { background-image: linear-gradient(var(--elevate-2),var(--elevate-2)); }
+}
+html { scroll-behavior: smooth; }
+body { min-width: 320px; }
+.app-shell { background: radial-gradient(circle at 88% 6%, rgba(238,196,76,.12), transparent 26rem), hsl(var(--background)); }
+.grain::after { content:''; position:fixed; inset:0; pointer-events:none; opacity:.035; background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.5'/%3E%3C/svg%3E"); z-index:30; }
+.page-in { animation: pageIn .42s ease-out both; }
+@keyframes pageIn { from { opacity:0; transform:translateY(7px) } to { opacity:1; transform:translateY(0) } }
+.skeleton { background: linear-gradient(90deg,hsl(var(--muted)) 25%,hsl(var(--secondary)) 50%,hsl(var(--muted)) 75%); background-size:200% 100%; animation: shimmer 1.3s infinite; }
+@keyframes shimmer { to { background-position:-200% 0 } }
