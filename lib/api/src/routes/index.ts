@@ -172,3 +172,16 @@ router.get("/readyz", async (_req, res) => {
     res.json({ status: "degraded", db: { ok: false, error: (e as Error).message } });
   }
 });
+
+// Express 4 does not catch async handler rejections — wrap every route so DB
+// outages become 503s via the error middleware instead of crashing the process.
+for (const layer of (router as unknown as { stack: { route?: { stack: { handle: unknown }[] } } }).stack) {
+  const route = layer.route;
+  if (!route) continue;
+  for (const l of route.stack) {
+    const orig = l.handle as (req: unknown, res: unknown, next: (e?: unknown) => void) => unknown;
+    l.handle = (req: unknown, res: unknown, next: (e?: unknown) => void) =>
+      Promise.resolve(orig(req, res, next)).catch(next);
+  }
+}
+

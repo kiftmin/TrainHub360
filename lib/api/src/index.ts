@@ -12,6 +12,14 @@ app.use(express.json());
 app.use(authMiddleware);
 app.use(auditMiddleware);
 app.use("/api", router);
+app.use("/api", (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("[api] request failed:", err instanceof Error ? err.message : err);
+  if (res.headersSent) return;
+  res.status(503).json({ error: "service unavailable", hint: "MSSQL unreachable — check DATABASE_URL and network" });
+});
+
+process.on("unhandledRejection", (e) => console.error("[api] unhandled rejection (server stays up):", e));
+process.on("uncaughtException", (e) => console.error("[api] uncaught exception (server stays up):", e));
 
 const port = Number(process.env.PORT ?? 4000);
 if (process.env.NODE_ENV !== "test") {
