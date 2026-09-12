@@ -2,7 +2,7 @@
 import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
 import { render, cleanup } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { ReactNode } from "react";
+import type { ReactNode, ReactElement } from "react";
 import { Overview } from "@/pages/Overview";
 import { Learning } from "@/pages/Learning";
 import { Programmes } from "@/pages/Programmes";
@@ -21,7 +21,7 @@ function Providers({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={qc}>{children}</QueryClientProvider>;
 }
 
-const pages: [string, () => JSX.Element][] = [
+const pages: [string, () => ReactElement][] = [
   ["Overview", () => <Overview />],
   ["Learning", () => <Learning />],
   ["Programmes", () => <Programmes />],
