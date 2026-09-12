@@ -271,6 +271,38 @@ router.post("/courses/:id/attempts", async (req, res) => {
   return res.json({ appliedScore, recallScore, passed, competenceMet: passed, message: passed ? "competence met" : "below applied threshold" });
 });
 router.get("/sessions", async (_req, res) => res.json(await db.session.findMany({ take: 200 }).catch(() => [])));
+router.post("/sessions", requireRole("trainer", "admin", "owner"), async (req, res) => {
+  if (!req.body?.title || !req.body?.date || !req.body?.time) return res.status(400).json({ error: "title, date and time required" });
+  return res.status(201).json(await db.session.create({ data: { title: req.body.title, programme: req.body.programme ?? "", date: req.body.date, time: req.body.time, mode: req.body.mode ?? "online", capacity: req.body.capacity ?? null } }));
+});
+router.post("/sessions/:id/invite", requireRole("trainer", "admin", "owner"), async (req, res) => {
+  const session = await db.session.findUnique({ where: { id: req.params.id } });
+  if (!session) return res.status(404).json({ error: "session not found" });
+  const learnerIds = ((req.body?.learnerIds ?? []) as string[]).slice(0, 500);
+  let invited = 0;
+  for (const learnerId of learnerIds) {
+    const r = await db.sessionRSVP.upsert({
+      where: { id: `${session.id}:${learnerId}` },
+      create: { id: `${session.id}:${learnerId}`, sessionId: session.id, learnerId, status: "invited" },
+      update: {},
+    }).catch(() => null);
+    if (r) invited += 1;
+  }
+  return res.json({ sessionId: session.id, invited });
+});
+router.post("/sessions/:id/rsvp", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const { confirmRsvp, declineRsvp } = await import("../services/rsvp.js");
+  const learnerId = me.role === "learner" ? me.id : (req.body?.learnerId ?? me.id);
+  if (me.role === "learner" && learnerId !== me.id) return res.status(403).json({ error: "learners may only RSVP for themselves" });
+  try {
+    if (req.body?.status === "declined") return res.json(await declineRsvp(req.params.id, learnerId));
+    return res.json(await confirmRsvp(req.params.id, learnerId));
+  } catch (e) {
+    const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
+    return res.status(status).json({ error: (e as Error).message });
+  }
+});
 router.get("/threads", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const threads = await db.messageThread.findMany({ where: { OR: [{ programmeId: null }, { programme: { orgId: scope.orgId } }] }, take: 200, orderBy: { updatedAt: "desc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }).catch(() => []);

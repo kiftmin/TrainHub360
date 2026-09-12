@@ -155,6 +155,7 @@ model User {
   roles        UserRole[]
   cohorts      CohortMember[]
   certificates Certificate[]
+  rsvps        SessionRSVP[]
 
   @@map("users")
 }
@@ -334,7 +335,22 @@ model Session {
   mode      String @default("online")
   attendees Int    @default(0)
   status    String @default("scheduled")
+  capacity  Int?
+  rsvps     SessionRSVP[]
 
   @@map("sessions")
+}
+
+model SessionRSVP {
+  id          String    @id @default(cuid())
+  sessionId   String    @map("session_id")
+  session     Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  learnerId   String    @map("learner_id")
+  learner     User      @relation(fields: [learnerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  status      String    @default("invited")
+  respondedAt DateTime? @map("responded_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("session_rsvps")
 }
 
