@@ -40,6 +40,7 @@ import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
 import { Register } from '@/pages/Register';
 import { AiConceptExplainer } from '@/components/AiConceptExplainer';
+import { BulkImportButton } from '@/components/BulkImport';
 import {
   Activity, ArrowUpRight, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown,
   CircleAlert, Clock3, Download, FileCheck2, Gauge, GraduationCap, LayoutDashboard,
@@ -303,7 +304,7 @@ function People() {
     return [...map.values()].slice(0, 12);
   }, [enrolments.data]);
   return <div className="page-in">
-    <PageHeading eyebrow="People" title="Everyone moving forward." detail="Membership, progress, and accountability across the workspace." action={<Dialog open={inviteOpen} onOpenChange={setInviteOpen}><DialogTrigger asChild><Button><Plus className="size-4" />Invite learner</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Invite a learner</DialogTitle></DialogHeader><div className="space-y-4 pt-2"><Input placeholder="learner@company.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} /><Button className="w-full" onClick={() => setInviteOpen(false)}>Send invite (visual only)</Button><p className="text-xs text-muted-foreground">Invites are visual-only in this build and post nothing.</p></div></DialogContent></Dialog>} />
+    <PageHeading eyebrow="People" title="Everyone moving forward." detail="Membership, progress, and accountability across the workspace." action={<div className="flex items-center gap-2"><BulkImportButton /><Dialog open={inviteOpen} onOpenChange={setInviteOpen}><DialogTrigger asChild><Button><Plus className="size-4" />Invite learner</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Invite a learner</DialogTitle></DialogHeader><div className="space-y-4 pt-2"><Input placeholder="learner@company.com" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} /><Button className="w-full" onClick={() => setInviteOpen(false)}>Send invite (visual only)</Button><p className="text-xs text-muted-foreground">Invites are visual-only in this build and post nothing.</p></div></DialogContent></Dialog></div>} />
     <div className="grid gap-4 md:grid-cols-3">
       <KpiCard label="Learners" value={`${programmes.data?.reduce((a, p) => a + p.learnerCount, 0) ?? 0}`} detail="Across all programmes" icon={Users} />
       <KpiCard label="Enrolments" value={`${enrolments.data?.length ?? 0}`} detail="Tracked course enrolments" icon={BookOpen} />

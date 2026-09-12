@@ -145,6 +145,8 @@ model User {
   managerId String? @map("manager_id")
   manager   User?   @relation("Reports", fields: [managerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   reports   User[]  @relation("Reports")
+  department String? @db.NVarChar(256)
+  jobFunction String? @map("job_function") @db.NVarChar(256)
   enrolments   Enrolment[]
   roles        UserRole[]
 

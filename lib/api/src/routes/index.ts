@@ -344,6 +344,60 @@ router.post("/organizations/:id/verify-domain", async (req, res) => {
   const updated = await db.organization.update({ where: { id: org.id }, data: { domainVerified: true, domainVerificationToken: null } });
   return res.json({ orgId: updated.id, domainVerified: updated.domainVerified });
 });
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const DEFAULT_ROLE_MAPPING: Record<string, string> = { trainer: "trainer", facilitator: "trainer", admin: "admin", owner: "owner", stakeholder: "stakeholder" };
+router.post("/organizations/:id/learners/import", requireRole("admin", "owner"), async (req, res) => {
+  assertSameOrg(req as AuthedRequest, req.params.id);
+  const orgId = req.params.id;
+  const rows = (req.body?.rows ?? []) as { name?: string; email?: string; department?: string; jobFunction?: string; managerEmail?: string }[];
+  const roleMapping = { ...DEFAULT_ROLE_MAPPING, ...((req.body?.roleMapping ?? {}) as Record<string, string>) };
+  let created = 0;
+  let updated = 0;
+  let failed = 0;
+  const errors: { row: number; email?: string; error: string }[] = [];
+  const warnings: { row: number; email: string; warning: string }[] = [];
+  const validRoles = new Set(["owner", "admin", "trainer", "learner", "stakeholder"]);
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    if (!row.email || !EMAIL_RE.test(row.email)) {
+      failed += 1;
+      errors.push({ row: i, email: row.email, error: "invalid email" });
+      continue;
+    }
+    let managerId: string | null = null;
+    if (row.managerEmail) {
+      const manager = await db.user.findFirst({ where: { email: row.managerEmail, orgId } }).catch(() => null);
+      if (!manager) warnings.push({ row: i, email: row.email, warning: `unknown manager ${row.managerEmail} — imported with managerId null` });
+      else managerId = manager.id;
+    }
+    const mapped = validRoles.has(roleMapping[(row.jobFunction ?? "").toLowerCase()] ?? "") ? roleMapping[(row.jobFunction ?? "").toLowerCase()] : "learner";
+    try {
+      const existing = await db.user.findUnique({ where: { email: row.email } });
+      if (existing && existing.orgId !== orgId) throw new Error("email belongs to another organization");
+      let userId: string;
+      if (existing) {
+        await db.user.update({ where: { email: row.email }, data: { name: row.name ?? existing.name, department: row.department ?? undefined, jobFunction: row.jobFunction ?? undefined, managerId } });
+        updated += 1;
+        userId = existing.id;
+      } else {
+        const { hashPassword } = await import("../services/password.js");
+        const created_user = await db.user.create({ data: { orgId, name: row.name ?? row.email, email: row.email, passwordHash: await hashPassword(`invite-${Date.now().toString(36)}`), department: row.department ?? null, jobFunction: row.jobFunction ?? null, managerId } });
+        created += 1;
+        userId = created_user.id;
+      }
+      const programmeId = req.body?.programmeId as string | undefined;
+      if (programmeId && mapped !== "learner") {
+        await assertProgrammeInOrg(programmeId, orgId);
+        const role = await db.role.findUnique({ where: { name: mapped } }).catch(() => null);
+        if (role) await db.userRole.upsert({ where: { userId_roleId: { userId, roleId: role.id } }, create: { userId, roleId: role.id, programmeId }, update: { programmeId } }).catch(() => null);
+      }
+    } catch (e) {
+      failed += 1;
+      errors.push({ row: i, email: row.email, error: (e as Error).message });
+    }
+  }
+  return res.json({ created, updated, failed, errors, warnings });
+});
 router.get("/organizations/:id/review-credits", async (req, res) => {
   assertSameOrg(req as AuthedRequest, req.params.id);
   const setting = await db.reviewCreditSetting.findUnique({ where: { orgId: req.params.id } }).catch(() => null);
