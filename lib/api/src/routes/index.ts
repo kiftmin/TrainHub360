@@ -29,6 +29,9 @@ router.post("/auth/login", async (req, res) => {
   return res.json({ accessToken: token, user: { id: user.id, name: user.name, email: user.email, role, initials: user.name.slice(0, 2).toUpperCase() } });
 });
 router.post("/auth/sso", (req, res) => {
+  if (process.env.SSO_ENABLED !== "true") {
+    return res.status(501).json({ error: "SSO is not enabled — set SSO_ENABLED=true with a real SAML identity provider" });
+  }
   if (!req.body?.samlAssertion) return res.status(400).json({ error: "samlAssertion required" });
   const token = signToken({ id: "sso-user", role: "learner", orgId: "org1" });
   return res.json({ accessToken: token, user: { id: "sso-user", name: "SSO User", email: "sso@corp.com", role: "learner", initials: "SU" } });
