@@ -4,7 +4,7 @@ import { setSession } from "../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-export function Login({ onDone }: { onDone: () => void }) {
+export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?: () => void }) {
   const [email, setEmail] = useState("admin@example.com");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +68,11 @@ export function Login({ onDone }: { onDone: () => void }) {
           <Button className="w-full bg-primary text-primary-foreground" disabled={busy}>
             {busy ? "Signing in…" : "Sign in"}
           </Button>
+          {onRegister && (
+            <button type="button" onClick={onRegister} className="w-full text-center text-xs font-semibold text-primary hover:underline">
+              Create an organization
+            </button>
+          )}
           <p className="text-center font-mono text-[10px] text-muted-foreground">JWT stored in localStorage · th360_token</p>
         </form>
       </div>

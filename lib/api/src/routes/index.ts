@@ -321,6 +321,29 @@ function assertSameOrg(req: AuthedRequest, orgId: string) {
     throw err;
   }
 }
+router.post("/organizations", async (req, res) => {
+  const { name, adminEmail, adminName, domain, adminPassword } = req.body ?? {};
+  if (!name || !adminEmail || !adminName) return res.status(400).json({ error: "name, adminEmail and adminName required" });
+  if (!adminPassword) return res.status(400).json({ error: "adminPassword required" });
+  const existing = await db.user.findUnique({ where: { email: adminEmail } }).catch(() => null);
+  if (existing) return res.status(409).json({ error: "email already registered" });
+  const token = `verify-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const org = await db.organization.create({ data: { name, domain: domain ?? null, domainVerificationToken: token } });
+  const { hashPassword } = await import("../services/password.js");
+  const ownerRole = await db.role.findUnique({ where: { name: "owner" } }).catch(() => null);
+  const user = await db.user.create({ data: { orgId: org.id, name: adminName, email: adminEmail, passwordHash: await hashPassword(adminPassword) } });
+  if (ownerRole) await db.userRole.create({ data: { userId: user.id, roleId: ownerRole.id, programmeId: null } }).catch(() => null);
+  console.log(`[registration] org=${org.id} verify token=${token} (email send stubbed — no provider configured)`);
+  return res.status(201).json({ orgId: org.id, domainVerified: false, verificationToken: token });
+});
+router.post("/organizations/:id/verify-domain", async (req, res) => {
+  const org = await db.organization.findUnique({ where: { id: req.params.id } }).catch(() => null);
+  if (!org) return res.status(404).json({ error: "organization not found" });
+  if (org.id !== (req as AuthedRequest).user?.orgId) return res.status(403).json({ error: "cross-organization access denied" });
+  if (req.body?.token !== org.domainVerificationToken) return res.status(400).json({ error: "invalid verification token" });
+  const updated = await db.organization.update({ where: { id: org.id }, data: { domainVerified: true, domainVerificationToken: null } });
+  return res.json({ orgId: updated.id, domainVerified: updated.domainVerified });
+});
 router.get("/organizations/:id/review-credits", async (req, res) => {
   assertSameOrg(req as AuthedRequest, req.params.id);
   const setting = await db.reviewCreditSetting.findUnique({ where: { orgId: req.params.id } }).catch(() => null);

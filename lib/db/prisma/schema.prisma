@@ -24,6 +24,9 @@ model Organization {
   reviewCreditRequireManagerSignoff    Boolean   @default(true) @map("review_credit_require_manager_signoff")
   reviewCreditCollectApplicationScores Boolean   @default(true) @map("review_credit_collect_application_scores")
   webhookUrls  String    @default("[]") @map("webhook_urls") @db.NVarChar(Max)
+  domain       String?   @db.NVarChar(256)
+  domainVerified Boolean  @default(false) @map("domain_verified")
+  domainVerificationToken String? @map("domain_verification_token") @db.NVarChar(128)
   programmes                           Programme[]
   users                                User[]
   kpiSummaries                         KpiSummary[]

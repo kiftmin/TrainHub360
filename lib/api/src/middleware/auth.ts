@@ -3,6 +3,7 @@ import jwt from "jsonwebtoken";
 export interface AuthedRequest extends Request { user?: { id: string; role: string; orgId?: string } }
 export function authMiddleware(req: AuthedRequest, res: Response, next: NextFunction) {
   if (req.path === "/api/healthz" || req.path === "/api/auth/login" || req.path === "/api/auth/sso") return next();
+  if (req.method === "POST" && req.path === "/api/organizations") return next();
   const h = req.headers.authorization;
   if (!h?.startsWith("Bearer ")) return res.status(401).json({ error: "unauthorized" });
   try {

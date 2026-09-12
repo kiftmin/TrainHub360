@@ -38,6 +38,7 @@ import {
 import { getToken, clearSession, getSessionUser } from '@/api/client';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
+import { Register } from '@/pages/Register';
 import { AiConceptExplainer } from '@/components/AiConceptExplainer';
 import {
   Activity, ArrowUpRight, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown,
@@ -605,14 +606,17 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 
 export function App() {
   const [authed, setAuthed] = useState(() => !!getToken());
+  const [registering, setRegistering] = useState(false);
   return <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       {authed ? (
         <Shell onLogout={() => { clearSession(); setAuthed(false); }}>
           <RoutedErrorBoundary><Router /></RoutedErrorBoundary>
         </Shell>
+      ) : registering ? (
+        <Register onDone={() => setRegistering(false)} onBack={() => setRegistering(false)} />
       ) : (
-        <Login onDone={() => setAuthed(true)} />
+        <Login onDone={() => setAuthed(true)} onRegister={() => setRegistering(true)} />
       )}
       <Toaster />
     </TooltipProvider>
