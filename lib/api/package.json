@@ -7,7 +7,7 @@
         "build": "tsc -p tsconfig.json",
         "dev": "tsx src/index.ts",
         "start": "node dist/index.js",
-                    "test":  "node --test tests/reviewCredit.test.js tests/contentLifecycle.test.js tests/sla.test.js tests/nudge.test.js tests/phases.test.js tests/auth.test.js tests/tenant-isolation.test.js tests/rbac.test.js tests/lifecycle-job.test.js tests/registration.test.js tests/bulk-import.test.js tests/cohorts.test.js tests/certificates.test.js tests/rsvp.test.js",
+                    "test":  "node --test tests/reviewCredit.test.js tests/contentLifecycle.test.js tests/sla.test.js tests/nudge.test.js tests/phases.test.js tests/auth.test.js tests/tenant-isolation.test.js tests/rbac.test.js tests/lifecycle-job.test.js tests/registration.test.js tests/bulk-import.test.js tests/cohorts.test.js tests/certificates.test.js tests/rsvp.test.js tests/kpi-accuracy.test.js",
         "typecheck": "tsc --noEmit -p tsconfig.json"
     },
     "dependencies": {

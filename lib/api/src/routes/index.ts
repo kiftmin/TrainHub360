@@ -53,29 +53,8 @@ router.get("/workspace", async (req, res) => {
 });
 
 async function kpiPayload(orgId: string) {
-  const enrolments: { status: string; appliedAssessmentScore: number | null }[] = await db.enrolment.findMany({ where: { programme: { orgId } }, select: { status: true, appliedAssessmentScore: true } }).catch(() => []);
-  const kpis = computeKpis(enrolments.map((e) => ({ status: e.status, appliedScore: e.appliedAssessmentScore })));
-  const horizon = new Date();
-  horizon.setDate(horizon.getDate() + 30);
-  const expiring = await db.certificate.findMany({
-    where: { status: "active", expiresAt: { lte: horizon }, course: { programme: { orgId } } },
-    include: { course: { select: { title: true } }, learner: { select: { name: true } } },
-    orderBy: { expiresAt: "asc" },
-    take: 10,
-  }).catch(() => []);
-  return {
-    ...kpis,
-    complianceHealth: 92,
-    expiringCredentials: expiring.length,
-    weeklyActivity: [],
-    dropOffHeatmap: [],
-    expiringItems: expiring.map((c) => ({
-      name: c.learner.name,
-      course: c.course.title,
-      expires: c.expiresAt?.toISOString() ?? "",
-      status: c.expiresAt && c.expiresAt < new Date() ? "expired" : "expiring",
-    })),
-  };
+  const { buildDashboardSummary } = await import("../services/kpi.js");
+  return buildDashboardSummary(orgId);
 }
 router.get("/dashboard/summary", async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
 router.get("/kpi/summary", async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
@@ -258,6 +237,18 @@ router.post("/courses/:courseId/modules/:moduleId/explain", async (req, res) => 
   if (!mod) return res.status(404).json({ error: "module not found in your organization" });
   const course = await db.course.findUnique({ where: { id: req.params.courseId } }).catch(() => null);
   return res.json(await explainConcept({ courseTitle: course?.title ?? "Course", moduleTitle: mod.title, concept, userQuery }));
+});
+router.post("/courses/:id/feedback", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const rating = Number(req.body?.rating);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) return res.status(400).json({ error: "rating must be an integer 1-5" });
+  const scope = orgScope(req as AuthedRequest);
+  await assertCourseInOrg(req.params.id, scope.orgId);
+  if (me.role === "learner") {
+    const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: req.params.id } }).catch(() => null);
+    if (!enrolled) return res.status(403).json({ error: "enrolment required to leave feedback" });
+  }
+  return res.status(201).json(await db.courseFeedback.create({ data: { courseId: req.params.id, learnerId: me.id, rating, comment: req.body?.comment ?? null } }));
 });
 router.post("/courses/:id/attempts", async (req, res) => {
   const me = (req as AuthedRequest).user!;

@@ -51,8 +51,16 @@ export async function runKpiJob(orgId: string): Promise<Record<string, unknown>>
       competencyRate: Math.round((rows.filter((e) => (e.appliedAssessmentScore ?? 0) >= 70).length / total) * 100),
     };
   });
+  const withCourse = await db.enrolment.findMany({ where: { programmeId: { in: programmeIds } }, include: { course: { select: { appliedThreshold: true } } }, take: 5000 }).catch(() => []);
+  const trainers = await db.user.findMany({ where: { orgId, roles: { some: { role: { name: "trainer" } } } }, select: { id: true, name: true } }).catch(() => []);
+  const bookings = await db.booking.findMany({ take: 1000 }).catch(() => []);
+  const feedback = await db.courseFeedback.findMany({ where: { course: { programme: { orgId } } }, take: 2000 }).catch(() => []);
+  const { timeToCompetencyDays, trainerUtilizationRate, satisfactionScore } = await import("../services/kpi.js");
   const payload = {
     ...computeKpis(enrolments.map((e) => ({ status: e.status, appliedScore: e.appliedAssessmentScore }))),
+    timeToCompetency: timeToCompetencyDays(withCourse.map((e) => ({ createdAt: e.createdAt, completionDate: e.completionDate, appliedAssessmentScore: e.appliedAssessmentScore, appliedThreshold: e.course.appliedThreshold }))) ?? 0,
+    trainerUtilization: trainerUtilizationRate(trainers, bookings.map((b) => b.trainer)),
+    satisfaction: satisfactionScore(feedback.map((f) => f.rating)),
     retention: retentionDecay(
       enrolments.filter((e) => e.appliedAssessmentScore != null).map((e) => ({ immediateScore: e.appliedAssessmentScore, delayedScore: e.applicationScore ?? null })),
     ),
