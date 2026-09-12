@@ -55,7 +55,27 @@ router.get("/workspace", async (req, res) => {
 async function kpiPayload(orgId: string) {
   const enrolments: { status: string; appliedAssessmentScore: number | null }[] = await db.enrolment.findMany({ where: { programme: { orgId } }, select: { status: true, appliedAssessmentScore: true } }).catch(() => []);
   const kpis = computeKpis(enrolments.map((e) => ({ status: e.status, appliedScore: e.appliedAssessmentScore })));
-  return { ...kpis, complianceHealth: 92, expiringCredentials: 3, weeklyActivity: [], dropOffHeatmap: [], expiringItems: [] };
+  const horizon = new Date();
+  horizon.setDate(horizon.getDate() + 30);
+  const expiring = await db.certificate.findMany({
+    where: { status: "active", expiresAt: { lte: horizon }, course: { programme: { orgId } } },
+    include: { course: { select: { title: true } }, learner: { select: { name: true } } },
+    orderBy: { expiresAt: "asc" },
+    take: 10,
+  }).catch(() => []);
+  return {
+    ...kpis,
+    complianceHealth: 92,
+    expiringCredentials: expiring.length,
+    weeklyActivity: [],
+    dropOffHeatmap: [],
+    expiringItems: expiring.map((c) => ({
+      name: c.learner.name,
+      course: c.course.title,
+      expires: c.expiresAt?.toISOString() ?? "",
+      status: c.expiresAt && c.expiresAt < new Date() ? "expired" : "expiring",
+    })),
+  };
 }
 router.get("/dashboard/summary", async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
 router.get("/kpi/summary", async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
@@ -126,6 +146,10 @@ router.patch("/enrolments/:id", async (req, res) => {
   const merged = { ...current, ...patch };
   const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: merged.appliedAssessmentScore ?? null, completionDate: merged.completionDate ?? null, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
   const e = await db.enrolment.update({ where: { id: req.params.id }, data: { status: patch.status ?? undefined, appliedAssessmentScore: patch.appliedAssessmentScore ?? undefined, applicationScore: patch.applicationScore ?? undefined, timelinessScore: b, enrolmentScore: score, managerSignOff: patch.managerSignOff ?? undefined, managerSignOffBy: signOffBy ?? undefined, managerSignOffAt: signOffAt ?? undefined } });
+  if (patch.status === "completed") {
+    const { issueCertificateForEnrolment } = await import("../services/certificates.js");
+    await issueCertificateForEnrolment(e.id).catch(() => null);
+  }
   return res.json(e);
 });
 router.delete("/enrolments/:id", requireRole("admin", "owner"), async (req, res) => {
@@ -290,6 +314,19 @@ router.post("/bookings", async (req, res) => {
   return res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, course: req.body.course ?? "", date: req.body.date, time: req.body.time } }));
 });
 router.get("/calendar", async (_req, res) => res.json(await db.calendarEvent.findMany({ take: 500 }).catch(() => [])));
+router.get("/certificates", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  if (me.role === "learner") {
+    res.json(await db.certificate.findMany({ where: { learnerId: me.id }, include: { course: { select: { title: true } } }, orderBy: { issuedAt: "desc" }, take: 200 }).catch(() => []));
+  } else {
+    res.json(await db.certificate.findMany({ where: { course: { programme: { orgId: scope.orgId } } }, include: { course: { select: { title: true } }, learner: { select: { name: true, email: true } } }, orderBy: { expiresAt: "asc" }, take: 500 }).catch(() => []));
+  }
+});
+router.post("/certificates/check-expiry", requireRole("admin", "owner"), async (req, res) => {
+  const { runCertificateExpiryJob } = await import("../jobs/certificateExpiryJob.js");
+  res.json(await runCertificateExpiryJob(Number(req.body?.withinDays ?? 30)));
+});
 router.get("/cohorts", requireRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   res.json(await db.cohort.findMany({ where: { orgId: scope.orgId }, include: { members: { include: { user: { select: { id: true, name: true, email: true } } } } }, take: 200 }).catch(() => []));

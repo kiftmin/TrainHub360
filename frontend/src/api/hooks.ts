@@ -350,6 +350,20 @@ export function useEnrolments() {
   return useQuery(queryOpts(qk.enrolments, () => api<Enrolment[]>('/enrolments')));
 }
 
+export interface Certificate {
+  id: string;
+  status: string;
+  issuedAt: string;
+  expiresAt: string | null;
+  certificateNumber: string;
+  course?: { title: string };
+  learner?: { name: string; email: string };
+}
+
+export function useCertificates() {
+  return useQuery(queryOpts(['certificates'] as const, () => api<Certificate[]>('/certificates')));
+}
+
 export async function downloadReviewCreditCsv(): Promise<void> {
   const csv = await api<string>('/review-credit/export');
   const blob = new Blob([csv], { type: 'text/csv' });

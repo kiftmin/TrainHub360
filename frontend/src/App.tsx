@@ -31,6 +31,7 @@ import {
   useUpdateReviewCreditSettings,
   useAuditLogs,
   useEnrolments,
+  useCertificates,
   downloadReviewCreditCsv,
   type Course,
   type ReviewCreditSettings,
@@ -323,6 +324,7 @@ function People() {
 function MyLearning() {
   const courses = useCourses();
   const events = useCalendarEvents();
+  const certs = useCertificates();
   const active = (courses.data || []).filter((c) => c.status !== 'archived').slice(0, 4);
   const done = (courses.data || []).filter((c) => c.progress >= 100);
   return <div className="page-in">
@@ -341,7 +343,9 @@ function MyLearning() {
           : <div className="mt-4 space-y-2">{(events.data || []).slice(0, 4).map((e) => <div key={e.id} className="flex items-center gap-3 rounded-lg bg-secondary/55 p-3"><div className="grid size-8 place-items-center rounded-lg bg-primary/10 text-primary"><CalendarDays className="size-4" /></div><div className="min-w-0"><p className="truncate text-sm font-semibold">{e.title}</p><p className="text-xs text-muted-foreground">{fmtDate(e.date)} · {e.time}</p></div></div>)}
           {!events.data?.length && <EmptyState title="No sessions scheduled" detail="Book coaching from the calendar." />}</div>}
         </section>
-        <section className="rounded-xl border border-border/80 bg-primary p-5 text-primary-foreground"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-primary-foreground/60">Certificates</p><h2 className="mt-1 text-lg font-bold">{done.length} earned</h2><p className="mt-1 text-xs text-primary-foreground/65">Completed courses issue a verifiable certificate.</p></section>
+        <section className="rounded-xl border border-border/80 bg-primary p-5 text-primary-foreground"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-primary-foreground/60">Certificates</p><h2 className="mt-1 text-lg font-bold">{certs.data?.length ?? done.length} earned</h2><p className="mt-1 text-xs text-primary-foreground/65">Completed courses issue a verifiable certificate.</p>
+          {certs.data && certs.data.length > 0 && <div className="mt-3 space-y-2">{certs.data.slice(0, 4).map((c) => <div key={c.id} className="rounded-lg bg-primary-foreground/10 p-2.5 text-xs"><p className="font-semibold">{c.course?.title ?? 'Course'}</p><p className="opacity-70">Issued {fmtDate(c.issuedAt)}{c.expiresAt ? ` · expires ${fmtDate(c.expiresAt)}` : ''} · {c.status}</p></div>)}</div>}
+        </section>
       </div>
     </div>
   </div>;
