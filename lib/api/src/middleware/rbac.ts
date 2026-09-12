@@ -62,9 +62,9 @@ export async function isOrgStaff(userId: string): Promise<boolean> {
 // grant — a UserRole row with programmeId NULL — bypasses the per-programme
 // check so org owners can act across programmes (§4: one person can hold
 // multiple roles). Programme-scoped admins do NOT bypass: their grant only
-// covers their own programme. Whether `owner` should be hard-blocked from
-// training content entirely is an open product decision (see Phase 2.3); until
-// it is confirmed, the org-wide bypass stands and is logged here deliberately.
+// covers their own programme. Business decision (Phase 2.3, confirmed
+// 2026-09-12): the `owner` bypass stays — owners are NOT hard-blocked from
+// training content.
 export function requireProgrammeRole(...roles: string[]) {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
     const me = req.user;
