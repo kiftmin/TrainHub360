@@ -2,6 +2,7 @@ import { Router } from "express";
 import { calculateEnrolmentScore, aggregateReviewCredit, exportCSV } from "../services/reviewCredit.js";
 import { findCalendarGaps, sendNudges } from "../services/nudge.js";
 import { explainConcept } from "../services/aiExplainer.js";
+import { verifyLoginPassword } from "../services/password.js";
 import { signToken } from "../middleware/auth.js";
 import { requireRole } from "../middleware/rbac.js";
 import { computeKpis } from "../jobs/kpiJob.js";
@@ -18,13 +19,14 @@ export const router = Router();
 router.get("/healthz", (_req, res) => res.json({ status: "ok" }));
 
 router.post("/auth/login", async (req, res) => {
-  const { email } = req.body ?? {};
-  if (!email) return res.status(400).json({ error: "email required" });
+  const { email, password } = req.body ?? {};
+  if (!email || !password) return res.status(400).json({ error: "email and password required" });
   const user = await db.user.findUnique({ where: { email } }).catch(() => null);
-  const id = user?.id ?? "u1";
-  const role = (await db.userRole.findFirst({ where: { userId: id }, include: { role: true } }).catch(() => null))?.role.name ?? "admin";
-  const token = signToken({ id, role, orgId: user?.orgId ?? "org1" });
-  return res.json({ accessToken: token, user: { id, name: user?.name ?? "Admin", email, role, initials: (user?.name ?? "AD").slice(0, 2).toUpperCase() } });
+  const ok = await verifyLoginPassword(password, user?.passwordHash ?? null);
+  if (!ok || !user) return res.status(401).json({ error: "invalid credentials" });
+  const role = (await db.userRole.findFirst({ where: { userId: user.id }, include: { role: true } }).catch(() => null))?.role.name ?? "learner";
+  const token = signToken({ id: user.id, role, orgId: user.orgId });
+  return res.json({ accessToken: token, user: { id: user.id, name: user.name, email: user.email, role, initials: user.name.slice(0, 2).toUpperCase() } });
 });
 router.post("/auth/sso", (req, res) => {
   if (!req.body?.samlAssertion) return res.status(400).json({ error: "samlAssertion required" });

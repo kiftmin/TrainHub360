@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 
 export function Login({ onDone }: { onDone: () => void }) {
   const [email, setEmail] = useState("admin@example.com");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -17,7 +18,7 @@ export function Login({ onDone }: { onDone: () => void }) {
       const res = await fetch("/api/auth/login", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, password: "x" }),
+        body: JSON.stringify({ email, password }),
       });
       if (!res.ok) throw new Error(`Login failed (${res.status})`);
       const data = await res.json();
@@ -50,6 +51,16 @@ export function Login({ onDone }: { onDone: () => void }) {
               onChange={(e) => setEmail(e.target.value)}
               placeholder="you@company.com"
               type="email"
+              required
+            />
+          </label>
+          <label className="block text-xs font-semibold">Password
+            <Input
+              className="mt-2"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              type="password"
               required
             />
           </label>

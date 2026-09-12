@@ -1,9 +1,15 @@
 import { PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
 
 const db = new PrismaClient();
 
 const adminEmail = process.env.SEED_ADMIN_EMAIL ?? "admin@example.com";
 const adminName = process.env.SEED_ADMIN_NAME ?? "Admin";
+const adminPassword = process.env.SEED_ADMIN_PASSWORD ?? "ChangeMe123!";
+
+if (!process.env.SEED_ADMIN_PASSWORD) {
+  console.warn("[seed] SEED_ADMIN_PASSWORD not set — using local-dev default. Set a real password via env.");
+}
 
 async function main() {
   const org = await db.organization.upsert({
@@ -22,10 +28,11 @@ async function main() {
     update: {},
   });
 
+  const passwordHash = await bcrypt.hash(adminPassword, 10);
   const user = await db.user.upsert({
     where: { email: adminEmail },
-    create: { orgId: org.id, name: adminName, email: adminEmail, passwordHash: "" },
-    update: { name: adminName },
+    create: { orgId: org.id, name: adminName, email: adminEmail, passwordHash },
+    update: { name: adminName, passwordHash },
   });
 
   const adminRole = await db.role.findUniqueOrThrow({ where: { name: "admin" } });
