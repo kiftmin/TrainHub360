@@ -4,7 +4,7 @@ import { findCalendarGaps, sendNudges } from "../services/nudge.js";
 import { explainConcept } from "../services/aiExplainer.js";
 import { verifyLoginPassword } from "../services/password.js";
 import { signToken } from "../middleware/auth.js";
-import { requireRole } from "../middleware/rbac.js";
+import { requireRole, requireProgrammeRole, isProgrammeStaff, isOrgStaff } from "../middleware/rbac.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -82,7 +82,7 @@ async function assertCourseInOrg(courseId: string, orgId: string) {
 }
 
 router.get("/enrolments", async (req, res) => res.json(await db.enrolment.findMany({ where: { programme: orgScope(req as AuthedRequest) }, take: 200 })));
-router.post("/enrolments", async (req, res) => {
+router.post("/enrolments", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const course = await assertCourseInOrg(req.body.courseId, scope.orgId);
   const learner = await db.user.findFirst({ where: { id: req.body.learnerId, orgId: scope.orgId } });
@@ -96,12 +96,28 @@ router.post("/enrolments", async (req, res) => {
   return res.status(201).json(e);
 });
 router.patch("/enrolments/:id", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   const current = await db.enrolment.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } });
   if (!current) return res.status(404).json({ error: "not found" });
-  const merged = { ...current, ...req.body };
+  const isSelf = me.id === current.learnerId;
+  const staff = (await isOrgStaff(me.id)) || (await isProgrammeStaff(me.id, current.programmeId));
+  const patch = req.body ?? {};
+  if (patch.status !== undefined && !(isSelf || staff)) return res.status(403).json({ error: "only the learner or programme staff may update status" });
+  if ((patch.appliedAssessmentScore !== undefined || patch.applicationScore !== undefined) && !staff) {
+    return res.status(403).json({ error: "only programme trainers/admins may set scores" });
+  }
+  let signOffBy: string | undefined;
+  let signOffAt: Date | undefined;
+  if (patch.managerSignOff !== undefined) {
+    const learner = await db.user.findUnique({ where: { id: current.learnerId } }).catch(() => null);
+    if (!learner || learner.managerId !== me.id) return res.status(403).json({ error: "only the learner's line manager may sign off" });
+    signOffBy = me.id;
+    signOffAt = new Date();
+  }
+  const merged = { ...current, ...patch };
   const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: merged.appliedAssessmentScore ?? null, completionDate: merged.completionDate ?? null, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
-  const e = await db.enrolment.update({ where: { id: req.params.id }, data: { status: req.body.status ?? undefined, appliedAssessmentScore: req.body.appliedAssessmentScore ?? undefined, applicationScore: req.body.applicationScore ?? undefined, timelinessScore: b, enrolmentScore: score, managerSignOff: req.body.managerSignOff ?? undefined } });
+  const e = await db.enrolment.update({ where: { id: req.params.id }, data: { status: patch.status ?? undefined, appliedAssessmentScore: patch.appliedAssessmentScore ?? undefined, applicationScore: patch.applicationScore ?? undefined, timelinessScore: b, enrolmentScore: score, managerSignOff: patch.managerSignOff ?? undefined, managerSignOffBy: signOffBy ?? undefined, managerSignOffAt: signOffAt ?? undefined } });
   return res.json(e);
 });
 router.delete("/enrolments/:id", requireRole("admin", "owner"), async (req, res) => {
@@ -126,7 +142,7 @@ router.get("/programmes/:id/modules", async (req, res) => {
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
   res.json(await db.module.findMany({ where: { course: { programmeId: req.params.id, programme: { orgId: scope.orgId } }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
 });
-router.post("/programmes/:id/modules", async (req, res) => {
+router.post("/programmes/:id/modules", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.params.id, scope.orgId);
   let courseId = req.body.courseId;
@@ -143,7 +159,7 @@ router.get("/modules/:id/assessments", async (req, res) => {
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
   res.json(await db.assessment.findMany({ where: { moduleId: req.params.id, module: { course: { programme: { orgId: scope.orgId } } }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
 });
-router.post("/modules/:id/assessments", async (req, res) => {
+router.post("/modules/:id/assessments", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
   const mod = await db.module.findFirst({ where: { id: req.params.id, course: { programme: { orgId: scope.orgId } } } });
@@ -157,7 +173,7 @@ router.get("/courses", async (req, res) => {
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
   res.json(await db.course.findMany({ where: { programme: { orgId: scope.orgId }, ...(programmeId ? { programmeId } : {}), ...lifecycleFilter(includeArchived) }, take: 200 }).catch(() => []));
 });
-router.post("/courses", async (req, res) => {
+router.post("/courses", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.body.programmeId, scope.orgId);
   return res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
@@ -174,14 +190,14 @@ router.get("/courses", async (req, res) => {
 router.post("/courses", async (req, res) => {
   res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
 });
-router.post("/courses/:id/archive", requireRole("admin", "owner"), async (req, res) => {
+router.post("/courses/:id/archive", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertCourseInOrg(req.params.id, scope.orgId);
   const course = await db.course.update({ where: { id: req.params.id }, data: { isArchived: true, archivedAt: new Date() } });
   await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "POST /courses/:id/archive", entity: "course", entityId: course.id, details: null } }).catch(() => null);
   res.json(course);
 });
-router.delete("/courses/:id", requireRole("admin", "owner"), async (req, res) => {
+router.delete("/courses/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertCourseInOrg(req.params.id, scope.orgId);
   const course = await db.course.update({ where: { id: req.params.id }, data: { deletedAt: new Date() } });
@@ -202,10 +218,17 @@ router.post("/courses/:courseId/modules/:moduleId/explain", async (req, res) => 
   const course = await db.course.findUnique({ where: { id: req.params.courseId } }).catch(() => null);
   return res.json(await explainConcept({ courseTitle: course?.title ?? "Course", moduleTitle: mod.title, concept, userQuery }));
 });
-router.post("/courses/:id/attempts", (req, res) => {
+router.post("/courses/:id/attempts", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  if (me.role === "stakeholder") return res.status(403).json({ error: "stakeholders are read-only" });
+  if (me.role === "learner") {
+    const scope = orgScope(req as AuthedRequest);
+    const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: req.params.id, programme: { orgId: scope.orgId } } }).catch(() => null);
+    if (!enrolled) return res.status(403).json({ error: "enrolment required to submit attempts" });
+  }
   const { appliedScore = 0, recallScore = 0 } = req.body ?? {};
   const passed = appliedScore >= 70;
-  res.json({ appliedScore, recallScore, passed, competenceMet: passed, message: passed ? "competence met" : "below applied threshold" });
+  return res.json({ appliedScore, recallScore, passed, competenceMet: passed, message: passed ? "competence met" : "below applied threshold" });
 });
 router.get("/sessions", async (_req, res) => res.json(await db.session.findMany({ take: 200 }).catch(() => [])));
 router.get("/threads", async (req, res) => {
@@ -242,7 +265,14 @@ router.post("/threads/:id/messages", async (req, res) => {
 });
 router.get("/bookings", async (_req, res) => res.json(await db.booking.findMany({ take: 200 }).catch(() => [])));
 router.post("/bookings", async (req, res) => {
-  res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, course: req.body.course ?? "", date: req.body.date, time: req.body.time } }));
+  const me = (req as AuthedRequest).user!;
+  if (me.role === "stakeholder") return res.status(403).json({ error: "stakeholders are read-only" });
+  if (me.role === "learner") {
+    const scope = orgScope(req as AuthedRequest);
+    const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, programme: { orgId: scope.orgId } } }).catch(() => null);
+    if (!enrolled) return res.status(403).json({ error: "only enrolled learners may book sessions" });
+  }
+  return res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, course: req.body.course ?? "", date: req.body.date, time: req.body.time } }));
 });
 router.get("/calendar", async (_req, res) => res.json(await db.calendarEvent.findMany({ take: 500 }).catch(() => [])));
 

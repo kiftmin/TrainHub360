@@ -139,6 +139,9 @@ model User {
   createdAt    DateTime     @default(now()) @map("created_at")
   iCalFeedUrl  String?      @map("ical_feed_url") @db.NVarChar(1024)
   preferredNudgeDays String  @default("[\"MONDAY\",\"WEDNESDAY\",\"FRIDAY\"]") @map("preferred_nudge_days") @db.NVarChar(256)
+  managerId String? @map("manager_id")
+  manager   User?   @relation("Reports", fields: [managerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  reports   User[]  @relation("Reports")
   enrolments   Enrolment[]
   roles        UserRole[]
 
