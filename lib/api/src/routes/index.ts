@@ -9,7 +9,7 @@ import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
 import { dispatchWebhook } from "../services/webhook.js";
-import { db } from "../db.js";
+import { db, orgScope, orgIdOf } from "../db.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 type EnrolmentRow = Awaited<ReturnType<typeof db.enrolment.findMany>>[number];
 type Enrolment = EnrolmentRow;
@@ -35,8 +35,9 @@ router.post("/auth/sso", (req, res) => {
 });
 
 router.get("/workspace", async (req, res) => {
-  const org = await db.organization.findFirst().catch(() => null);
-  const programme = await db.programme.findFirst().catch(() => null);
+  const scope = orgScope(req as AuthedRequest);
+  const org = await db.organization.findUnique({ where: { id: scope.orgId } }).catch(() => null);
+  const programme = await db.programme.findFirst({ where: { orgId: scope.orgId } }).catch(() => null);
   const me = (req as AuthedRequest).user;
   const user = me ? await db.user.findUnique({ where: { id: me.id } }).catch(() => null) : null;
   res.json({
@@ -47,21 +48,56 @@ router.get("/workspace", async (req, res) => {
   });
 });
 
-async function kpiPayload() {
-  const enrolments = await db.enrolment.findMany({ select: { status: true, appliedAssessmentScore: true } }).catch(() => []);
+async function kpiPayload(orgId: string) {
+  const enrolments: { status: string; appliedAssessmentScore: number | null }[] = await db.enrolment.findMany({ where: { programme: { orgId } }, select: { status: true, appliedAssessmentScore: true } }).catch(() => []);
   const kpis = computeKpis(enrolments.map((e) => ({ status: e.status, appliedScore: e.appliedAssessmentScore })));
   return { ...kpis, complianceHealth: 92, expiringCredentials: 3, weeklyActivity: [], dropOffHeatmap: [], expiringItems: [] };
 }
-router.get("/dashboard/summary", async (_req, res) => res.json(await kpiPayload()));
-router.get("/kpi/summary", async (_req, res) => res.json(await kpiPayload()));
+router.get("/dashboard/summary", async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
+router.get("/kpi/summary", async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
 
-router.get("/enrolments", async (_req, res) => res.json(await db.enrolment.findMany({ take: 200 })));
+async function assertProgrammeInOrg(programmeId: string, orgId: string) {
+  const p = await db.programme.findFirst({ where: { id: programmeId, orgId } });
+  if (!p) {
+    const err = new Error("programme not found in your organization") as Error & { status?: number };
+    err.status = 404;
+    throw err;
+  }
+  return p;
+}
+function lifecycleFilter(includeArchived: boolean) {
+  return includeArchived ? { deletedAt: null } : { isArchived: false, deletedAt: null };
+}
+function canSeeArchived(role?: string) {
+  return role === "admin" || role === "owner";
+}
+async function assertCourseInOrg(courseId: string, orgId: string) {
+  const c = await db.course.findFirst({ where: { id: courseId, programme: { orgId } } });
+  if (!c) {
+    const err = new Error("course not found in your organization") as Error & { status?: number };
+    err.status = 404;
+    throw err;
+  }
+  return c;
+}
+
+router.get("/enrolments", async (req, res) => res.json(await db.enrolment.findMany({ where: { programme: orgScope(req as AuthedRequest) }, take: 200 })));
 router.post("/enrolments", async (req, res) => {
-  const e = await db.enrolment.create({ data: { learnerId: req.body.learnerId, courseId: req.body.courseId, programmeId: req.body.programmeId ?? (await db.course.findUnique({ where: { id: req.body.courseId } }).catch(() => null))?.programmeId ?? "", status: "enrolled", deadlineDate: req.body.deadlineDate ? new Date(req.body.deadlineDate) : null } });
-  res.status(201).json(e);
+  const scope = orgScope(req as AuthedRequest);
+  const course = await assertCourseInOrg(req.body.courseId, scope.orgId);
+  const learner = await db.user.findFirst({ where: { id: req.body.learnerId, orgId: scope.orgId } });
+  if (!learner) {
+    const err = new Error("learner not found in your organization") as Error & { status?: number };
+    err.status = 404;
+    throw err;
+  }
+  const e = await db.enrolment.create({ data: { learnerId: learner.id, courseId: course.id, programmeId: req.body.programmeId ?? course.programmeId, status: "enrolled", deadlineDate: req.body.deadlineDate ? new Date(req.body.deadlineDate) : null } });
+  if (e.programmeId) await assertProgrammeInOrg(e.programmeId, scope.orgId);
+  return res.status(201).json(e);
 });
 router.patch("/enrolments/:id", async (req, res) => {
-  const current = await db.enrolment.findUnique({ where: { id: req.params.id } });
+  const scope = orgScope(req as AuthedRequest);
+  const current = await db.enrolment.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } });
   if (!current) return res.status(404).json({ error: "not found" });
   const merged = { ...current, ...req.body };
   const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: merged.appliedAssessmentScore ?? null, completionDate: merged.completionDate ?? null, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
@@ -69,39 +105,62 @@ router.patch("/enrolments/:id", async (req, res) => {
   return res.json(e);
 });
 router.delete("/enrolments/:id", requireRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const existing = await db.enrolment.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } });
+  if (!existing) return res.status(404).json({ error: "not found" });
   await db.enrolment.delete({ where: { id: req.params.id } }).catch(() => null);
-  res.status(204).end();
+  return res.status(204).end();
 });
 router.get("/enrolments/:id/score", async (req, res) => {
-  const e = await db.enrolment.findUnique({ where: { id: req.params.id } });
+  const scope = orgScope(req as AuthedRequest);
+  const e = await db.enrolment.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } });
   if (!e) return res.status(404).json({ error: "not found" });
   const r = calculateEnrolmentScore({ appliedAssessmentScore: e.appliedAssessmentScore, completionDate: e.completionDate, deadlineDate: e.deadlineDate, applicationScore: e.applicationScore });
   return res.json({ enrolmentId: req.params.id, score: r.score, breakdown: r });
 });
 
-router.get("/programmes", async (_req, res) => res.json(await db.programme.findMany({ take: 200 }).catch(() => [])));
-function lifecycleFilter(includeArchived: boolean) {
-  return includeArchived ? { deletedAt: null } : { isArchived: false, deletedAt: null };
-}
-function canSeeArchived(role?: string) {
-  return role === "admin" || role === "owner";
-}
+router.get("/programmes", async (req, res) => res.json(await db.programme.findMany({ where: orgScope(req as AuthedRequest), take: 200 }).catch(() => [])));
 router.get("/programmes/:id/modules", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
-  res.json(await db.module.findMany({ where: { course: { programmeId: req.params.id }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
+  res.json(await db.module.findMany({ where: { course: { programmeId: req.params.id, programme: { orgId: scope.orgId } }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
 });
 router.post("/programmes/:id/modules", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
   let courseId = req.body.courseId;
+  if (courseId) await assertCourseInOrg(courseId, scope.orgId);
   if (!courseId) {
-    const first = await db.course.findFirst({ where: { programmeId: req.params.id } }).catch(() => null);
+    const first = await db.course.findFirst({ where: { programmeId: req.params.id, programme: { orgId: scope.orgId } } }).catch(() => null);
     if (!first) return res.status(400).json({ error: "courseId required (no courses in programme yet)" });
     courseId = first.id;
   }
   return res.status(201).json(await db.module.create({ data: { courseId, title: req.body.title ?? "New module" } }));
 });
 router.get("/modules/:id/assessments", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
-  res.json(await db.assessment.findMany({ where: { moduleId: req.params.id, ...lifecycleFilter(includeArchived) } }).catch(() => []));
+  res.json(await db.assessment.findMany({ where: { moduleId: req.params.id, module: { course: { programme: { orgId: scope.orgId } } }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
+});
+router.post("/modules/:id/assessments", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
+  const mod = await db.module.findFirst({ where: { id: req.params.id, course: { programme: { orgId: scope.orgId } } } });
+  if (!mod) return res.status(404).json({ error: "module not found in your organization" });
+  return res.status(201).json(await db.assessment.create({ data: { moduleId: mod.id, type: req.body.type ?? "recall", maxScore: req.body.maxScore ?? 100 } }));
+});
+router.get("/courses", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const programmeId = req.query.programmeId as string | undefined;
+  if (programmeId) await assertProgrammeInOrg(programmeId, scope.orgId);
+  const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
+  res.json(await db.course.findMany({ where: { programme: { orgId: scope.orgId }, ...(programmeId ? { programmeId } : {}), ...lifecycleFilter(includeArchived) }, take: 200 }).catch(() => []));
+});
+router.post("/courses", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.body.programmeId, scope.orgId);
+  return res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
 });
 router.post("/modules/:id/assessments", async (req, res) => {
   if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
@@ -116,11 +175,15 @@ router.post("/courses", async (req, res) => {
   res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
 });
 router.post("/courses/:id/archive", requireRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertCourseInOrg(req.params.id, scope.orgId);
   const course = await db.course.update({ where: { id: req.params.id }, data: { isArchived: true, archivedAt: new Date() } });
   await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "POST /courses/:id/archive", entity: "course", entityId: course.id, details: null } }).catch(() => null);
   res.json(course);
 });
 router.delete("/courses/:id", requireRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertCourseInOrg(req.params.id, scope.orgId);
   const course = await db.course.update({ where: { id: req.params.id }, data: { deletedAt: new Date() } });
   await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "DELETE /courses/:id", entity: "course", entityId: course.id, details: null } }).catch(() => null);
   res.status(204).end();
@@ -133,9 +196,10 @@ router.post("/courses/:courseId/modules/:moduleId/explain", async (req, res) => 
     const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: req.params.courseId } }).catch(() => null);
     if (!enrolled) return res.status(403).json({ error: "enrolment required" });
   }
+  const scope = orgScope(req as AuthedRequest);
+  const mod = await db.module.findFirst({ where: { id: req.params.moduleId, courseId: req.params.courseId, course: { programme: { orgId: scope.orgId } } } }).catch(() => null);
+  if (!mod) return res.status(404).json({ error: "module not found in your organization" });
   const course = await db.course.findUnique({ where: { id: req.params.courseId } }).catch(() => null);
-  const mod = await db.module.findUnique({ where: { id: req.params.moduleId } }).catch(() => null);
-  if (!mod) return res.status(404).json({ error: "module not found" });
   return res.json(await explainConcept({ courseTitle: course?.title ?? "Course", moduleTitle: mod.title, concept, userQuery }));
 });
 router.post("/courses/:id/attempts", (req, res) => {
@@ -144,14 +208,27 @@ router.post("/courses/:id/attempts", (req, res) => {
   res.json({ appliedScore, recallScore, passed, competenceMet: passed, message: passed ? "competence met" : "below applied threshold" });
 });
 router.get("/sessions", async (_req, res) => res.json(await db.session.findMany({ take: 200 }).catch(() => [])));
-router.get("/threads", async (_req, res) => {
-  const threads = await db.messageThread.findMany({ take: 200, orderBy: { updatedAt: "desc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }).catch(() => []);
+router.get("/threads", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const threads = await db.messageThread.findMany({ where: { OR: [{ programmeId: null }, { programme: { orgId: scope.orgId } }] }, take: 200, orderBy: { updatedAt: "desc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }).catch(() => []);
   res.json(threads.map((t) => ({ ...t, averageResponseTimeHours: avgResponseHours(t.messages.map((m) => ({ author: m.author, createdAt: m.createdAt }))), slaStatus: slaStatusFor(t as SlaThread, avgResponseHours(t.messages.map((m) => ({ author: m.author, createdAt: m.createdAt })))) })));
 });
+async function assertThreadVisible(threadId: string, orgId: string) {
+  const t = await db.messageThread.findFirst({ where: { id: threadId, OR: [{ programmeId: null }, { programme: { orgId } }] } });
+  if (!t) {
+    const err = new Error("thread not found in your organization") as Error & { status?: number };
+    err.status = 404;
+    throw err;
+  }
+  return t;
+}
 router.get("/threads/:id/messages", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertThreadVisible(req.params.id, scope.orgId);
   res.json(await db.message.findMany({ where: { threadId: req.params.id }, orderBy: { createdAt: "asc" } }).catch(() => []));
 });
 router.post("/threads/:id/messages", async (req, res) => {
+  await assertThreadVisible(req.params.id, orgIdOf(req as AuthedRequest));
   const role = (req as AuthedRequest).user?.role ?? req.body.authorRole ?? "learner";
   const isLearner = role === "learner";
   const msg = await db.message.create({ data: { threadId: req.params.id, author: req.body.author ?? role, body: req.body.body, urgent: req.body.urgent ?? false } });
@@ -171,25 +248,33 @@ router.get("/calendar", async (_req, res) => res.json(await db.calendarEvent.fin
 
 const defaultSettings = { enabled: false, maxWeighting: 10, assessmentWeight: 50, timelinessWeight: 30, applicationWeight: 20, requireManagerSignoff: true, collectApplicationScores: true, eligibleProgrammeTypes: ["Professional Development", "Certification"] };
 router.get("/review-credit/settings", async (req, res) => {
-  const orgId = (req.query.orgId as string) ?? (await db.organization.findFirst({ select: { id: true } }).catch(() => null))?.id ?? "org1";
+  const orgId = orgIdOf(req as AuthedRequest);
   const s = await db.reviewCreditSetting.findUnique({ where: { orgId } }).catch(() => null);
   if (!s) return res.json({ ...defaultSettings, orgId });
   return res.json({ enabled: !!s.enabled, maxWeighting: s.maxWeighting, assessmentWeight: s.assessmentWeight, timelinessWeight: s.timelinessWeight, applicationWeight: s.applicationWeight, requireManagerSignoff: true, collectApplicationScores: true, eligibleProgrammeTypes: defaultSettings.eligibleProgrammeTypes, orgId });
 });
 router.patch("/review-credit/settings", requireRole("admin", "owner"), async (req, res) => {
-  const orgId = req.body.orgId ?? (await db.organization.findFirst({ select: { id: true } }).catch(() => null))?.id ?? "org1";
+  const orgId = orgIdOf(req as AuthedRequest);
   const s = await db.reviewCreditSetting.upsert({ where: { orgId }, create: { orgId, enabled: req.body.enabled ? 1 : 0, maxWeighting: req.body.maxWeighting ?? 10, assessmentWeight: req.body.assessmentWeight ?? 50, timelinessWeight: req.body.timelinessWeight ?? 30, applicationWeight: req.body.applicationWeight ?? 20 }, update: { enabled: req.body.enabled !== undefined ? (req.body.enabled ? 1 : 0) : undefined, maxWeighting: req.body.maxWeighting ?? undefined, assessmentWeight: req.body.assessmentWeight ?? undefined, timelinessWeight: req.body.timelinessWeight ?? undefined, applicationWeight: req.body.applicationWeight ?? undefined } });
   res.json(s);
 });
-router.get("/review-credit/export", async (_req, res) => {
-  const enrolments = await db.enrolment.findMany({ take: 1000 }).catch(() => []);
+router.get("/review-credit/export", async (req, res) => {
+  const enrolments: Enrolment[] = await db.enrolment.findMany({ where: { programme: orgScope(req as AuthedRequest) }, take: 1000 }).catch(() => []);
   const rows = enrolments.map((e) => ({ learnerId: e.learnerId, raw: e.enrolmentScore ?? 0, final: e.enrolmentScore ?? 0, signoff: e.managerSignOff ? "signed" : "pending" }));
   res.header("content-type", "text/csv");
   res.send(exportCSV(rows.length ? rows : [{ learnerId: "u1", raw: 82.18, final: 8.218, signoff: "pending" }]));
 });
+function assertSameOrg(req: AuthedRequest, orgId: string) {
+  if (req.user?.orgId !== orgId) {
+    const err = new Error("cross-organization access denied") as Error & { status?: number };
+    err.status = 403;
+    throw err;
+  }
+}
 router.get("/organizations/:id/review-credits", async (req, res) => {
+  assertSameOrg(req as AuthedRequest, req.params.id);
   const setting = await db.reviewCreditSetting.findUnique({ where: { orgId: req.params.id } }).catch(() => null);
-  const enrolments = await db.enrolment.findMany({ take: 1000 }).catch(() => []);
+  const enrolments = await db.enrolment.findMany({ where: { programme: { orgId: req.params.id } }, take: 1000 }).catch(() => []);
   const byLearner: Record<string, number[]> = {};
   for (const e of enrolments) {
     if (e.reviewCreditExcluded || e.enrolmentScore == null) continue;
@@ -202,9 +287,10 @@ router.get("/organizations/:id/review-credits", async (req, res) => {
   res.json(rows);
 });
 router.get("/organizations/:id/review-credits/export", requireRole("admin", "owner"), async (req, res) => {
+  assertSameOrg(req as AuthedRequest, req.params.id);
   const format = (req.query.format as string) === "csv" ? "csv" : "json";
   const setting = await db.reviewCreditSetting.findUnique({ where: { orgId: req.params.id } }).catch(() => null);
-  const enrolments = await db.enrolment.findMany({ take: 1000 }).catch(() => []);
+  const enrolments: Enrolment[] = await db.enrolment.findMany({ where: { programme: { orgId: req.params.id } }, take: 1000 }).catch(() => []);
   const byLearner: Record<string, Enrolment[]> = {};
   for (const e of enrolments) {
     if (e.reviewCreditExcluded || e.enrolmentScore == null) continue;
@@ -230,15 +316,18 @@ router.get("/organizations/:id/review-credits/export", requireRole("admin", "own
   return res.json(rows);
 });
 router.post("/review-credits/lock", requireRole("admin", "owner"), async (req, res) => {
-  const orgId = req.body.orgId ?? (await db.organization.findFirst({ select: { id: true } }).catch(() => null))?.id ?? "org1";
+  const orgId = orgIdOf(req as AuthedRequest);
   const now = new Date();
-  const updated = await db.enrolment.updateMany({ where: { reviewCreditLockedAt: null, reviewCreditExcluded: false }, data: { reviewCreditLockedAt: now } }).catch(() => ({ count: 0 }));
+  const updated = await db.enrolment.updateMany({ where: { reviewCreditLockedAt: null, reviewCreditExcluded: false, programme: { orgId } }, data: { reviewCreditLockedAt: now } }).catch(() => ({ count: 0 }));
   await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "REVIEW_CYCLE_LOCKED", entity: "organization", entityId: orgId, details: null } }).catch(() => null);
   const webhook = await dispatchWebhook(orgId, "review_credit_finalized", { lockedAt: now.toISOString(), lockedCount: updated.count });
   res.json({ orgId, lockedAt: now.toISOString(), lockedCount: updated.count, webhook });
 });
-router.get("/audit/logs", requireRole("admin", "owner"), async (_req, res) => {
-  res.json(await db.auditLog.findMany({ take: 200, orderBy: { timestamp: "desc" } }).catch(() => []));
+router.get("/audit/logs", requireRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const members = await db.user.findMany({ where: { orgId: scope.orgId }, select: { id: true } }).catch(() => []);
+  const ids = members.map((m) => m.id);
+  res.json(await db.auditLog.findMany({ where: { OR: [{ userId: null }, { userId: { in: ids } }] }, take: 200, orderBy: { timestamp: "desc" } }).catch(() => []));
 });
 router.post("/nudge/run", async (_req, res) => {
   const events = await db.calendarEvent.findMany({ take: 200 }).catch(() => []);

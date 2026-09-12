@@ -45,6 +45,7 @@ model Programme {
   budget       Float        @default(0)
   courses      Course[]
   enrolments   Enrolment[]
+  threads      MessageThread[]
 
   @@map("programmes")
 }
@@ -200,6 +201,7 @@ model MessageThread {
   context     String    @default("")
   participant String    @default("")
   programmeId String?   @map("programme_id")
+  programme   Programme? @relation(fields: [programmeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   urgent      Boolean   @default(false)
   slaBreached Boolean   @default(false) @map("sla_breached")
   slaHours              Int       @default(24) @map("sla_hours")

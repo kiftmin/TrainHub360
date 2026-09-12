@@ -15,7 +15,11 @@ app.use("/api", router);
 app.use("/api", (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("[api] request failed:", err instanceof Error ? err.message : err);
   if (res.headersSent) return;
-  res.status(503).json({ error: "service unavailable", hint: "MSSQL unreachable — check DATABASE_URL and network" });
+  const status = typeof err === "object" && err !== null && "status" in err && typeof (err as { status: unknown }).status === "number"
+    ? (err as { status: number }).status
+    : 503;
+  const message = err instanceof Error ? err.message : "service unavailable";
+  res.status(status).json(status === 503 ? { error: "service unavailable", hint: "MSSQL unreachable — check DATABASE_URL and network" } : { error: message });
 });
 
 process.on("unhandledRejection", (e) => console.error("[api] unhandled rejection (server stays up):", e));
