@@ -290,6 +290,43 @@ router.post("/bookings", async (req, res) => {
   return res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, course: req.body.course ?? "", date: req.body.date, time: req.body.time } }));
 });
 router.get("/calendar", async (_req, res) => res.json(await db.calendarEvent.findMany({ take: 500 }).catch(() => [])));
+router.get("/cohorts", requireRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  res.json(await db.cohort.findMany({ where: { orgId: scope.orgId }, include: { members: { include: { user: { select: { id: true, name: true, email: true } } } } }, take: 200 }).catch(() => []));
+});
+router.post("/cohorts", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  if (!req.body?.name) return res.status(400).json({ error: "name required" });
+  return res.status(201).json(await db.cohort.create({ data: { orgId: scope.orgId, name: req.body.name, department: req.body.department ?? null } }));
+});
+router.post("/cohorts/:id/members", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const cohort = await db.cohort.findFirst({ where: { id: req.params.id, orgId: scope.orgId } });
+  if (!cohort) return res.status(404).json({ error: "cohort not found in your organization" });
+  const userIds = ((req.body?.userIds ?? []) as string[]).slice(0, 500);
+  const members = await db.user.findMany({ where: { id: { in: userIds }, orgId: scope.orgId }, select: { id: true } }).catch(() => []);
+  let added = 0;
+  for (const m of members) {
+    const r = await db.cohortMember.upsert({ where: { cohortId_userId: { cohortId: cohort.id, userId: m.id } }, create: { cohortId: cohort.id, userId: m.id }, update: {} }).catch(() => null);
+    if (r) added += 1;
+  }
+  return res.json({ cohortId: cohort.id, added });
+});
+router.post("/cohorts/:id/enrol", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const cohort = await db.cohort.findFirst({ where: { id: req.params.id, orgId: scope.orgId }, include: { members: true } });
+  if (!cohort) return res.status(404).json({ error: "cohort not found in your organization" });
+  if (!req.body?.courseId) return res.status(400).json({ error: "courseId required" });
+  const course = await assertCourseInOrg(req.body.courseId, scope.orgId);
+  let created = 0;
+  for (const m of cohort.members) {
+    const existing = await db.enrolment.findFirst({ where: { learnerId: m.userId, courseId: course.id } }).catch(() => null);
+    if (existing) continue;
+    await db.enrolment.create({ data: { learnerId: m.userId, courseId: course.id, programmeId: course.programmeId, status: "enrolled" } }).catch(() => null);
+    created += 1;
+  }
+  return res.json({ cohortId: cohort.id, courseId: course.id, enrolled: created });
+});
 
 const defaultSettings = { enabled: false, maxWeighting: 10, assessmentWeight: 50, timelinessWeight: 30, applicationWeight: 20, requireManagerSignoff: true, collectApplicationScores: true, eligibleProgrammeTypes: ["Professional Development", "Certification"] };
 router.get("/review-credit/settings", async (req, res) => {

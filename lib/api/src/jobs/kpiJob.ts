@@ -35,14 +35,29 @@ export function costPerLearner(programmeBudget: number, totalActiveLearners: num
 
 export async function runKpiJob(orgId: string): Promise<Record<string, unknown>> {
   const programmes: Awaited<ReturnType<typeof db.programme.findMany>> = await db.programme.findMany({ where: { orgId } }).catch(() => []);
-  const enrolments: Awaited<ReturnType<typeof db.enrolment.findMany>> = await db.enrolment.findMany({ take: 5000 }).catch(() => []);
+  const programmeIds = programmes.map((p) => p.id);
+  const enrolments: Awaited<ReturnType<typeof db.enrolment.findMany>> = await db.enrolment.findMany({ where: { programmeId: { in: programmeIds } }, take: 5000 }).catch(() => []);
   const active = enrolments.filter((e) => e.status !== "completed");
+  const cohorts: { id: string; name: string; department: string | null; members: { userId: string }[] }[] = await db.cohort.findMany({ where: { orgId }, include: { members: { select: { userId: true } } } }).catch(() => []);
+  const coverageByCohort = cohorts.map((c) => {
+    const memberIds = new Set(c.members.map((m) => m.userId));
+    const rows = enrolments.filter((e) => memberIds.has(e.learnerId));
+    const total = rows.length || 1;
+    return {
+      cohortId: c.id,
+      name: c.name,
+      department: c.department,
+      completionRate: Math.round((rows.filter((e) => e.status === "completed").length / total) * 100),
+      competencyRate: Math.round((rows.filter((e) => (e.appliedAssessmentScore ?? 0) >= 70).length / total) * 100),
+    };
+  });
   const payload = {
     ...computeKpis(enrolments.map((e) => ({ status: e.status, appliedScore: e.appliedAssessmentScore }))),
     retention: retentionDecay(
       enrolments.filter((e) => e.appliedAssessmentScore != null).map((e) => ({ immediateScore: e.appliedAssessmentScore, delayedScore: e.applicationScore ?? null })),
     ),
     programmes: programmes.map((p) => ({ programmeId: p.id, costPerLearner: costPerLearner(p.budget, active.length) })),
+    coverageByCohort,
     computedAt: new Date().toISOString(),
   };
   await db.kpiSummary.create({ data: { orgId, payload: JSON.stringify(payload) } }).catch(() => null);

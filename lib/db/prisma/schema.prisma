@@ -30,6 +30,7 @@ model Organization {
   programmes                           Programme[]
   users                                User[]
   kpiSummaries                         KpiSummary[]
+  cohorts                              Cohort[]
 
   @@map("organizations")
 }
@@ -149,6 +150,7 @@ model User {
   jobFunction String? @map("job_function") @db.NVarChar(256)
   enrolments   Enrolment[]
   roles        UserRole[]
+  cohorts      CohortMember[]
 
   @@map("users")
 }
@@ -281,6 +283,27 @@ model ReviewCreditSetting {
   applicationWeight Float @default(20) @map("application_weight")
 
   @@map("review_credit_settings")
+}
+
+model Cohort {
+  id         String        @id @default(cuid())
+  orgId      String        @map("org_id")
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  name       String
+  department String?       @db.NVarChar(256)
+  members    CohortMember[]
+
+  @@map("cohorts")
+}
+
+model CohortMember {
+  cohortId String @map("cohort_id")
+  cohort   Cohort @relation(fields: [cohortId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  userId   String @map("user_id")
+  user     User   @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([cohortId, userId])
+  @@map("cohort_members")
 }
 
 model Session {
