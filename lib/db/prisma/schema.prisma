@@ -159,6 +159,8 @@ model User {
   certificates Certificate[]
   rsvps        SessionRSVP[]
   feedback     CourseFeedback[]
+  calendarConnections CalendarConnection[]
+  recognitions Recognition[]
 
   @@map("users")
 }
@@ -340,6 +342,30 @@ model CourseFeedback {
   submittedAt DateTime @default(now()) @map("submitted_at")
 
   @@map("course_feedback")
+}
+
+model CalendarConnection {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String
+  accessToken  String   @map("access_token") @db.NVarChar(Max)
+  refreshToken String?  @map("refresh_token") @db.NVarChar(Max)
+  calendarId   String?  @map("calendar_id") @db.NVarChar(512)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("calendar_connections")
+}
+
+model Recognition {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String
+  awardedAt DateTime @default(now()) @map("awarded_at")
+  context   String?  @db.NVarChar(1024)
+
+  @@map("recognitions")
 }
 
 model Session {

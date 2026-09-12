@@ -31,7 +31,7 @@ import {
   useUpdateReviewCreditSettings,
   useAuditLogs,
   useEnrolments,
-  useCertificates,
+  useCertificates, useRecognitions,
   downloadReviewCreditCsv,
   type Course,
   type ReviewCreditSettings,
@@ -73,6 +73,7 @@ export function MyLearning() {
   const courses = useCourses();
   const events = useCalendarEvents();
   const certs = useCertificates();
+  const recognitions = useRecognitions();
   const active = (courses.data || []).filter((c) => c.status !== 'archived').slice(0, 4);
   const done = (courses.data || []).filter((c) => c.progress >= 100);
   return <div className="page-in">
@@ -92,11 +93,13 @@ export function MyLearning() {
           {!events.data?.length && <EmptyState title="No sessions scheduled" detail="Book coaching from the calendar." />}</div>}
         </section>
         <section className="rounded-xl border border-border/80 bg-primary p-5 text-primary-foreground"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-primary-foreground/60">Certificates</p><h2 className="mt-1 text-lg font-bold">{certs.data?.length ?? done.length} earned</h2><p className="mt-1 text-xs text-primary-foreground/65">Completed courses issue a verifiable certificate.</p>
+          {recognitions.data && recognitions.data.length > 0 && <div className="mt-3 space-y-2">{recognitions.data.slice(0, 3).map((r) => <div key={r.id} className="rounded-lg bg-accent/20 p-2.5 text-xs"><p className="font-semibold">★ {r.type.replace(/_/g, ' ')}</p><p className="opacity-70">{fmtDate(r.awardedAt)}</p></div>)}</div>}
           {certs.data && certs.data.length > 0 && <div className="mt-3 space-y-2">{certs.data.slice(0, 4).map((c) => <div key={c.id} className="rounded-lg bg-primary-foreground/10 p-2.5 text-xs"><p className="font-semibold">{c.course?.title ?? 'Course'}</p><p className="opacity-70">Issued {fmtDate(c.issuedAt)}{c.expiresAt ? ` · expires ${fmtDate(c.expiresAt)}` : ''} · {c.status}</p></div>)}</div>}
         </section>
       </div>
     </div>
   </div>;
 }
+
 
 

@@ -126,8 +126,16 @@ router.patch("/enrolments/:id", async (req, res) => {
   const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: merged.appliedAssessmentScore ?? null, completionDate: merged.completionDate ?? null, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
   const e = await db.enrolment.update({ where: { id: req.params.id }, data: { status: patch.status ?? undefined, appliedAssessmentScore: patch.appliedAssessmentScore ?? undefined, applicationScore: patch.applicationScore ?? undefined, timelinessScore: b, enrolmentScore: score, managerSignOff: patch.managerSignOff ?? undefined, managerSignOffBy: signOffBy ?? undefined, managerSignOffAt: signOffAt ?? undefined } });
   if (patch.status === "completed") {
-    const { issueCertificateForEnrolment } = await import("../services/certificates.js");
+    const [{ issueCertificateForEnrolment }, { checkStreakRecognition }] = await Promise.all([
+      import("../services/certificates.js"),
+      import("../services/recognition.js"),
+    ]);
     await issueCertificateForEnrolment(e.id).catch(() => null);
+    await checkStreakRecognition(e.learnerId).catch(() => null);
+  }
+  if (patch.appliedAssessmentScore !== undefined) {
+    const { checkAppliedScoreRecognition } = await import("../services/recognition.js");
+    await checkAppliedScoreRecognition(e.id).catch(() => null);
   }
   return res.json(e);
 });
@@ -337,6 +345,41 @@ router.post("/bookings", async (req, res) => {
   return res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, course: req.body.course ?? "", date: req.body.date, time: req.body.time } }));
 });
 router.get("/calendar", async (_req, res) => res.json(await db.calendarEvent.findMany({ take: 500 }).catch(() => [])));
+router.get("/calendar/connections", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  res.json(await db.calendarConnection.findMany({ where: { userId: me.id }, select: { id: true, provider: true, calendarId: true, createdAt: true }, take: 20 }).catch(() => []));
+});
+router.post("/calendar/connections", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  if (!["microsoft", "google"].includes(req.body?.provider)) return res.status(400).json({ error: "provider must be microsoft|google" });
+  if (!req.body?.accessToken) return res.status(400).json({ error: "accessToken required (complete the OAuth flow first)" });
+  return res.status(201).json(await db.calendarConnection.create({ data: { userId: me.id, provider: req.body.provider, accessToken: req.body.accessToken, refreshToken: req.body.refreshToken ?? null, calendarId: req.body.calendarId ?? null } }));
+});
+router.delete("/calendar/connections/:id", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const existing = await db.calendarConnection.findFirst({ where: { id: req.params.id, userId: me.id } });
+  if (!existing) return res.status(404).json({ error: "not found" });
+  await db.calendarConnection.delete({ where: { id: req.params.id } }).catch(() => null);
+  return res.status(204).end();
+});
+router.post("/sessions/:id/sync-calendar", requireRole("trainer", "admin", "owner"), async (req, res) => {
+  const { syncSessionToCalendars } = await import("../services/calendarSync.js");
+  try {
+    return res.json(await syncSessionToCalendars(req.params.id));
+  } catch (e) {
+    const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
+    return res.status(status).json({ error: (e as Error).message });
+  }
+});
+router.get("/recognitions", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  if (me.role === "learner") {
+    res.json(await db.recognition.findMany({ where: { userId: me.id }, orderBy: { awardedAt: "desc" }, take: 100 }).catch(() => []));
+  } else {
+    res.json(await db.recognition.findMany({ where: { user: { orgId: scope.orgId } }, include: { user: { select: { name: true, email: true } } }, orderBy: { awardedAt: "desc" }, take: 200 }).catch(() => []));
+  }
+});
 router.get("/certificates", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);

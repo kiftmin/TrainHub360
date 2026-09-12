@@ -364,6 +364,17 @@ export function useCertificates() {
   return useQuery(queryOpts(['certificates'] as const, () => api<Certificate[]>('/certificates')));
 }
 
+export interface Recognition {
+  id: string;
+  type: string;
+  awardedAt: string;
+  context: string | null;
+}
+
+export function useRecognitions() {
+  return useQuery(queryOpts(['recognitions'] as const, () => api<Recognition[]>('/recognitions')));
+}
+
 export async function downloadReviewCreditCsv(): Promise<void> {
   const csv = await api<string>('/review-credit/export');
   const blob = new Blob([csv], { type: 'text/csv' });
