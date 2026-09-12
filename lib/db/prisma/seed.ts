@@ -18,7 +18,7 @@ async function main() {
     update: {},
   });
 
-  for (const name of ["owner", "admin", "trainer", "learner"]) {
+  for (const name of ["owner", "admin", "trainer", "learner", "stakeholder"]) {
     await db.role.upsert({ where: { name }, create: { id: name, name }, update: {} });
   }
 

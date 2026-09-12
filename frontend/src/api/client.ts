@@ -12,6 +12,14 @@ export function clearSession() {
   localStorage.removeItem("th360_user");
 }
 
+export function getSessionUser(): { id?: string; role?: string; name?: string } | null {
+  try {
+    return JSON.parse(localStorage.getItem("th360_user") ?? "null");
+  } catch {
+    return null;
+  }
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { "content-type": "application/json", ...(init?.headers as Record<string, string> ?? {}) };
   const token = getToken();

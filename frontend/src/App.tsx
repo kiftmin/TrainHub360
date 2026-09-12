@@ -35,7 +35,8 @@ import {
   type Course,
   type ReviewCreditSettings,
 } from '@/api/hooks';
-import { getToken, clearSession } from '@/api/client';
+import { getToken, clearSession, getSessionUser } from '@/api/client';
+import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
 import { AiConceptExplainer } from '@/components/AiConceptExplainer';
 import {
@@ -97,12 +98,15 @@ function PageHeading({ eyebrow, title, detail, action }: { eyebrow: string; titl
 
 function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
   const [location, setLocation] = useLocation();
+  const go = (href: string) => { setMobileOpen(false); setLocation(href); };
+  const isStakeholder = getSessionUser()?.role === 'stakeholder';
+  const visibleNav = isStakeholder ? [] : nav;
+  const visibleAdminNav = isStakeholder ? [] : adminNav;
+  const allNav = [...visibleNav, ...visibleAdminNav];
+  const active = allNav.find((n) => n.href === location) ?? (location.startsWith('/programmes') ? { href: '/programmes', label: 'Programmes' } : null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const workspace = useWorkspace();
   const user = workspace.data?.user;
-  const allNav = [...nav, ...adminNav];
-  const active = allNav.find((n) => n.href === location) ?? (location.startsWith('/programmes') ? { href: '/programmes', label: 'Programmes' } : null);
-  const go = (href: string) => { setMobileOpen(false); setLocation(href); };
   return <div className="grain app-shell min-h-[100dvh]">
     <aside className={cn('fixed inset-y-0 left-0 z-40 flex w-[244px] flex-col bg-sidebar px-4 py-5 text-sidebar-foreground transition-transform duration-300 lg:translate-x-0', mobileOpen ? 'translate-x-0' : '-translate-x-full')}>
       <div className="flex items-center justify-between px-2">
@@ -121,12 +125,12 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
         {workspace.data && workspace.data.dataSource !== 'mssql' && <p className="mt-2 rounded-md border border-sidebar-primary/20 bg-sidebar-primary/10 px-2 py-1.5 font-mono text-[9px] leading-relaxed text-sidebar-primary">Demo workspace · SQL Server unavailable</p>}
       </div>
       <nav className="mt-8 space-y-1" aria-label="Main navigation">
-        {nav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', (location === href || (href === '/programmes' && location.startsWith('/programmes'))) ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-sm' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px]" /><span>{label}</span>{label === 'Messages' && <span className="ml-auto size-1.5 rounded-full bg-sidebar-primary" />}</button>)}
+        {visibleNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', (location === href || (href === '/programmes' && location.startsWith('/programmes'))) ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-sm' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px]" /><span>{label}</span>{label === 'Messages' && <span className="ml-auto size-1.5 rounded-full bg-sidebar-primary" />}</button>)}
       </nav>
       <div className="my-7 h-px bg-sidebar-border" />
       <p className="px-3 font-mono text-[9px] uppercase tracking-[.2em] text-sidebar-foreground/40">Governance</p>
       <nav className="mt-2 space-y-1">
-        {adminNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', location === href ? 'bg-sidebar-primary text-sidebar-primary-foreground' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px]" /><span>{label}</span></button>)}
+        {visibleAdminNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', location === href ? 'bg-sidebar-primary text-sidebar-primary-foreground' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px]" /><span>{label}</span></button>)}
       </nav>
       <div className="mt-auto rounded-xl border border-sidebar-border bg-sidebar-accent/60 p-3">
         <div className="flex items-center gap-2">
@@ -575,6 +579,7 @@ function NotFound() {
 }
 
 function Router() {
+  if (getSessionUser()?.role === 'stakeholder') return <StakeholderDashboard />;
   return <Switch>
     <Route path="/" component={Overview} />
     <Route path="/learning" component={Learning} />
@@ -615,3 +620,4 @@ export function App() {
 }
 
 export default App;
+

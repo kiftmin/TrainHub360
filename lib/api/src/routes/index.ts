@@ -8,6 +8,7 @@ import { requireRole, requireProgrammeRole, isProgrammeStaff, isOrgStaff } from 
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
+import { runContentLifecycleJob } from "../jobs/contentLifecycleJob.js";
 import { dispatchWebhook } from "../services/webhook.js";
 import { db, orgScope, orgIdOf } from "../db.js";
 import type { AuthedRequest } from "../middleware/auth.js";
@@ -84,7 +85,11 @@ async function assertCourseInOrg(courseId: string, orgId: string) {
   return c;
 }
 
-router.get("/enrolments", async (req, res) => res.json(await db.enrolment.findMany({ where: { programme: orgScope(req as AuthedRequest) }, take: 200 })));
+router.get("/enrolments", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const only = await stakeholderProgrammes(req as AuthedRequest);
+  res.json(await db.enrolment.findMany({ where: { programme: scope, ...(only ? { programmeId: { in: only } } : {}) }, take: 200 }));
+});
 router.post("/enrolments", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const course = await assertCourseInOrg(req.body.courseId, scope.orgId);
@@ -138,7 +143,11 @@ router.get("/enrolments/:id/score", async (req, res) => {
   return res.json({ enrolmentId: req.params.id, score: r.score, breakdown: r });
 });
 
-router.get("/programmes", async (req, res) => res.json(await db.programme.findMany({ where: orgScope(req as AuthedRequest), take: 200 }).catch(() => [])));
+router.get("/programmes", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const only = await stakeholderProgrammes(req as AuthedRequest);
+  res.json(await db.programme.findMany({ where: { ...scope, ...(only ? { id: { in: only } } : {}) }, take: 200 }).catch(() => []));
+});
 router.get("/programmes/:id/modules", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.params.id, scope.orgId);
@@ -171,10 +180,15 @@ router.post("/modules/:id/assessments", requireProgrammeRole("admin", "owner"), 
 });
 router.get("/courses", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
+  const only = await stakeholderProgrammes(req as AuthedRequest);
   const programmeId = req.query.programmeId as string | undefined;
-  if (programmeId) await assertProgrammeInOrg(programmeId, scope.orgId);
+  if (programmeId) {
+    if (only && !only.includes(programmeId)) return res.status(403).json({ error: "outside your programme scope" });
+    await assertProgrammeInOrg(programmeId, scope.orgId);
+  }
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
-  res.json(await db.course.findMany({ where: { programme: { orgId: scope.orgId }, ...(programmeId ? { programmeId } : {}), ...lifecycleFilter(includeArchived) }, take: 200 }).catch(() => []));
+  const programmeFilter = programmeId ? { programmeId } : only ? { programmeId: { in: only } } : {};
+  return res.json(await db.course.findMany({ where: { programme: { orgId: scope.orgId }, ...programmeFilter, ...lifecycleFilter(includeArchived) }, take: 200 }).catch(() => []));
 });
 router.post("/courses", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
@@ -223,7 +237,6 @@ router.post("/courses/:courseId/modules/:moduleId/explain", async (req, res) => 
 });
 router.post("/courses/:id/attempts", async (req, res) => {
   const me = (req as AuthedRequest).user!;
-  if (me.role === "stakeholder") return res.status(403).json({ error: "stakeholders are read-only" });
   if (me.role === "learner") {
     const scope = orgScope(req as AuthedRequest);
     const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: req.params.id, programme: { orgId: scope.orgId } } }).catch(() => null);
@@ -269,7 +282,6 @@ router.post("/threads/:id/messages", async (req, res) => {
 router.get("/bookings", async (_req, res) => res.json(await db.booking.findMany({ take: 200 }).catch(() => [])));
 router.post("/bookings", async (req, res) => {
   const me = (req as AuthedRequest).user!;
-  if (me.role === "stakeholder") return res.status(403).json({ error: "stakeholders are read-only" });
   if (me.role === "learner") {
     const scope = orgScope(req as AuthedRequest);
     const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, programme: { orgId: scope.orgId } } }).catch(() => null);
@@ -297,6 +309,11 @@ router.get("/review-credit/export", async (req, res) => {
   res.header("content-type", "text/csv");
   res.send(exportCSV(rows.length ? rows : [{ learnerId: "u1", raw: 82.18, final: 8.218, signoff: "pending" }]));
 });
+async function stakeholderProgrammes(req: AuthedRequest): Promise<string[] | null> {
+  if (req.user?.role !== "stakeholder") return null;
+  const grants = await db.userRole.findMany({ where: { userId: req.user.id, programmeId: { not: null } }, select: { programmeId: true } }).catch(() => []);
+  return grants.map((g) => g.programmeId as string);
+}
 function assertSameOrg(req: AuthedRequest, orgId: string) {
   if (req.user?.orgId !== orgId) {
     const err = new Error("cross-organization access denied") as Error & { status?: number };
@@ -373,6 +390,9 @@ router.post("/sla/run", requireRole("admin", "owner"), async (_req, res) => {
 });
 router.post("/nudge/dispatch", requireRole("admin", "owner"), async (_req, res) => {
   res.json(await runNudgeJob());
+});
+router.post("/content-lifecycle/run", requireRole("admin", "owner"), async (_req, res) => {
+  res.json(await runContentLifecycleJob());
 });
 router.post("/help/ai", (req, res) => {
   if (!req.body?.question) return res.status(400).json({ error: "question required" });

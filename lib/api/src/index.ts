@@ -4,13 +4,22 @@ import cors from "cors";
 import { router } from "./routes/index.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { auditMiddleware } from "./middleware/audit.js";
+import type { AuthedRequest } from "./middleware/auth.js";
 import { scheduleKpiJob } from "./jobs/kpiJob.js";
+import { scheduleContentLifecycleJob } from "./jobs/contentLifecycleJob.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(authMiddleware);
 app.use(auditMiddleware);
+app.use("/api", (req, res, next) => {
+  const user = (req as AuthedRequest).user;
+  if (user?.role === "stakeholder" && req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+    return res.status(403).json({ error: "stakeholders are read-only" });
+  }
+  return next();
+});
 app.use("/api", router);
 app.use("/api", (err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error("[api] request failed:", err instanceof Error ? err.message : err);
@@ -29,6 +38,7 @@ const port = Number(process.env.PORT ?? 4000);
 if (process.env.NODE_ENV !== "test") {
   app.listen(port, () => console.log(`TrainHub360 API on :${port}`));
   scheduleKpiJob();
+  scheduleContentLifecycleJob();
 }
 export default app;
 
