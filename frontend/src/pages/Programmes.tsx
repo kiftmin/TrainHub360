@@ -32,6 +32,7 @@ import {
   useAuditLogs,
   useEnrolments,
   useCertificates,
+  useCreateProgramme,
   downloadReviewCreditCsv,
   type Course,
   type ReviewCreditSettings,
@@ -71,8 +72,20 @@ const adminNav = [
 import { fmtDate, pct, initials, Skeleton, EmptyState, ErrorState, Status, ProgressLine, PageHeading, KpiCard } from '@/components/shared';
 export function Programmes() {
   const programmes = useProgrammes();
+  const createProgramme = useCreateProgramme();
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState({ name: '', type: 'Professional Development', owner: '' });
+  const canCreate = ['admin', 'owner'].includes(getSessionUser()?.role ?? '');
+  const submit = () => {
+    if (!form.name) return;
+    createProgramme.mutate(
+      { name: form.name, type: form.type, owner: form.owner || undefined },
+      { onSuccess: () => { qc.invalidateQueries({ queryKey: ['programmes'] }); setOpen(false); setForm({ name: '', type: 'Professional Development', owner: '' }); } },
+    );
+  };
   return <div className="page-in">
-    <PageHeading eyebrow="Programme portfolio" title="Programmes with owners." detail="Every programme has movement, membership, and an accountable owner." />
+    <PageHeading eyebrow="Programme portfolio" title="Programmes with owners." detail="Every programme has movement, membership, and an accountable owner." action={canCreate ? <Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus className="size-4" />New programme</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Create a programme</DialogTitle></DialogHeader><div className="space-y-4 pt-2"><Input placeholder="Programme name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} data-testid="input-programme-name" /><Input placeholder="Type (e.g. Onboarding)" value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} data-testid="input-programme-type" /><Input placeholder="Owner (optional)" value={form.owner} onChange={(e) => setForm({ ...form, owner: e.target.value })} data-testid="input-programme-owner" /><Button className="w-full" disabled={createProgramme.isPending} onClick={submit} data-testid="button-submit-programme">{createProgramme.isPending ? 'Creating…' : 'Create programme'}</Button></div></DialogContent></Dialog> : undefined} />
     {programmes.isLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-48" />)}</div>
     : programmes.isError ? <ErrorState retry={() => programmes.refetch()} />
     : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">

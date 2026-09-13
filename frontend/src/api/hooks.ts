@@ -245,6 +245,23 @@ export function useProgrammes() {
   return useQuery(queryOpts(qk.programmes, () => api<Programme[]>('/programmes')));
 }
 
+export interface ProgrammeInput {
+  name: string;
+  type?: string;
+  owner?: string;
+}
+
+export function useCreateProgramme() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ProgrammeInput) =>
+      api<Programme>('/programmes', { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.programmes });
+    },
+  });
+}
+
 export function useCourses(programmeId?: string) {
   const qs = programmeId ? `?programmeId=${encodeURIComponent(programmeId)}` : '';
   return useQuery(queryOpts(qk.courses(programmeId), () => api<Course[]>(`/courses${qs}`)));

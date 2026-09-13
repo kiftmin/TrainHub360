@@ -171,6 +171,14 @@ router.get("/programmes", async (req, res) => {
   const only = await stakeholderProgrammes(req as AuthedRequest);
   res.json(await db.programme.findMany({ where: { ...scope, ...(only ? { id: { in: only } } : {}) }, take: 200 }).catch(() => []));
 });
+router.post("/programmes", requireRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  if (!req.body?.name) return res.status(400).json({ error: "name required" });
+  const me = (req as AuthedRequest).user!;
+  return res.status(201).json(await db.programme.create({
+    data: { orgId: scope.orgId, name: req.body.name, type: req.body.type ?? "Professional Development", status: "active", owner: req.body.owner ?? me.id },
+  }));
+});
 router.get("/programmes/:id/modules", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.params.id, scope.orgId);
