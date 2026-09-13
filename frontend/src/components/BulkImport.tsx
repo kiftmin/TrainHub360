@@ -43,7 +43,7 @@ export function BulkImportButton() {
         <DialogHeader><DialogTitle>Bulk import learners</DialogTitle></DialogHeader>
         <div className="space-y-4 pt-2">
           <p className="text-xs text-muted-foreground">Paste CSV rows: name, email, department, jobFunction, managerEmail (one per line).</p>
-          <Textarea rows={5} value={csv} onChange={(e) => setCsv(e.target.value)} data-testid="input-import-csv" />
+          <label className="block text-xs font-semibold">CSV rows<Textarea className="mt-2" rows={5} value={csv} onChange={(e) => setCsv(e.target.value)} data-testid="input-import-csv" /></label>
           <Button className="w-full" disabled={imp.isPending} onClick={() => imp.mutate(parseCsv(csv))} data-testid="button-import-submit">
             {imp.isPending ? "Importing…" : "Import"}
           </Button>

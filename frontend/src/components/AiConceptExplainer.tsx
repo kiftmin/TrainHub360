@@ -30,8 +30,8 @@ export function AiConceptExplainer({ courseId, moduleId, moduleTitle }: { course
       {open && (
         <div className="mt-3 space-y-3">
           <p className="text-xs text-muted-foreground">{moduleTitle} — ask for a plain-language breakdown.</p>
-          <Input placeholder="Concept (e.g. Regression Analysis)" value={concept} onChange={(e) => setConcept(e.target.value)} data-testid="input-ai-concept" />
-          <Textarea placeholder="What confuses you?" value={question} onChange={(e) => setQuestion(e.target.value)} data-testid="input-ai-question" />
+          <label className="block text-xs font-semibold">Concept<Input className="mt-2" placeholder="e.g. Regression Analysis" value={concept} onChange={(e) => setConcept(e.target.value)} data-testid="input-ai-concept" /></label>
+          <label className="block text-xs font-semibold">Your question<Textarea className="mt-2" placeholder="What confuses you?" value={question} onChange={(e) => setQuestion(e.target.value)} data-testid="input-ai-question" /></label>
           <Button
             size="sm"
             disabled={!concept || !question || explain.isPending}
