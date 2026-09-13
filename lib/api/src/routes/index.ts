@@ -29,6 +29,18 @@ router.post("/auth/login", async (req, res) => {
   const token = signToken({ id: user.id, role, orgId: user.orgId });
   return res.json({ accessToken: token, user: { id: user.id, name: user.name, email: user.email, role, initials: user.name.slice(0, 2).toUpperCase() } });
 });
+router.post("/auth/forgot-password", async (req, res) => {
+  if (!req.body?.email) return res.status(400).json({ error: "email required" });
+  const { requestPasswordReset } = await import("../services/password.js");
+  return res.json(await requestPasswordReset(req.body.email));
+});
+router.post("/auth/reset-password", async (req, res) => {
+  if (!req.body?.token || !req.body?.newPassword) return res.status(400).json({ error: "token and newPassword required" });
+  const { resetPassword } = await import("../services/password.js");
+  const result = await resetPassword(req.body.token, req.body.newPassword);
+  if (!result.ok) return res.status(400).json({ error: result.error });
+  return res.json({ ok: true });
+});
 router.post("/auth/sso", (req, res) => {
   if (process.env.SSO_ENABLED !== "true") {
     return res.status(501).json({ error: "SSO is not enabled — set SSO_ENABLED=true with a real SAML identity provider" });

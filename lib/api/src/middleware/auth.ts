@@ -4,6 +4,7 @@ export interface AuthedRequest extends Request { user?: { id: string; role: stri
 export function authMiddleware(req: AuthedRequest, res: Response, next: NextFunction) {
   if (req.path === "/api/healthz" || req.path === "/api/auth/login" || req.path === "/api/auth/sso") return next();
   if (req.method === "POST" && req.path === "/api/organizations") return next();
+  if (req.method === "POST" && (req.path === "/api/auth/forgot-password" || req.path === "/api/auth/reset-password")) return next();
   const h = req.headers.authorization;
   if (!h?.startsWith("Bearer ")) return res.status(401).json({ error: "unauthorized" });
   try {
