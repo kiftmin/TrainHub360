@@ -175,7 +175,43 @@ router.get("/enrolments/:id/score", async (req, res) => {
 router.get("/programmes", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const only = await stakeholderProgrammes(req as AuthedRequest);
-  res.json(await db.programme.findMany({ where: { ...scope, ...(only ? { id: { in: only } } : {}) }, take: 200 }).catch(() => []));
+  const programmes = await db.programme.findMany({ where: { ...scope, ...(only ? { id: { in: only } } : {}) }, take: 200 }).catch(() => []);
+  const ids = programmes.map((p) => p.id);
+  const courseGroups = ids.length ? await db.course.groupBy({ by: ["programmeId"], where: { programmeId: { in: ids }, deletedAt: null }, _count: { id: true } }).catch(() => []) : [];
+  const enrolRows: { programmeId: string; learnerId: string }[] = ids.length ? await db.enrolment.findMany({ where: { programmeId: { in: ids } }, select: { programmeId: true, learnerId: true }, take: 5000 }).catch(() => []) : [];
+  const learnersByProg = new Map<string, Set<string>>();
+  for (const e of enrolRows) {
+    const set = learnersByProg.get(e.programmeId) ?? new Set<string>();
+    set.add(e.learnerId);
+    learnersByProg.set(e.programmeId, set);
+  }
+  res.json(programmes.map((p) => ({
+    ...p,
+    courseCount: courseGroups.find((g) => g.programmeId === p.id)?._count.id ?? 0,
+    learnerCount: learnersByProg.get(p.id)?.size ?? 0,
+  })));
+});
+router.patch("/programmes/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const patch = req.body ?? {};
+  const data: Record<string, unknown> = {};
+  for (const k of ["name", "type", "status", "owner"]) if (patch[k] !== undefined) data[k] = patch[k];
+  if (patch.budget !== undefined) data.budget = Number(patch.budget);
+  if (patch.progress !== undefined) data.progress = Number(patch.progress);
+  return res.json(await db.programme.update({ where: { id: req.params.id }, data }));
+});
+router.delete("/programmes/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const courseCount = await db.course.count({ where: { programmeId: req.params.id, deletedAt: null } }).catch(() => 0);
+  const enrolCount = await db.enrolment.count({ where: { programmeId: req.params.id } }).catch(() => 0);
+  if (courseCount > 0 || enrolCount > 0) {
+    return res.status(409).json({ error: `cannot delete: programme still has ${courseCount} course(s) and ${enrolCount} enrolment(s). Archive or move them first.` });
+  }
+  await db.programme.delete({ where: { id: req.params.id } }).catch(() => null);
+  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "DELETE /programmes/:id", entity: "programme", entityId: req.params.id, details: null } }).catch(() => null);
+  return res.status(204).end();
 });
 router.post("/programmes", requireRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
@@ -202,6 +238,42 @@ router.post("/programmes/:id/modules", requireProgrammeRole("admin", "owner"), a
     courseId = first.id;
   }
   return res.status(201).json(await db.module.create({ data: { courseId, title: req.body.title ?? "New module" } }));
+});
+router.patch("/modules/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const mod = await db.module.findFirst({ where: { id: req.params.id, course: { programme: { orgId: scope.orgId } } } });
+  if (!mod) return res.status(404).json({ error: "module not found in your organization" });
+  const patch = req.body ?? {};
+  const data: Record<string, unknown> = {};
+  if (patch.title !== undefined) data.title = patch.title;
+  if (patch.order !== undefined) data.order = Number(patch.order);
+  return res.json(await db.module.update({ where: { id: mod.id }, data }));
+});
+router.delete("/modules/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const mod = await db.module.findFirst({ where: { id: req.params.id, course: { programme: { orgId: scope.orgId } } } });
+  if (!mod) return res.status(404).json({ error: "module not found in your organization" });
+  await db.assessment.deleteMany({ where: { moduleId: mod.id } }).catch(() => null);
+  await db.module.delete({ where: { id: mod.id } }).catch(() => null);
+  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "DELETE /modules/:id", entity: "module", entityId: mod.id, details: null } }).catch(() => null);
+  return res.status(204).end();
+});
+router.patch("/assessments/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const a = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } });
+  if (!a) return res.status(404).json({ error: "assessment not found in your organization" });
+  if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
+  const data: Record<string, unknown> = {};
+  if (req.body?.type) data.type = req.body.type;
+  if (req.body?.maxScore !== undefined) data.maxScore = Number(req.body.maxScore);
+  return res.json(await db.assessment.update({ where: { id: a.id }, data }));
+});
+router.delete("/assessments/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const a = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } });
+  if (!a) return res.status(404).json({ error: "assessment not found in your organization" });
+  await db.assessment.delete({ where: { id: a.id } }).catch(() => null);
+  return res.status(204).end();
 });
 router.get("/modules/:id/assessments", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
@@ -231,6 +303,17 @@ router.post("/courses", requireProgrammeRole("admin", "owner"), async (req, res)
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.body.programmeId, scope.orgId);
   return res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
+});
+router.patch("/courses/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertCourseInOrg(req.params.id, scope.orgId);
+  const patch = req.body ?? {};
+  if (patch.programmeId) await assertProgrammeInOrg(patch.programmeId, scope.orgId);
+  const data: Record<string, unknown> = {};
+  for (const k of ["title", "category", "status", "trainer", "duration", "dueDate", "programmeId"]) if (patch[k] !== undefined) data[k] = patch[k];
+  if (patch.appliedThreshold !== undefined) data.appliedThreshold = Number(patch.appliedThreshold);
+  if (patch.progress !== undefined) data.progress = Number(patch.progress);
+  return res.json(await db.course.update({ where: { id: req.params.id }, data }));
 });
 router.post("/courses/:id/archive", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
@@ -504,6 +587,18 @@ function assertSameOrg(req: AuthedRequest, orgId: string) {
     throw err;
   }
 }
+router.patch("/organizations/:id", requireRole("owner", "admin"), async (req, res) => {
+  assertSameOrg(req as AuthedRequest, req.params.id);
+  const patch = req.body ?? {};
+  const data: Record<string, unknown> = {};
+  for (const k of ["name", "plan", "domain"]) if (patch[k] !== undefined) data[k] = patch[k];
+  if (patch.webhookUrls !== undefined) {
+    if (!Array.isArray(patch.webhookUrls)) return res.status(400).json({ error: "webhookUrls must be an array" });
+    data.webhookUrls = JSON.stringify(patch.webhookUrls);
+  }
+  if (patch.maxWeighting !== undefined) data.reviewCreditMaxWeighting = Number(patch.maxWeighting);
+  return res.json(await db.organization.update({ where: { id: req.params.id }, data }));
+});
 router.post("/organizations", async (req, res) => {
   const { name, adminEmail, adminName, domain, adminPassword } = req.body ?? {};
   if (!name || !adminEmail || !adminName) return res.status(400).json({ error: "name, adminEmail and adminName required" });

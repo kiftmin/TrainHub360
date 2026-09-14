@@ -33,6 +33,10 @@ async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
       const m = await db.module.findUnique({ where: { id: params.id }, select: { course: { select: { programmeId: true } } } }).catch(() => null);
       if (m) return m.course.programmeId;
     }
+    if (req.path.includes("/assessments/")) {
+      const a = await db.assessment.findUnique({ where: { id: params.id }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);
+      if (a) return a.module.course.programmeId;
+    }
     if (req.path.includes("/enrolments/")) {
       const e = await db.enrolment.findUnique({ where: { id: params.id }, select: { programmeId: true } }).catch(() => null);
       if (e?.programmeId) return e.programmeId;

@@ -262,6 +262,82 @@ export function useCreateProgramme() {
   });
 }
 
+export function useUpdateProgramme() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<ProgrammeInput & { status: string; budget: number; progress: number }> }) =>
+      api<Programme>(`/programmes/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.programmes });
+    },
+  });
+}
+
+export function useDeleteProgramme() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<void>(`/programmes/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.programmes });
+    },
+  });
+}
+
+export function useUpdateCourse() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<CourseInput & { status: string; trainer: string; duration: string; dueDate: string | null; progress: number }> }) =>
+      api<Course>(`/courses/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
+export function useDeleteCourse() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<void>(`/courses/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
+export function useUpdateOrganization() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: { name?: string; plan?: string; domain?: string; webhookUrls?: string[] } }) =>
+      api<Organization>(`/organizations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.workspace });
+    },
+  });
+}
+
+export function useUpdateModule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: { title?: string; order?: number } }) =>
+      api<Module>(`/modules/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['programmes'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
+export function useDeleteModule() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<void>(`/modules/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['programmes'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
 export function useCourses(programmeId?: string) {
   const qs = programmeId ? `?programmeId=${encodeURIComponent(programmeId)}` : '';
   return useQuery(queryOpts(qk.courses(programmeId), () => api<Course[]>(`/courses${qs}`)));
