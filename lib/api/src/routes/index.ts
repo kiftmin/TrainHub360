@@ -226,18 +226,6 @@ router.post("/courses", requireProgrammeRole("admin", "owner"), async (req, res)
   await assertProgrammeInOrg(req.body.programmeId, scope.orgId);
   return res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
 });
-router.post("/modules/:id/assessments", async (req, res) => {
-  if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
-  return res.status(201).json(await db.assessment.create({ data: { moduleId: req.params.id, type: req.body.type ?? "recall", maxScore: req.body.maxScore ?? 100 } }));
-});
-router.get("/courses", async (req, res) => {
-  const programmeId = req.query.programmeId as string | undefined;
-  const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
-  res.json(await db.course.findMany({ where: { ...(programmeId ? { programmeId } : {}), ...lifecycleFilter(includeArchived) }, take: 200 }).catch(() => []));
-});
-router.post("/courses", async (req, res) => {
-  res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
-});
 router.post("/courses/:id/archive", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertCourseInOrg(req.params.id, scope.orgId);
