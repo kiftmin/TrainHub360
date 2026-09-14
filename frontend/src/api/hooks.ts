@@ -468,6 +468,46 @@ export function useRecognitions() {
   return useQuery(queryOpts(['recognitions'] as const, () => api<Recognition[]>('/recognitions')));
 }
 
+export interface DeleteRequest {
+  id: string;
+  targetType: string;
+  targetId: string;
+  targetName: string | null;
+  status: string;
+  reason: string | null;
+  createdAt: string;
+  requester?: { name: string; email: string };
+  approver?: { name: string; email: string } | null;
+}
+
+export function useDeleteRequests() {
+  return useQuery(queryOpts(['delete-requests'] as const, () => api<DeleteRequest[]>('/delete-requests')));
+}
+
+export function useRequestDeletion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ programmeId, reason }: { programmeId: string; reason?: string }) =>
+      api<DeleteRequest>(`/programmes/${programmeId}/delete-requests`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['delete-requests'] });
+    },
+  });
+}
+
+export function useDecideDeletion() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, decision }: { id: string; decision: 'approve' | 'reject' }) =>
+      api<DeleteRequest>(`/delete-requests/${id}/${decision}`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['delete-requests'] });
+      qc.invalidateQueries({ queryKey: qk.programmes });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
 export async function downloadReviewCreditCsv(): Promise<void> {
   const csv = await api<string>('/review-credit/export');
   const blob = new Blob([csv], { type: 'text/csv' });

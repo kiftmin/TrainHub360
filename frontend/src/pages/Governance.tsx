@@ -29,7 +29,7 @@ import {
   useCalendarEvents,
   useReviewCreditSettings,
   useUpdateReviewCreditSettings,
-  useAuditLogs,
+  useAuditLogs, useDeleteRequests, useDecideDeletion,
   useEnrolments,
   useCertificates,
   downloadReviewCreditCsv,
@@ -80,6 +80,8 @@ const RBAC = [
 
 export function Governance() {
   const logs = useAuditLogs();
+  const requests = useDeleteRequests();
+  const decide = useDecideDeletion();
   const exportLogs = () => {
     const blob = new Blob([JSON.stringify(logs.data || [], null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -94,6 +96,12 @@ export function Governance() {
     <section className="overflow-hidden rounded-xl border border-border/80 bg-card"><div className="border-b border-border/70 p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Access control</p><h2 className="mt-1 text-lg font-bold">RBAC matrix (static policy)</h2></div>
       <table className="w-full text-sm"><thead><tr className="text-left font-mono text-[10px] uppercase tracking-wider text-muted-foreground"><th className="p-4">Capability</th><th className="p-4">Admin</th><th className="p-4">Manager</th><th className="p-4">Trainer</th><th className="p-4">Learner</th></tr></thead><tbody className="divide-y divide-border/70">{RBAC.map((r) => <tr key={r.action}><td className="p-4 font-semibold">{r.action}</td>{[r.admin, r.manager, r.trainer, r.learner].map((v, i) => <td key={i} className="p-4">{v ? <Check className="size-4 text-emerald-600" /> : <span className="text-muted-foreground">—</span>}</td>)}</tr>)}</tbody></table>
     </section>
+    <section className="mt-5 overflow-hidden rounded-xl border border-border/80 bg-card"><div className="border-b border-border/70 p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Two-person approval</p><h2 className="mt-1 text-lg font-bold">Delete requests</h2><p className="mt-1 text-xs text-muted-foreground">Programme deletions need a second admin — the requester cannot approve their own request. Approval archives the programme and its courses (reversible, nothing is hard-deleted).</p></div>
+      {requests.isLoading ? <div className="space-y-2 p-5"><Skeleton className="h-12" /></div>
+      : requests.isError ? <div className="p-5"><ErrorState retry={() => requests.refetch()} /></div>
+      : !(requests.data || []).filter((r) => r.status === 'pending').length ? <div className="p-5"><EmptyState title="No pending requests" detail="Deletion requests from programme admins will queue here." /></div>
+      : <table className="w-full text-sm"><thead><tr className="text-left font-mono text-[10px] uppercase tracking-wider text-muted-foreground"><th className="p-4">Target</th><th className="p-4">Requested by</th><th className="p-4">Reason</th><th className="p-4">Decision</th></tr></thead><tbody className="divide-y divide-border/70">{(requests.data || []).filter((r) => r.status === 'pending').map((r) => <tr key={r.id}><td className="p-4 font-semibold">{r.targetName ?? r.targetId}<p className="text-xs font-normal text-muted-foreground">{r.targetType}</p></td><td className="p-4">{r.requester?.name ?? '—'}</td><td className="p-4 text-muted-foreground">{r.reason ?? '—'}</td><td className="p-4"><div className="flex gap-2"><Button size="sm" disabled={decide.isPending} onClick={() => decide.mutate({ id: r.id, decision: 'approve' })}>Approve</Button><Button size="sm" variant="outline" disabled={decide.isPending} onClick={() => decide.mutate({ id: r.id, decision: 'reject' })}>Reject</Button></div></td></tr>)}</tbody></table>}
+    </section>
     <section className="mt-5 overflow-hidden rounded-xl border border-border/80 bg-card"><div className="border-b border-border/70 p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Audit trail</p><h2 className="mt-1 text-lg font-bold">Live from /audit/logs</h2></div>
       {logs.isLoading ? <div className="space-y-2 p-5"><Skeleton className="h-12" /><Skeleton className="h-12" /></div>
       : logs.isError ? <div className="p-5"><ErrorState retry={() => logs.refetch()} /></div>
@@ -102,5 +110,6 @@ export function Governance() {
     </section>
   </div>;
 }
+
 
 

@@ -213,6 +213,45 @@ router.delete("/programmes/:id", requireProgrammeRole("admin", "owner"), async (
   await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "DELETE /programmes/:id", entity: "programme", entityId: req.params.id, details: null } }).catch(() => null);
   return res.status(204).end();
 });
+router.post("/programmes/:id/delete-requests", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const programme = await db.programme.findFirst({ where: { id: req.params.id, orgId: scope.orgId } });
+  if (!programme) return res.status(404).json({ error: "programme not found in your organization" });
+  const existing = await db.deleteRequest.findFirst({ where: { targetType: "programme", targetId: programme.id, status: "pending" } }).catch(() => null);
+  if (existing) return res.status(409).json({ error: "a pending delete request already exists for this programme", requestId: existing.id });
+  return res.status(201).json(await db.deleteRequest.create({
+    data: { orgId: scope.orgId, targetType: "programme", targetId: programme.id, targetName: programme.name, requestedBy: me.id, reason: req.body?.reason ?? null },
+  }));
+});
+router.get("/delete-requests", requireRole("admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  res.json(await db.deleteRequest.findMany({ where: { orgId: scope.orgId }, include: { requester: { select: { name: true, email: true } }, approver: { select: { name: true, email: true } } }, orderBy: { createdAt: "desc" }, take: 200 }).catch(() => []));
+});
+router.post("/delete-requests/:id/approve", requireRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const dr = await db.deleteRequest.findFirst({ where: { id: req.params.id, orgId: scope.orgId } });
+  if (!dr) return res.status(404).json({ error: "request not found in your organization" });
+  if (dr.status !== "pending") return res.status(409).json({ error: `request already ${dr.status}` });
+  if (dr.requestedBy === me.id) return res.status(403).json({ error: "approver must be a different user than the requester" });
+  const now = new Date();
+  if (dr.targetType === "programme") {
+    await db.programme.updateMany({ where: { id: dr.targetId, orgId: scope.orgId }, data: { status: "archived" } });
+    await db.course.updateMany({ where: { programmeId: dr.targetId, programme: { orgId: scope.orgId } }, data: { isArchived: true, archivedAt: now } });
+  }
+  await db.auditLog.create({ data: { userId: me.id, action: "DELETE_REQUEST_APPROVED", entity: dr.targetType, entityId: dr.targetId, details: null } }).catch(() => null);
+  return res.json(await db.deleteRequest.update({ where: { id: dr.id }, data: { status: "approved", approvedBy: me.id, decidedAt: now } }));
+});
+router.post("/delete-requests/:id/reject", requireRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const dr = await db.deleteRequest.findFirst({ where: { id: req.params.id, orgId: scope.orgId } });
+  if (!dr) return res.status(404).json({ error: "request not found in your organization" });
+  if (dr.status !== "pending") return res.status(409).json({ error: `request already ${dr.status}` });
+  if (dr.requestedBy === me.id) return res.status(403).json({ error: "approver must be a different user than the requester" });
+  return res.json(await db.deleteRequest.update({ where: { id: dr.id }, data: { status: "rejected", approvedBy: me.id, decidedAt: new Date() } }));
+});
 router.post("/programmes", requireRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   if (!req.body?.name) return res.status(400).json({ error: "name required" });
@@ -470,7 +509,12 @@ router.post("/bookings", async (req, res) => {
   }
   return res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, trainerId, course: req.body.course ?? "", courseId, orgId: scope.orgId, date: req.body.date, time: req.body.time } }));
 });
-router.get("/calendar", async (_req, res) => res.json(await db.calendarEvent.findMany({ take: 500 }).catch(() => [])));
+router.get("/calendar", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const where = me.role === "learner" ? { orgId: scope.orgId, userId: me.id } : { orgId: scope.orgId };
+  res.json(await db.calendarEvent.findMany({ where, take: 500 }).catch(() => []));
+});
 router.get("/calendar/connections", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   res.json(await db.calendarConnection.findMany({ where: { userId: me.id }, select: { id: true, provider: true, calendarId: true, createdAt: true }, take: 20 }).catch(() => []));

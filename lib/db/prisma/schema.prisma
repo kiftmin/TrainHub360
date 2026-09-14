@@ -38,6 +38,8 @@ model Organization {
   sessions                             Session[]
   bookings                             Booking[]
   threads                              MessageThread[]
+  calendarEvents                       CalendarEvent[]
+  deleteRequests                       DeleteRequest[]
 
   @@map("organizations")
 }
@@ -171,6 +173,8 @@ model User {
   calendarConnections CalendarConnection[]
   recognitions Recognition[]
   resetTokens PasswordResetToken[]
+  deleteRequestsMade DeleteRequest[] @relation("DeleteRequester")
+  deleteRequestsApproved DeleteRequest[] @relation("DeleteApprover")
   sessionsAsTrainer Session[] @relation("SessionTrainer")
   bookingsAsTrainer Booking[] @relation("BookingTrainer")
 
@@ -280,6 +284,25 @@ model Booking {
   @@map("bookings")
 }
 
+model DeleteRequest {
+  id          String    @id @default(cuid())
+  orgId       String    @map("org_id")
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  targetType  String    @map("target_type")
+  targetId    String    @map("target_id")
+  targetName  String?   @map("target_name") @db.NVarChar(512)
+  requestedBy String    @map("requested_by")
+  requester   User      @relation("DeleteRequester", fields: [requestedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  approvedBy  String?   @map("approved_by")
+  approver    User?     @relation("DeleteApprover", fields: [approvedBy], references: [id], onUpdate: NoAction, onDelete: NoAction)
+  status      String    @default("pending")
+  reason      String?   @db.NVarChar(1024)
+  createdAt   DateTime  @default(now()) @map("created_at")
+  decidedAt   DateTime? @map("decided_at")
+
+  @@map("delete_requests")
+}
+
 model CalendarEvent {
   id          String  @id @default(cuid())
   title       String
@@ -290,6 +313,8 @@ model CalendarEvent {
   location    String?
   meetingLink String? @map("meeting_link")
   userId      String? @map("user_id")
+  orgId       String  @map("org_id")
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
   @@map("calendar_events")
 }
