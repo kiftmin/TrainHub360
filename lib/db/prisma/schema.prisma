@@ -27,6 +27,10 @@ model Organization {
   domain       String?   @db.NVarChar(256)
   domainVerified Boolean  @default(false) @map("domain_verified")
   domainVerificationToken String? @map("domain_verification_token") @db.NVarChar(128)
+  samlEnabled  Boolean   @default(false) @map("saml_enabled")
+  samlIdpCert  String?   @map("saml_idp_cert") @db.NVarChar(Max)
+  samlIdpIssuer String?  @map("saml_idp_issuer") @db.NVarChar(512)
+  samlEntityId String?   @map("saml_entity_id") @db.NVarChar(512)
   programmes                           Programme[]
   users                                User[]
   kpiSummaries                         KpiSummary[]

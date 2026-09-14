@@ -41,13 +41,19 @@ router.post("/auth/reset-password", async (req, res) => {
   if (!result.ok) return res.status(400).json({ error: result.error });
   return res.json({ ok: true });
 });
-router.post("/auth/sso", (req, res) => {
+router.post("/auth/sso", async (req, res) => {
   if (process.env.SSO_ENABLED !== "true") {
     return res.status(501).json({ error: "SSO is not enabled — set SSO_ENABLED=true with a real SAML identity provider" });
   }
-  if (!req.body?.samlAssertion) return res.status(400).json({ error: "samlAssertion required" });
-  const token = signToken({ id: "sso-user", role: "learner", orgId: "org1" });
-  return res.json({ accessToken: token, user: { id: "sso-user", name: "SSO User", email: "sso@corp.com", role: "learner", initials: "SU" } });
+  if (!req.body?.samlAssertion || !req.body?.orgId) return res.status(400).json({ error: "samlAssertion and orgId required" });
+  const { loginWithSaml } = await import("../services/saml.js");
+  const result = await loginWithSaml(req.body.orgId, req.body.samlAssertion).catch(() => null);
+  if (!result) return res.status(401).json({ error: "invalid credentials" });
+  const user = await db.user.findUnique({ where: { id: result.userId } }).catch(() => null);
+  if (!user) return res.status(401).json({ error: "invalid credentials" });
+  const role = (await db.userRole.findFirst({ where: { userId: user.id }, include: { role: true } }).catch(() => null))?.role.name ?? "learner";
+  const token = signToken({ id: user.id, role, orgId: user.orgId });
+  return res.json({ accessToken: token, user: { id: user.id, name: user.name, email: user.email, role, initials: user.name.slice(0, 2).toUpperCase() } });
 });
 
 router.get("/workspace", async (req, res) => {
