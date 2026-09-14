@@ -7,6 +7,7 @@ import { auditMiddleware } from "./middleware/audit.js";
 import type { AuthedRequest } from "./middleware/auth.js";
 import { scheduleKpiJob } from "./jobs/kpiJob.js";
 import { scheduleContentLifecycleJob } from "./jobs/contentLifecycleJob.js";
+import { scheduleCertificateExpiryJob } from "./jobs/certificateExpiryJob.js";
 
 const app = express();
 app.use(cors());
@@ -39,6 +40,7 @@ if (process.env.NODE_ENV !== "test") {
   app.listen(port, () => console.log(`TrainHub360 API on :${port}`));
   scheduleKpiJob();
   scheduleContentLifecycleJob();
+  scheduleCertificateExpiryJob();
 }
 export default app;
 
