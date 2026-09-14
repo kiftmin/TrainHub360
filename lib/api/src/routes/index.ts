@@ -328,11 +328,11 @@ router.post("/sessions/:id/rsvp", async (req, res) => {
 });
 router.get("/threads", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
-  const threads = await db.messageThread.findMany({ where: { OR: [{ programmeId: null }, { programme: { orgId: scope.orgId } }] }, take: 200, orderBy: { updatedAt: "desc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }).catch(() => []);
+  const threads = await db.messageThread.findMany({ where: { orgId: scope.orgId }, take: 200, orderBy: { updatedAt: "desc" }, include: { messages: { orderBy: { createdAt: "asc" } } } }).catch(() => []);
   res.json(threads.map((t) => ({ ...t, averageResponseTimeHours: avgResponseHours(t.messages.map((m) => ({ author: m.author, createdAt: m.createdAt }))), slaStatus: slaStatusFor(t as SlaThread, avgResponseHours(t.messages.map((m) => ({ author: m.author, createdAt: m.createdAt })))) })));
 });
 async function assertThreadVisible(threadId: string, orgId: string) {
-  const t = await db.messageThread.findFirst({ where: { id: threadId, OR: [{ programmeId: null }, { programme: { orgId } }] } });
+  const t = await db.messageThread.findFirst({ where: { id: threadId, orgId } });
   if (!t) {
     const err = new Error("thread not found in your organization") as Error & { status?: number };
     err.status = 404;

@@ -69,11 +69,11 @@ export async function buildDashboardSummary(orgId: string) {
   const [programmes, enrolments, messages, feedback, trainers, bookings, sessions] = await Promise.all([
     db.programme.findMany({ where: { orgId } }).catch(() => []),
     db.enrolment.findMany({ where: { programme: { orgId } }, include: { course: { select: { appliedThreshold: true, title: true, id: true } } }, take: 5000 }).catch(() => [] as SummaryEnrolment[]),
-    db.message.findMany({ take: 2000, orderBy: { createdAt: "desc" } }).catch(() => []),
+    db.message.findMany({ where: { thread: { orgId } }, take: 2000, orderBy: { createdAt: "desc" } }).catch(() => []),
     db.courseFeedback.findMany({ where: { course: { programme: { orgId } } }, take: 2000 }).catch(() => []),
     db.user.findMany({ where: { orgId, roles: { some: { role: { name: "trainer" } } } }, select: { id: true, name: true } }).catch(() => []),
-    db.booking.findMany({ take: 1000 }).catch(() => []),
-    db.session.findMany({ take: 500 }).catch(() => []),
+    db.booking.findMany({ where: { orgId }, take: 1000 }).catch(() => []),
+    db.session.findMany({ where: { orgId }, take: 500 }).catch(() => []),
   ]);
   const rows = enrolments as SummaryEnrolment[];
   const total = rows.length || 1;

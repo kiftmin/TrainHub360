@@ -53,7 +53,7 @@ export async function runKpiJob(orgId: string): Promise<Record<string, unknown>>
   });
   const withCourse = await db.enrolment.findMany({ where: { programmeId: { in: programmeIds } }, include: { course: { select: { appliedThreshold: true } } }, take: 5000 }).catch(() => []);
   const trainers = await db.user.findMany({ where: { orgId, roles: { some: { role: { name: "trainer" } } } }, select: { id: true, name: true } }).catch(() => []);
-  const bookings = await db.booking.findMany({ take: 1000 }).catch(() => []);
+  const bookings: Awaited<ReturnType<typeof db.booking.findMany>> = await db.booking.findMany({ where: { orgId }, take: 1000 }).catch(() => []);
   const feedback = await db.courseFeedback.findMany({ where: { course: { programme: { orgId } } }, take: 2000 }).catch(() => []);
   const { timeToCompetencyDays, trainerUtilizationRate, satisfactionScore } = await import("../services/kpi.js");
   const payload = {

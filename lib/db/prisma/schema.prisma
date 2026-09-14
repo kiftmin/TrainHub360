@@ -33,6 +33,7 @@ model Organization {
   cohorts                              Cohort[]
   sessions                             Session[]
   bookings                             Booking[]
+  threads                              MessageThread[]
 
   @@map("organizations")
 }
@@ -229,6 +230,8 @@ model MessageThread {
   participant String    @default("")
   programmeId String?   @map("programme_id")
   programme   Programme? @relation(fields: [programmeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgId       String    @map("org_id")
+  organization Organization @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   urgent      Boolean   @default(false)
   slaBreached Boolean   @default(false) @map("sla_breached")
   slaHours              Int       @default(24) @map("sla_hours")

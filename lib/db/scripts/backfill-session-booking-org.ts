@@ -48,7 +48,23 @@ async function main() {
     }
   }
 
-  console.log(JSON.stringify(report, null, 2));
+  const threads = await db.messageThread.findMany({ where: { orgId: "" } }).catch(() => []);
+  const threadReport = { threadsTotal: threads.length, threadsBackfilled: 0, threadsUnresolved: [] as string[] };
+  for (const t of threads) {
+    let orgId: string | null = null;
+    if (t.programmeId) {
+      const p = await db.programme.findUnique({ where: { id: t.programmeId } }).catch(() => null);
+      if (p) orgId = p.orgId;
+    }
+    if (orgId) {
+      await db.messageThread.update({ where: { id: t.id }, data: { orgId } });
+      threadReport.threadsBackfilled += 1;
+    } else {
+      threadReport.threadsUnresolved.push(`${t.id} (no programme link and no participant signal — needs manual reassignment)`);
+    }
+  }
+
+  console.log(JSON.stringify({ ...report, ...threadReport }, null, 2));
 }
 
 await main().finally(() => db.$disconnect());
