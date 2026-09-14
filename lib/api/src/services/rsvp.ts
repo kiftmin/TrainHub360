@@ -1,7 +1,15 @@
 import { db } from "../db.js";
 
-export async function confirmRsvp(sessionId: string, learnerId: string) {
-  const session = await db.session.findUnique({ where: { id: sessionId } });
+export async function assertSessionInOrg(sessionId: string, orgId: string) {
+  const session = await db.session.findFirst({ where: { id: sessionId, orgId } });
+  if (!session) throw Object.assign(new Error("session not found in your organization"), { status: 404 });
+  return session;
+}
+
+export async function confirmRsvp(sessionId: string, learnerId: string, orgId?: string) {
+  const session = orgId
+    ? await assertSessionInOrg(sessionId, orgId)
+    : await db.session.findUnique({ where: { id: sessionId } });
   if (!session) throw Object.assign(new Error("session not found"), { status: 404 });
   const confirmed = await db.sessionRSVP.count({ where: { sessionId, status: "confirmed" } });
   const status = session.capacity != null && confirmed >= session.capacity ? "waitlisted" : "confirmed";
@@ -14,7 +22,8 @@ export async function confirmRsvp(sessionId: string, learnerId: string) {
   );
 }
 
-export async function declineRsvp(sessionId: string, learnerId: string) {
+export async function declineRsvp(sessionId: string, learnerId: string, orgId?: string) {
+  if (orgId) await assertSessionInOrg(sessionId, orgId);
   const rsvp = await db.sessionRSVP.findFirst({ where: { sessionId, learnerId } });
   if (!rsvp) throw Object.assign(new Error("rsvp not found"), { status: 404 });
   const wasConfirmed = rsvp.status === "confirmed";

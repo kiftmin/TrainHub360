@@ -11,9 +11,11 @@ export function buildExternalEvent(session: { title: string; date: string; time:
   return { title: `[TrainHub360] ${session.title}`, date: session.date, time: session.time };
 }
 
-export async function syncSessionToCalendars(sessionId: string, sender: CalendarSender = defaultSender): Promise<{ synced: number; skipped: number }> {
-  const session = await db.session.findUnique({ where: { id: sessionId } });
-  if (!session) throw Object.assign(new Error("session not found"), { status: 404 });
+export async function syncSessionToCalendars(sessionId: string, sender: CalendarSender = defaultSender, orgId?: string): Promise<{ synced: number; skipped: number }> {
+  const session = orgId
+    ? await db.session.findFirst({ where: { id: sessionId, orgId } })
+    : await db.session.findUnique({ where: { id: sessionId } });
+  if (!session) throw Object.assign(new Error("session not found in your organization"), { status: 404 });
   const rsvps = await db.sessionRSVP.findMany({ where: { sessionId, status: { in: ["confirmed", "invited"] } }, select: { learnerId: true } }).catch(() => []);
   const learnerIds = [...new Set(rsvps.map((r) => r.learnerId))];
   let synced = 0;

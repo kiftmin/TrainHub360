@@ -31,6 +31,8 @@ model Organization {
   users                                User[]
   kpiSummaries                         KpiSummary[]
   cohorts                              Cohort[]
+  sessions                             Session[]
+  bookings                             Booking[]
 
   @@map("organizations")
 }
@@ -50,6 +52,7 @@ model Programme {
   courses      Course[]
   enrolments   Enrolment[]
   threads      MessageThread[]
+  sessions     Session[]   @relation("SessionProgramme")
 
   @@map("programmes")
 }
@@ -76,6 +79,7 @@ model Course {
   enrolments       Enrolment[]
   certificates     Certificate[]
   feedback         CourseFeedback[]
+  bookings         Booking[]
 
   @@map("courses")
 }
@@ -162,6 +166,8 @@ model User {
   calendarConnections CalendarConnection[]
   recognitions Recognition[]
   resetTokens PasswordResetToken[]
+  sessionsAsTrainer Session[] @relation("SessionTrainer")
+  bookingsAsTrainer Booking[] @relation("BookingTrainer")
 
   @@map("users")
 }
@@ -251,7 +257,13 @@ model Message {
 model Booking {
   id          String  @id @default(cuid())
   trainer     String
+  trainerId   String? @map("trainer_id")
+  trainerRef  User?   @relation("BookingTrainer", fields: [trainerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   course      String  @default("")
+  courseId    String? @map("course_id")
+  courseRef   Course? @relation(fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgId       String? @map("org_id")
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   date        String
   time        String
   duration    String  @default("30m")
@@ -385,6 +397,13 @@ model Session {
   id        String @id @default(cuid())
   title     String
   programme String @default("")
+  programmeId String? @map("programme_id")
+  programmeRef Programme? @relation("SessionProgramme", fields: [programmeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgId     String? @map("org_id")
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  trainer   String  @default("")
+  trainerId String? @map("trainer_id")
+  trainerRef User?  @relation("SessionTrainer", fields: [trainerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   date      String
   time      String
   mode      String @default("online")

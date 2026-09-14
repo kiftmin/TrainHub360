@@ -277,10 +277,25 @@ router.post("/courses/:id/attempts", async (req, res) => {
   const passed = appliedScore >= 70;
   return res.json({ appliedScore, recallScore, passed, competenceMet: passed, message: passed ? "competence met" : "below applied threshold" });
 });
-router.get("/sessions", async (_req, res) => res.json(await db.session.findMany({ take: 200 }).catch(() => [])));
+router.get("/sessions", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  res.json(await db.session.findMany({ where: { orgId: scope.orgId }, take: 200 }).catch(() => []));
+});
 router.post("/sessions", requireRole("trainer", "admin", "owner"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
   if (!req.body?.title || !req.body?.date || !req.body?.time) return res.status(400).json({ error: "title, date and time required" });
-  return res.status(201).json(await db.session.create({ data: { title: req.body.title, programme: req.body.programme ?? "", date: req.body.date, time: req.body.time, mode: req.body.mode ?? "online", capacity: req.body.capacity ?? null } }));
+  let programmeId: string | null = null;
+  if (req.body.programmeId) {
+    await assertProgrammeInOrg(req.body.programmeId, scope.orgId);
+    programmeId = req.body.programmeId;
+  }
+  let trainerId: string | null = null;
+  if (req.body.trainerId) {
+    const trainer = await db.user.findFirst({ where: { id: req.body.trainerId, orgId: scope.orgId } });
+    if (!trainer) return res.status(404).json({ error: "trainer not found in your organization" });
+    trainerId = trainer.id;
+  }
+  return res.status(201).json(await db.session.create({ data: { title: req.body.title, programme: req.body.programme ?? "", programmeId, orgId: scope.orgId, trainer: req.body.trainer ?? "", trainerId, date: req.body.date, time: req.body.time, mode: req.body.mode ?? "online", capacity: req.body.capacity ?? null } }));
 });
 router.post("/sessions/:id/invite", requireRole("trainer", "admin", "owner"), async (req, res) => {
   const session = await db.session.findUnique({ where: { id: req.params.id } });
@@ -302,9 +317,10 @@ router.post("/sessions/:id/rsvp", async (req, res) => {
   const { confirmRsvp, declineRsvp } = await import("../services/rsvp.js");
   const learnerId = me.role === "learner" ? me.id : (req.body?.learnerId ?? me.id);
   if (me.role === "learner" && learnerId !== me.id) return res.status(403).json({ error: "learners may only RSVP for themselves" });
+  const rsvpOrg = orgIdOf(req as AuthedRequest);
   try {
-    if (req.body?.status === "declined") return res.json(await declineRsvp(req.params.id, learnerId));
-    return res.json(await confirmRsvp(req.params.id, learnerId));
+    if (req.body?.status === "declined") return res.json(await declineRsvp(req.params.id, learnerId, rsvpOrg));
+    return res.json(await confirmRsvp(req.params.id, learnerId, rsvpOrg));
   } catch (e) {
     const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
     return res.status(status).json({ error: (e as Error).message });
@@ -342,15 +358,28 @@ router.post("/threads/:id/messages", async (req, res) => {
   }).catch(() => null);
   res.status(201).json(msg);
 });
-router.get("/bookings", async (_req, res) => res.json(await db.booking.findMany({ take: 200 }).catch(() => [])));
+router.get("/bookings", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  res.json(await db.booking.findMany({ where: { orgId: scope.orgId }, take: 200 }).catch(() => []));
+});
 router.post("/bookings", async (req, res) => {
   const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
   if (me.role === "learner") {
-    const scope = orgScope(req as AuthedRequest);
     const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, programme: { orgId: scope.orgId } } }).catch(() => null);
     if (!enrolled) return res.status(403).json({ error: "only enrolled learners may book sessions" });
   }
-  return res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, course: req.body.course ?? "", date: req.body.date, time: req.body.time } }));
+  let trainerId: string | null = null;
+  if (req.body.trainer) {
+    const trainers = await db.user.findMany({ where: { name: req.body.trainer, orgId: scope.orgId }, select: { id: true } }).catch(() => []);
+    if (trainers.length === 1) trainerId = trainers[0].id;
+  }
+  let courseId: string | null = null;
+  if (req.body.course) {
+    const course = await db.course.findFirst({ where: { title: req.body.course, programme: { orgId: scope.orgId } } }).catch(() => null);
+    if (course) courseId = course.id;
+  }
+  return res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, trainerId, course: req.body.course ?? "", courseId, orgId: scope.orgId, date: req.body.date, time: req.body.time } }));
 });
 router.get("/calendar", async (_req, res) => res.json(await db.calendarEvent.findMany({ take: 500 }).catch(() => [])));
 router.get("/calendar/connections", async (req, res) => {
@@ -373,7 +402,7 @@ router.delete("/calendar/connections/:id", async (req, res) => {
 router.post("/sessions/:id/sync-calendar", requireRole("trainer", "admin", "owner"), async (req, res) => {
   const { syncSessionToCalendars } = await import("../services/calendarSync.js");
   try {
-    return res.json(await syncSessionToCalendars(req.params.id));
+    return res.json(await syncSessionToCalendars(req.params.id, undefined, orgIdOf(req as AuthedRequest)));
   } catch (e) {
     const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
     return res.status(status).json({ error: (e as Error).message });
