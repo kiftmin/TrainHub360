@@ -201,18 +201,6 @@ router.patch("/programmes/:id", requireProgrammeRole("admin", "owner"), async (r
   if (patch.progress !== undefined) data.progress = Number(patch.progress);
   return res.json(await db.programme.update({ where: { id: req.params.id }, data }));
 });
-router.delete("/programmes/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
-  const scope = orgScope(req as AuthedRequest);
-  await assertProgrammeInOrg(req.params.id, scope.orgId);
-  const courseCount = await db.course.count({ where: { programmeId: req.params.id, deletedAt: null } }).catch(() => 0);
-  const enrolCount = await db.enrolment.count({ where: { programmeId: req.params.id } }).catch(() => 0);
-  if (courseCount > 0 || enrolCount > 0) {
-    return res.status(409).json({ error: `cannot delete: programme still has ${courseCount} course(s) and ${enrolCount} enrolment(s). Archive or move them first.` });
-  }
-  await db.programme.delete({ where: { id: req.params.id } }).catch(() => null);
-  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "DELETE /programmes/:id", entity: "programme", entityId: req.params.id, details: null } }).catch(() => null);
-  return res.status(204).end();
-});
 router.post("/programmes/:id/delete-requests", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);

@@ -34,7 +34,7 @@ import {
   useCertificates,
   useCreateProgramme,
   useUpdateProgramme,
-  useDeleteProgramme, useRequestDeletion,
+  useRequestDeletion,
   useUpdateCourse,
   useDeleteCourse,
   useUpdateModule,
@@ -79,7 +79,6 @@ import { fmtDate, pct, initials, Skeleton, EmptyState, ErrorState, Status, Progr
 export function Programmes() {
   const programmes = useProgrammes();
   const updateProgramme = useUpdateProgramme();
-  const deleteProgramme = useDeleteProgramme();
   const requestDeletion = useRequestDeletion();
   const [editing, setEditing] = useState<null | { id: string; name: string; type: string; owner: string }>(null);
   const canManage = ['admin', 'owner'].includes(getSessionUser()?.role ?? '');
@@ -91,13 +90,6 @@ export function Programmes() {
     );
   };
   const [actionError, setActionError] = useState<string | null>(null);
-  const remove = (id: string) => {
-    if (!window.confirm('Delete this programme? Blocked while it still has courses or enrolments.')) return;
-    setActionError(null);
-    deleteProgramme.mutate(id, {
-      onError: (e) => setActionError(`Delete failed (${(e as Error).message}). Remove or reassign its courses first.`),
-    });
-  };
   const createProgramme = useCreateProgramme();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -115,7 +107,7 @@ export function Programmes() {
     {programmes.isLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-48" />)}</div>
     : programmes.isError ? <ErrorState retry={() => programmes.refetch()} />
     : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-      {(programmes.data || []).map((p) => <div key={p.id} className="rounded-xl border border-border/80 bg-card p-5 transition-transform hover:-translate-y-0.5"><Link href={`/programmes/${p.id}`} className="block"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary"><GraduationCap className="size-5" /></div><div className="min-w-0 flex-1"><p className="truncate font-bold">{p.name}</p><p className="text-xs text-muted-foreground">{p.type} · {p.owner}</p></div><Status tone={p.status === 'active' ? 'good' : 'neutral'}>{p.status}</Status></div><div className="mt-4 grid grid-cols-3 gap-2 text-center"><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{p.learnerCount}</p><p className="text-[10px] text-muted-foreground">learners</p></div><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{p.courseCount}</p><p className="text-[10px] text-muted-foreground">courses</p></div><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{pct(p.progress)}</p><p className="text-[10px] text-muted-foreground">progress</p></div></div><div className="mt-4"><ProgressLine value={p.progress} /></div></Link>{canManage && <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setEditing({ id: p.id, name: p.name, type: p.type, owner: p.owner })}>Edit</Button><Button size="sm" variant="outline" onClick={() => remove(p.id)} disabled={deleteProgramme.isPending}>Delete</Button><Button size="sm" variant="outline" disabled={requestDeletion.isPending} onClick={() => { setActionError(null); const reason = window.prompt(`Request deletion approval for "${p.name}"? Optionally give a reason:`); if (reason === null) return; requestDeletion.mutate({ programmeId: p.id, reason: reason || undefined }, { onSuccess: () => setActionError(null), onError: (e) => setActionError(`Request failed (${(e as Error).message}).`) }); }}>Request deletion</Button></div>}</div>)}
+      {(programmes.data || []).map((p) => <div key={p.id} className="rounded-xl border border-border/80 bg-card p-5 transition-transform hover:-translate-y-0.5"><Link href={`/programmes/${p.id}`} className="block"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary"><GraduationCap className="size-5" /></div><div className="min-w-0 flex-1"><p className="truncate font-bold">{p.name}</p><p className="text-xs text-muted-foreground">{p.type} · {p.owner}</p></div><Status tone={p.status === 'active' ? 'good' : 'neutral'}>{p.status}</Status></div><div className="mt-4 grid grid-cols-3 gap-2 text-center"><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{p.learnerCount}</p><p className="text-[10px] text-muted-foreground">learners</p></div><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{p.courseCount}</p><p className="text-[10px] text-muted-foreground">courses</p></div><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{pct(p.progress)}</p><p className="text-[10px] text-muted-foreground">progress</p></div></div><div className="mt-4"><ProgressLine value={p.progress} /></div></Link>{canManage && <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setEditing({ id: p.id, name: p.name, type: p.type, owner: p.owner })}>Edit</Button><Button size="sm" variant="outline" disabled={requestDeletion.isPending} onClick={() => { setActionError(null); const reason = window.prompt(`Request deletion approval for "${p.name}"? Optionally give a reason:`); if (reason === null) return; requestDeletion.mutate({ programmeId: p.id, reason: reason || undefined }, { onSuccess: () => setActionError(null), onError: (e) => setActionError(`Request failed (${(e as Error).message}).`) }); }}>Request deletion</Button></div>}</div>)}
     </div>}
     {actionError && <p className="mt-4 text-sm text-destructive">{actionError}</p>}
     {!programmes.isLoading && !programmes.isError && !programmes.data?.length && <EmptyState title="No programmes" detail="Programmes will appear here once created." />}
@@ -160,5 +152,7 @@ export function ProgrammeDetail({ id }: { id: string }) {
     </div>}
   </div>;
 }
+
+
 
 

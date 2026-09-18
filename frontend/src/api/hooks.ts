@@ -273,16 +273,6 @@ export function useUpdateProgramme() {
   });
 }
 
-export function useDeleteProgramme() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api<void>(`/programmes/${id}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.programmes });
-    },
-  });
-}
-
 export function useUpdateCourse() {
   const qc = useQueryClient();
   return useMutation({
