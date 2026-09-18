@@ -284,11 +284,16 @@ export function useUpdateCourse() {
   });
 }
 
-export function useDeleteCourse() {
+export type DeletionTarget = 'courses' | 'modules' | 'assessments';
+
+export function useRequestContentDeletion() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api<void>(`/courses/${id}`, { method: 'DELETE' }),
+    mutationFn: ({ target, id, reason }: { target: DeletionTarget; id: string; reason?: string }) =>
+      api<DeleteRequest>(`/${target}/${id}/delete-requests`, { method: 'POST', body: JSON.stringify({ reason }) }),
     onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['delete-requests'] });
+      qc.invalidateQueries({ queryKey: ['programmes'] });
       qc.invalidateQueries({ queryKey: ['courses'] });
     },
   });
@@ -317,16 +322,6 @@ export function useUpdateModule() {
   });
 }
 
-export function useDeleteModule() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (id: string) => api<void>(`/modules/${id}`, { method: 'DELETE' }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['programmes'] });
-      qc.invalidateQueries({ queryKey: ['courses'] });
-    },
-  });
-}
 
 export function useCourses(programmeId?: string) {
   const qs = programmeId ? `?programmeId=${encodeURIComponent(programmeId)}` : '';

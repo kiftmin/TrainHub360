@@ -201,16 +201,89 @@ router.patch("/programmes/:id", requireProgrammeRole("admin", "owner"), async (r
   if (patch.progress !== undefined) data.progress = Number(patch.progress);
   return res.json(await db.programme.update({ where: { id: req.params.id }, data }));
 });
+async function resolveDeletionTarget(targetType: string, targetId: string, orgId: string): Promise<{ id: string; name: string } | null> {
+  if (targetType === "programme") {
+    const p = await db.programme.findFirst({ where: { id: targetId, orgId } });
+    return p ? { id: p.id, name: p.name } : null;
+  }
+  if (targetType === "course") {
+    const c = await db.course.findFirst({ where: { id: targetId, programme: { orgId } } });
+    return c ? { id: c.id, name: c.title } : null;
+  }
+  if (targetType === "module") {
+    const m = await db.module.findFirst({ where: { id: targetId, course: { programme: { orgId } } } });
+    return m ? { id: m.id, name: m.title } : null;
+  }
+  if (targetType === "assessment") {
+    const a = await db.assessment.findFirst({ where: { id: targetId, module: { course: { programme: { orgId } } } } });
+    return a ? { id: a.id, name: `${a.type} assessment` } : null;
+  }
+  return null;
+}
+async function createDeleteRequest(targetType: string, targetId: string, me: { id: string }, orgId: string, reason?: string) {
+  const target = await resolveDeletionTarget(targetType, targetId, orgId);
+  if (!target) {
+    const err = new Error(`${targetType} not found in your organization`) as Error & { status?: number };
+    err.status = 404;
+    throw err;
+  }
+  const existing = await db.deleteRequest.findFirst({ where: { targetType, targetId: target.id, status: "pending" } }).catch(() => null);
+  if (existing) {
+    const err = new Error("a pending delete request already exists for this target") as Error & { status?: number; requestId?: string };
+    err.status = 409;
+    err.requestId = existing.id;
+    throw err;
+  }
+  return db.deleteRequest.create({
+    data: { orgId, targetType, targetId: target.id, targetName: target.name, requestedBy: me.id, reason: reason ?? null },
+  });
+}
+function deleteRequestBody(req: AuthedRequest) {
+  return { targetId: req.params.id, reason: (req.body as { reason?: string } | null)?.reason };
+}
 router.post("/programmes/:id/delete-requests", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const programme = await db.programme.findFirst({ where: { id: req.params.id, orgId: scope.orgId } });
-  if (!programme) return res.status(404).json({ error: "programme not found in your organization" });
-  const existing = await db.deleteRequest.findFirst({ where: { targetType: "programme", targetId: programme.id, status: "pending" } }).catch(() => null);
-  if (existing) return res.status(409).json({ error: "a pending delete request already exists for this programme", requestId: existing.id });
-  return res.status(201).json(await db.deleteRequest.create({
-    data: { orgId: scope.orgId, targetType: "programme", targetId: programme.id, targetName: programme.name, requestedBy: me.id, reason: req.body?.reason ?? null },
-  }));
+  const { targetId, reason } = deleteRequestBody(req as AuthedRequest);
+  try {
+    return res.status(201).json(await createDeleteRequest("programme", targetId, me, scope.orgId, reason));
+  } catch (e) {
+    const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
+    return res.status(status).json({ error: (e as Error).message, ...("requestId" in (e as object) ? { requestId: (e as { requestId: string }).requestId } : {}) });
+  }
+});
+router.post("/courses/:id/delete-requests", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const { targetId, reason } = deleteRequestBody(req as AuthedRequest);
+  try {
+    return res.status(201).json(await createDeleteRequest("course", targetId, me, scope.orgId, reason));
+  } catch (e) {
+    const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
+    return res.status(status).json({ error: (e as Error).message });
+  }
+});
+router.post("/modules/:id/delete-requests", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const { targetId, reason } = deleteRequestBody(req as AuthedRequest);
+  try {
+    return res.status(201).json(await createDeleteRequest("module", targetId, me, scope.orgId, reason));
+  } catch (e) {
+    const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
+    return res.status(status).json({ error: (e as Error).message });
+  }
+});
+router.post("/assessments/:id/delete-requests", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const { targetId, reason } = deleteRequestBody(req as AuthedRequest);
+  try {
+    return res.status(201).json(await createDeleteRequest("assessment", targetId, me, scope.orgId, reason));
+  } catch (e) {
+    const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
+    return res.status(status).json({ error: (e as Error).message });
+  }
 });
 router.get("/delete-requests", requireRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
@@ -227,6 +300,19 @@ router.post("/delete-requests/:id/approve", requireRole("admin", "owner"), async
   if (dr.targetType === "programme") {
     await db.programme.updateMany({ where: { id: dr.targetId, orgId: scope.orgId }, data: { status: "archived" } });
     await db.course.updateMany({ where: { programmeId: dr.targetId, programme: { orgId: scope.orgId } }, data: { isArchived: true, archivedAt: now } });
+  } else if (dr.targetType === "course") {
+    await db.course.updateMany({ where: { id: dr.targetId, programme: { orgId: scope.orgId } }, data: { isArchived: true, archivedAt: now } });
+  } else if (dr.targetType === "module") {
+    const mod = await db.module.findFirst({ where: { id: dr.targetId, course: { programme: { orgId: scope.orgId } } } });
+    if (mod) {
+      await db.assessment.deleteMany({ where: { moduleId: mod.id } }).catch(() => null);
+      await db.module.delete({ where: { id: mod.id } }).catch(() => null);
+    }
+  } else if (dr.targetType === "assessment") {
+    const a = await db.assessment.findFirst({ where: { id: dr.targetId, module: { course: { programme: { orgId: scope.orgId } } } } });
+    if (a) await db.assessment.delete({ where: { id: a.id } }).catch(() => null);
+  } else {
+    return res.status(400).json({ error: `unknown target type ${dr.targetType}` });
   }
   await db.auditLog.create({ data: { userId: me.id, action: "DELETE_REQUEST_APPROVED", entity: dr.targetType, entityId: dr.targetId, details: null } }).catch(() => null);
   return res.json(await db.deleteRequest.update({ where: { id: dr.id }, data: { status: "approved", approvedBy: me.id, decidedAt: now } }));
@@ -276,15 +362,6 @@ router.patch("/modules/:id", requireProgrammeRole("admin", "owner"), async (req,
   if (patch.order !== undefined) data.order = Number(patch.order);
   return res.json(await db.module.update({ where: { id: mod.id }, data }));
 });
-router.delete("/modules/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
-  const scope = orgScope(req as AuthedRequest);
-  const mod = await db.module.findFirst({ where: { id: req.params.id, course: { programme: { orgId: scope.orgId } } } });
-  if (!mod) return res.status(404).json({ error: "module not found in your organization" });
-  await db.assessment.deleteMany({ where: { moduleId: mod.id } }).catch(() => null);
-  await db.module.delete({ where: { id: mod.id } }).catch(() => null);
-  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "DELETE /modules/:id", entity: "module", entityId: mod.id, details: null } }).catch(() => null);
-  return res.status(204).end();
-});
 router.patch("/assessments/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const a = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } });
@@ -294,13 +371,6 @@ router.patch("/assessments/:id", requireProgrammeRole("admin", "owner"), async (
   if (req.body?.type) data.type = req.body.type;
   if (req.body?.maxScore !== undefined) data.maxScore = Number(req.body.maxScore);
   return res.json(await db.assessment.update({ where: { id: a.id }, data }));
-});
-router.delete("/assessments/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
-  const scope = orgScope(req as AuthedRequest);
-  const a = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } });
-  if (!a) return res.status(404).json({ error: "assessment not found in your organization" });
-  await db.assessment.delete({ where: { id: a.id } }).catch(() => null);
-  return res.status(204).end();
 });
 router.get("/modules/:id/assessments", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
@@ -341,20 +411,6 @@ router.patch("/courses/:id", requireProgrammeRole("admin", "owner"), async (req,
   if (patch.appliedThreshold !== undefined) data.appliedThreshold = Number(patch.appliedThreshold);
   if (patch.progress !== undefined) data.progress = Number(patch.progress);
   return res.json(await db.course.update({ where: { id: req.params.id }, data }));
-});
-router.post("/courses/:id/archive", requireProgrammeRole("admin", "owner"), async (req, res) => {
-  const scope = orgScope(req as AuthedRequest);
-  await assertCourseInOrg(req.params.id, scope.orgId);
-  const course = await db.course.update({ where: { id: req.params.id }, data: { isArchived: true, archivedAt: new Date() } });
-  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "POST /courses/:id/archive", entity: "course", entityId: course.id, details: null } }).catch(() => null);
-  res.json(course);
-});
-router.delete("/courses/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
-  const scope = orgScope(req as AuthedRequest);
-  await assertCourseInOrg(req.params.id, scope.orgId);
-  const course = await db.course.update({ where: { id: req.params.id }, data: { deletedAt: new Date() } });
-  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user?.id ?? null, action: "DELETE /courses/:id", entity: "course", entityId: course.id, details: null } }).catch(() => null);
-  res.status(204).end();
 });
 router.post("/courses/:courseId/modules/:moduleId/explain", async (req, res) => {
   const { concept, userQuery } = req.body ?? {};

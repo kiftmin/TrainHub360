@@ -36,9 +36,8 @@ import {
   useUpdateProgramme,
   useRequestDeletion,
   useUpdateCourse,
-  useDeleteCourse,
   useUpdateModule,
-  useDeleteModule,
+  useRequestContentDeletion,
   downloadReviewCreditCsv,
   type Course,
   type ReviewCreditSettings,
@@ -121,9 +120,9 @@ export function ProgrammeDetail({ id }: { id: string }) {
   const modules = useModules(id);
   const [helpModuleId, setHelpModuleId] = useState<string | null>(null);
   const updateCourse = useUpdateCourse();
-  const deleteCourse = useDeleteCourse();
+  const requestContentDeletion = useRequestContentDeletion();
   const updateModule = useUpdateModule();
-  const deleteModule = useDeleteModule();
+  const requestDelete = (target: 'courses' | 'modules', id: string, label: string) => { const reason = window.prompt(`Request deletion approval for "${label}"? A second admin must approve:`); if (reason === null) return; requestContentDeletion.mutate({ target, id, reason: reason || undefined }, { onSuccess: refreshDetail }); };
   const dqc = useQueryClient();
   const [editingCourse, setEditingCourse] = useState<null | { id: string; title: string; category: string; trainer: string }>(null);
   const [editingModule, setEditingModule] = useState<null | { id: string; title: string }>(null);
@@ -137,13 +136,13 @@ export function ProgrammeDetail({ id }: { id: string }) {
     : !programme ? <EmptyState title="Programme not found" detail="It may have been archived." />
     : <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
       <section className="rounded-xl border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>
-        <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <div key={c.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-semibold">{c.title}</p><Status tone={c.status === 'published' ? 'good' : 'warn'}>{c.status}</Status></div><p className="mt-1 text-xs text-muted-foreground">{c.category} · {c.trainer}</p><div className="mt-3"><ProgressLine value={c.progress} /></div>{canManageDetail && <div className="mt-3 flex gap-2"><Button size="sm" variant="outline" onClick={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })}>Edit</Button><Button size="sm" variant="outline" onClick={() => { if (window.confirm(`Delete "${c.title}"? It will be soft-deleted and hidden from learners.`)) deleteCourse.mutate(c.id, { onSuccess: refreshDetail }); }}>Delete</Button></div>}</div>)}
+        <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <div key={c.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-semibold">{c.title}</p><Status tone={c.status === 'published' ? 'good' : 'warn'}>{c.status}</Status></div><p className="mt-1 text-xs text-muted-foreground">{c.category} · {c.trainer}</p><div className="mt-3"><ProgressLine value={c.progress} /></div>{canManageDetail && <div className="mt-3 flex gap-2"><Button size="sm" variant="outline" onClick={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })}>Edit</Button><Button size="sm" variant="outline" onClick={() => { requestDelete('courses', c.id, c.title); }}>Delete</Button></div>}</div>)}
         {!courses.data?.length && <EmptyState title="No courses yet" detail="Courses assigned to this programme will appear here." />}</div>
         <Dialog open={!!editingCourse} onOpenChange={(v) => { if (!v) setEditingCourse(null); }}><DialogContent><DialogHeader><DialogTitle>Edit course</DialogTitle></DialogHeader>{editingCourse && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingCourse.title} onChange={(e) => setEditingCourse({ ...editingCourse, title: e.target.value })} /></label><label className="block text-xs font-semibold">Category<Input className="mt-2" value={editingCourse.category} onChange={(e) => setEditingCourse({ ...editingCourse, category: e.target.value })} /></label><label className="block text-xs font-semibold">Trainer<Input className="mt-2" value={editingCourse.trainer} onChange={(e) => setEditingCourse({ ...editingCourse, trainer: e.target.value })} /></label><Button className="w-full" disabled={updateCourse.isPending} onClick={() => updateCourse.mutate({ id: editingCourse.id, patch: { title: editingCourse.title, category: editingCourse.category, trainer: editingCourse.trainer } }, { onSuccess: () => { refreshDetail(); setEditingCourse(null); } })}>{updateCourse.isPending ? 'Saving…' : 'Save changes'}</Button></div>}</DialogContent></Dialog></section>
       <section className="rounded-xl border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Modules & concept help</p>
         <div className="mt-4 space-y-3">{(modules.data || []).map((m) => {
           const course = (courses.data || []).find((c) => c.id === m.courseId);
-          return <div key={m.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{m.title}</p><p className="mt-1 text-xs text-muted-foreground">{course?.title ?? 'Course module'}</p></div><div className="flex shrink-0 gap-2"><Button size="sm" variant="outline" onClick={() => setHelpModuleId(helpModuleId === m.id ? null : m.id)} data-testid={`button-module-help-${m.id}`}>Stuck on this concept?</Button>{canManageDetail && <><Button size="sm" variant="outline" onClick={() => setEditingModule({ id: m.id, title: m.title })}>Edit</Button><Button size="sm" variant="outline" onClick={() => { if (window.confirm(`Delete module "${m.title}" and its assessments?`)) deleteModule.mutate(m.id, { onSuccess: refreshDetail }); }}>Delete</Button></>}</div></div>
+          return <div key={m.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{m.title}</p><p className="mt-1 text-xs text-muted-foreground">{course?.title ?? 'Course module'}</p></div><div className="flex shrink-0 gap-2"><Button size="sm" variant="outline" onClick={() => setHelpModuleId(helpModuleId === m.id ? null : m.id)} data-testid={`button-module-help-${m.id}`}>Stuck on this concept?</Button>{canManageDetail && <><Button size="sm" variant="outline" onClick={() => setEditingModule({ id: m.id, title: m.title })}>Edit</Button><Button size="sm" variant="outline" onClick={() => { requestDelete('modules', m.id, m.title); }}>Delete</Button></>}</div></div>
           {helpModuleId === m.id && <div className="mt-3"><AiConceptExplainer courseId={m.courseId} moduleId={m.id} moduleTitle={m.title} /></div>}</div>;
         })}
         {!modules.data?.length && <EmptyState title="No modules yet" detail="Micro-learning modules will appear here once added." />}</div>
@@ -152,6 +151,10 @@ export function ProgrammeDetail({ id }: { id: string }) {
     </div>}
   </div>;
 }
+
+
+
+
 
 
 
