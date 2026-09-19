@@ -1,35 +1,8 @@
 import type { ReactNode } from "react";
 import { useProgrammes, useKpiSummary } from "@/api/hooks";
-import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Users, Target, BookOpen, RefreshCw, CircleAlert, ShieldCheck, Clock3, Activity, TrendingUp, TrendingDown, Download } from "lucide-react";
-
-function pct(value?: number | null) { return `${Math.round(value ?? 0)}%`; }
-function Skeleton({ className }: { className?: string }) { return <div className={cn('skeleton rounded-lg', className)} />; }
-function ErrorState({ retry }: { retry?: () => void }) {
-  return <div className="flex min-h-44 flex-col items-center justify-center rounded-lg border border-destructive/25 bg-destructive/5 p-6 text-center">
-    <CircleAlert className="mb-3 size-6 text-destructive" /><p className="font-semibold">Could not load this view</p>
-    {retry && <Button variant="outline" size="sm" className="mt-4" onClick={retry}><RefreshCw className="size-4" />Retry</Button>}
-  </div>;
-}
-function EmptyState({ title, detail }: { title: string; detail: string }) {
-  return <div className="flex min-h-32 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card/55 p-6 text-center">
-    <p className="font-semibold text-foreground">{title}</p><p className="mt-1 max-w-sm text-sm text-muted-foreground">{detail}</p>
-  </div>;
-}
-function PageHeading({ eyebrow, title, detail }: { eyebrow: string; title: string; detail: string }) {
-  return <div className="mb-6"><p className="mb-1.5 font-mono text-[10px] font-medium uppercase tracking-[.22em] text-primary">{eyebrow}</p><h1 className="text-2xl font-extrabold tracking-[-.04em] text-foreground md:text-[2rem]">{title}</h1><p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">{detail}</p></div>;
-}
-function KpiCard({ label, value, detail, icon: Icon }: { label: string; value: string; detail: string; icon: typeof Users }) {
-  return <div className="rounded-lg border border-border/80 bg-card p-3"><div className="flex items-start justify-between"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-muted-foreground">{label}</p><div className="grid size-7 place-items-center rounded-md bg-primary/10 text-primary"><Icon className="size-3.5" /></div></div><p className="mt-3 text-xl font-extrabold tracking-[-.04em]">{value}</p><p className="mt-0.5 text-xs text-muted-foreground">{detail}</p></div>;
-}
-function Status({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'good' | 'warn' | 'neutral' }) {
-  return <Badge variant="outline" className={cn('font-mono text-[10px] uppercase tracking-[.12em]', tone === 'good' && 'border-emerald-600/25 bg-emerald-50 text-emerald-700', tone === 'warn' && 'border-amber-600/25 bg-amber-50 text-amber-700')}>{children}</Badge>;
-}
-function ProgressLine({ value }: { value: number }) {
-  return <div className="h-1.5 overflow-hidden rounded-full bg-secondary"><div className={cn('h-full rounded-full bg-primary transition-all duration-700')} style={{ width: `${Math.min(100, Math.max(0, value))}%` }} /></div>;
-}
+import { Users, Target, BookOpen, RefreshCw, CircleAlert, ShieldCheck, Activity } from "lucide-react";
+import { fmtDate, pct, Skeleton, EmptyState, ErrorState, Status, ProgressLine, PageHeading, KpiCard } from "@/components/shared";
 
 export function StakeholderDashboard() {
   const programmes = useProgrammes();

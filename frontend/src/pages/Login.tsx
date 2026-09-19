@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { ShieldCheck } from "lucide-react";
+import { ShieldCheck, KeyRound } from "lucide-react";
 import { setSession } from "../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 type Mode = "login" | "forgot" | "reset";
 
@@ -15,6 +16,11 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [ssoOpen, setSsoOpen] = useState(false);
+  const [ssoOrgId, setSsoOrgId] = useState("");
+  const [ssoAssertion, setSsoAssertion] = useState("");
+  const [ssoBusy, setSsoBusy] = useState(false);
+  const [ssoError, setSsoError] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -34,6 +40,30 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
       setError((err as Error).message);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function submitSso(e: React.FormEvent) {
+    e.preventDefault();
+    setSsoBusy(true);
+    setSsoError(null);
+    try {
+      const res = await fetch("/api/auth/sso", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ orgId: ssoOrgId, samlAssertion: ssoAssertion }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || `SSO login failed (${res.status})`);
+      }
+      const data = await res.json();
+      setSession(data.accessToken, data.user);
+      onDone();
+    } catch (err) {
+      setSsoError((err as Error).message);
+    } finally {
+      setSsoBusy(false);
     }
   }
 
@@ -118,6 +148,10 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
           <Button className="w-full bg-primary text-primary-foreground" disabled={busy}>
             {busy ? "Signing in…" : "Sign in"}
           </Button>
+          <div className="relative my-2"><div className="absolute inset-0 flex items-center"><div className="w-full border-t border-border/70" /></div><div className="relative flex justify-center text-[11px]"><span className="bg-card px-2 text-muted-foreground">or</span></div></div>
+          <Button type="button" variant="outline" className="w-full" onClick={() => { setSsoOpen(true); setError(null); }}>
+            <KeyRound className="mr-2 size-4" />Sign in with SSO
+          </Button>
           <button type="button" onClick={() => { setMode("forgot"); setError(null); }} className="w-full text-center text-xs font-semibold text-primary hover:underline">
             Forgot password?
           </button>
@@ -180,6 +214,26 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
         </form>
         )}
       </div>
+
+      <Dialog open={ssoOpen} onOpenChange={setSsoOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Sign in with SSO</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={submitSso} className="space-y-4 pt-2">
+            <p className="text-xs text-muted-foreground">Paste a base64-encoded SAML assertion from your identity provider. The assertion must contain the user's email and be signed with the IdP certificate configured on your organisation.</p>
+            <label className="block text-xs font-semibold">Organisation ID
+              <Input className="mt-2 font-mono text-xs" value={ssoOrgId} onChange={(e) => setSsoOrgId(e.target.value)} placeholder="org_xxxxxxxxxxxx" required />
+            </label>
+            <label className="block text-xs font-semibold">SAML assertion (base64)
+              <textarea className="mt-2 w-full rounded-md border border-input bg-background px-3 py-2 font-mono text-xs" rows={5} value={ssoAssertion} onChange={(e) => setSsoAssertion(e.target.value)} placeholder="PHNhbWxwOlJlc3BvbnNlLi4." required />
+            </label>
+            {ssoError && <p className="text-sm text-destructive">{ssoError}</p>}
+            <Button className="w-full" disabled={ssoBusy}>{ssoBusy ? "Authenticating…" : "Authenticate"}</Button>
+            <p className="text-[11px] text-muted-foreground">Requires SSO_ENABLED=true and SAML config on the organisation record.</p>
+          </form>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

@@ -685,6 +685,10 @@ router.patch("/organizations/:id", requireRole("owner", "admin"), async (req, re
     data.webhookUrls = JSON.stringify(patch.webhookUrls);
   }
   if (patch.maxWeighting !== undefined) data.reviewCreditMaxWeighting = Number(patch.maxWeighting);
+  if (patch.samlEnabled !== undefined) data.samlEnabled = Boolean(patch.samlEnabled);
+  if (patch.samlIdpCert !== undefined) data.samlIdpCert = patch.samlIdpCert || null;
+  if (patch.samlIdpIssuer !== undefined) data.samlIdpIssuer = patch.samlIdpIssuer || null;
+  if (patch.samlEntityId !== undefined) data.samlEntityId = patch.samlEntityId || null;
   return res.json(await db.organization.update({ where: { id: req.params.id }, data }));
 });
 router.post("/organizations", async (req, res) => {

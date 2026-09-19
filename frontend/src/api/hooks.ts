@@ -7,6 +7,9 @@ export interface Organization {
   plan: string;
   learnerCount: number;
   programmeCount: number;
+  samlEnabled?: boolean;
+  samlIdpIssuer?: string;
+  samlEntityId?: string;
 }
 
 export interface CurrentUser {
@@ -302,7 +305,7 @@ export function useRequestContentDeletion() {
 export function useUpdateOrganization() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: { name?: string; plan?: string; domain?: string; webhookUrls?: string[] } }) =>
+    mutationFn: ({ id, patch }: { id: string; patch: { name?: string; plan?: string; domain?: string; webhookUrls?: string[]; samlEnabled?: boolean; samlIdpCert?: string; samlIdpIssuer?: string; samlEntityId?: string } }) =>
       api<Organization>(`/organizations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workspace });

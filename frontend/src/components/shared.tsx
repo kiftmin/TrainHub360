@@ -95,7 +95,7 @@ export function ErrorState({ retry }: { retry?: () => void }) {
 }
 
 export function Status({ children, tone = 'neutral' }: { children: ReactNode; tone?: 'good' | 'warn' | 'bad' | 'neutral' }) {
-  return <Badge variant="outline" className={cn('font-mono text-[10px] uppercase tracking-[.12em]', tone === 'good' && 'border-emerald-600/25 bg-emerald-50 text-emerald-700', tone === 'warn' && 'border-amber-600/25 bg-amber-50 text-amber-700', tone === 'bad' && 'border-destructive/25 bg-destructive/5 text-destructive')}>{children}</Badge>;
+  return <Badge variant="outline" className={cn('font-mono text-[10px] uppercase tracking-[.12em]', tone === 'good' && 'border-[hsl(var(--status-on-track))]/25 bg-[hsl(var(--status-on-track))]/10 text-[hsl(var(--status-on-track))]', tone === 'warn' && 'border-[hsl(var(--status-at-risk))]/25 bg-[hsl(var(--status-at-risk))]/10 text-[hsl(var(--status-at-risk))]', tone === 'bad' && 'border-[hsl(var(--status-off-track))]/25 bg-[hsl(var(--status-off-track))]/10 text-[hsl(var(--status-off-track))]')}>{children}</Badge>;
 }
 
 export function ProgressLine({ value, color = 'bg-primary' }: { value: number; color?: string }) {
@@ -107,6 +107,6 @@ export function PageHeading({ eyebrow, title, detail, action }: { eyebrow: strin
 }
 
 export function KpiCard({ label, value, detail, icon: Icon, tone = 'primary' }: { label: string; value: string; detail: string; icon: typeof Gauge; tone?: 'primary' | 'accent' | 'good' | 'warn' }) {
-  return <div className="rounded-lg border border-border/80 bg-card p-3"><div className="flex items-start justify-between"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-muted-foreground">{label}</p><div className={cn('grid size-7 place-items-center rounded-md', tone === 'accent' ? 'bg-accent/20 text-foreground' : tone === 'good' ? 'bg-emerald-50 text-emerald-700' : tone === 'warn' ? 'bg-amber-50 text-amber-700' : 'bg-primary/10 text-primary')}><Icon className="size-3.5" /></div></div><p className="mt-3 text-xl font-extrabold tracking-[-.04em]">{value}</p><p className="mt-0.5 text-xs text-muted-foreground">{detail}</p></div>;
+  return <div className="rounded-lg border border-border/80 bg-card p-3"><div className="flex items-start justify-between"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-muted-foreground">{label}</p><div className={cn('grid size-7 place-items-center rounded-md', tone === 'accent' ? 'bg-accent/20 text-foreground' : tone === 'good' ? 'bg-[hsl(var(--status-on-track))]/10 text-[hsl(var(--status-on-track))]' : tone === 'warn' ? 'bg-[hsl(var(--status-at-risk))]/10 text-[hsl(var(--status-at-risk))]' : 'bg-primary/10 text-primary')}><Icon className="size-3.5" /></div></div><p className="mt-3 text-xl font-extrabold tracking-[-.04em]">{value}</p><p className="mt-0.5 text-xs text-muted-foreground">{detail}</p></div>;
 }
 
