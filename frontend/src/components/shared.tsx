@@ -81,14 +81,14 @@ export function initials(name?: string) { return name?.split(' ').map((part) => 
 export function Skeleton({ className }: { className?: string }) { return <div className={cn('skeleton rounded-lg', className)} />; }
 
 export function EmptyState({ title, detail, action }: { title: string; detail: string; action?: ReactNode }) {
-  return <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/55 p-6 text-center">
+  return <div className="flex min-h-44 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card/55 p-6 text-center">
     <div className="mb-3 grid size-10 place-items-center rounded-full bg-secondary text-muted-foreground"><FileCheck2 className="size-5" /></div>
     <p className="font-semibold text-foreground">{title}</p><p className="mt-1 max-w-sm text-sm text-muted-foreground">{detail}</p>{action && <div className="mt-4">{action}</div>}
   </div>;
 }
 
 export function ErrorState({ retry }: { retry?: () => void }) {
-  return <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-destructive/25 bg-destructive/5 p-6 text-center">
+  return <div className="flex min-h-44 flex-col items-center justify-center rounded-lg border border-destructive/25 bg-destructive/5 p-6 text-center">
     <CircleAlert className="mb-3 size-6 text-destructive" /><p className="font-semibold">Could not load this view</p><p className="mt-1 text-sm text-muted-foreground">The workspace service did not respond. Try again.</p>
     {retry && <Button variant="outline" size="sm" className="mt-4" onClick={retry}>Retry</Button>}
   </div>;
@@ -103,10 +103,10 @@ export function ProgressLine({ value, color = 'bg-primary' }: { value: number; c
 }
 
 export function PageHeading({ eyebrow, title, detail, action }: { eyebrow: string; title: string; detail: string; action?: ReactNode }) {
-  return <div className="mb-8 flex flex-col justify-between gap-5 md:flex-row md:items-end"><div><p className="mb-2 font-mono text-[10px] font-medium uppercase tracking-[.22em] text-primary">{eyebrow}</p><h1 className="text-3xl font-extrabold tracking-[-.04em] text-foreground md:text-[2.45rem]">{title}</h1><p className="mt-2 max-w-2xl text-sm text-muted-foreground">{detail}</p></div>{action}</div>;
+  return <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><p className="mb-1.5 font-mono text-[10px] font-medium uppercase tracking-[.22em] text-primary">{eyebrow}</p><h1 className="text-2xl font-extrabold tracking-[-.04em] text-foreground md:text-[2rem]">{title}</h1><p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">{detail}</p></div>{action}</div>;
 }
 
 export function KpiCard({ label, value, detail, icon: Icon, tone = 'primary' }: { label: string; value: string; detail: string; icon: typeof Gauge; tone?: 'primary' | 'accent' | 'good' | 'warn' }) {
-  return <div className="group rounded-xl border border-border/80 bg-card p-4 shadow-[0_7px_24px_rgba(25,51,57,.035)] transition-transform duration-200 hover:-translate-y-0.5"><div className="flex items-start justify-between"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-muted-foreground">{label}</p><div className={cn('grid size-8 place-items-center rounded-lg', tone === 'accent' ? 'bg-accent/20 text-foreground' : tone === 'good' ? 'bg-emerald-50 text-emerald-700' : tone === 'warn' ? 'bg-amber-50 text-amber-700' : 'bg-primary/10 text-primary')}><Icon className="size-4" /></div></div><p className="mt-4 text-2xl font-extrabold tracking-[-.04em]">{value}</p><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>;
+  return <div className="rounded-lg border border-border/80 bg-card p-3"><div className="flex items-start justify-between"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-muted-foreground">{label}</p><div className={cn('grid size-7 place-items-center rounded-md', tone === 'accent' ? 'bg-accent/20 text-foreground' : tone === 'good' ? 'bg-emerald-50 text-emerald-700' : tone === 'warn' ? 'bg-amber-50 text-amber-700' : 'bg-primary/10 text-primary')}><Icon className="size-3.5" /></div></div><p className="mt-3 text-xl font-extrabold tracking-[-.04em]">{value}</p><p className="mt-0.5 text-xs text-muted-foreground">{detail}</p></div>;
 }
 

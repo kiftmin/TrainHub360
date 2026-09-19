@@ -92,7 +92,7 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
   const [mobileOpen, setMobileOpen] = useState(false);
   const workspace = useWorkspace();
   const user = workspace.data?.user;
-  return <div className="grain app-shell min-h-[100dvh]">
+  return <div className="min-h-[100dvh]">
     <aside className={cn('fixed inset-y-0 left-0 z-40 flex w-[244px] flex-col bg-sidebar px-4 py-5 text-sidebar-foreground transition-transform duration-300 lg:translate-x-0', mobileOpen ? 'translate-x-0' : '-translate-x-full')}>
       <div className="flex items-center justify-between px-2">
         <button onClick={() => go('/')} className="flex items-center gap-3 text-left">
@@ -117,7 +117,7 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
       <nav className="mt-2 space-y-1">
         {visibleAdminNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', location === href ? 'bg-sidebar-primary text-sidebar-primary-foreground' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px]" /><span>{label}</span></button>)}
       </nav>
-      <div className="mt-auto rounded-xl border border-sidebar-border bg-sidebar-accent/60 p-3">
+      <div className="mt-auto rounded-lg border border-sidebar-border bg-sidebar-accent/60 p-3">
         <div className="flex items-center gap-2">
           <div className="grid size-8 place-items-center rounded-full bg-sidebar-primary text-xs font-bold text-sidebar-primary-foreground">{user?.initials || 'TH'}</div>
           <div className="min-w-0"><p className="truncate text-xs font-semibold">{user?.name || 'Workspace user'}</p><p className="truncate text-[10px] text-sidebar-foreground/45">{user?.role || 'Manager'}</p></div>

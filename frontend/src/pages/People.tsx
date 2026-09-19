@@ -86,17 +86,17 @@ export function People() {
   }, [enrolments.data]);
   return <div className="page-in">
     <PageHeading eyebrow="People" title="Everyone moving forward." detail="Membership, progress, and accountability across the workspace." action={<div className="flex items-center gap-2"><BulkImportButton /><Dialog open={inviteOpen} onOpenChange={setInviteOpen}><DialogTrigger asChild><Button><Plus className="size-4" />Invite learner</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Invite a learner</DialogTitle></DialogHeader><div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Email address<Input className="mt-2" placeholder="learner@company.com" type="email" value={inviteEmail} onChange={(e) => setInviteEmail(e.target.value)} /></label><Button className="w-full" onClick={() => setInviteOpen(false)}>Send invite (visual only)</Button><p className="text-xs text-muted-foreground">Invites are visual-only in this build and post nothing.</p></div></DialogContent></Dialog></div>} />
-    <div className="grid gap-4 md:grid-cols-3">
+    <div className="grid gap-3 md:grid-cols-3">
       <KpiCard label="Learners" value={`${programmes.data?.reduce((a, p) => a + p.learnerCount, 0) ?? 0}`} detail="Across all programmes" icon={Users} />
       <KpiCard label="Enrolments" value={`${enrolments.data?.length ?? 0}`} detail="Tracked course enrolments" icon={BookOpen} />
       <KpiCard label="Programmes" value={`${programmes.data?.length ?? 0}`} detail="Active portfolio" icon={GraduationCap} tone="accent" />
     </div>
-    <section className="mt-5 overflow-hidden rounded-xl border border-border/80 bg-card">
-      <div className="border-b border-border/70 p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Directory</p><h2 className="mt-1 text-lg font-bold">Learners by enrolment</h2></div>
-      {enrolments.isLoading ? <div className="space-y-2 p-5"><Skeleton className="h-12" /><Skeleton className="h-12" /><Skeleton className="h-12" /></div>
-      : enrolments.isError ? <div className="p-5"><ErrorState retry={() => enrolments.refetch()} /></div>
-      : !rows.length ? <div className="p-5"><EmptyState title="No learners yet" detail="Enrolments will build this directory automatically." /></div>
-      : <table className="w-full text-sm"><thead><tr className="text-left font-mono text-[10px] uppercase tracking-wider text-muted-foreground"><th className="p-4">Learner</th><th className="p-4">Enrolments</th><th className="p-4">Completed</th><th className="p-4">Role</th></tr></thead><tbody className="divide-y divide-border/70">{rows.map((r) => <tr key={r.learnerId}><td className="p-4 font-semibold">{r.learnerId}</td><td className="p-4">{r.courses}</td><td className="p-4">{r.completed}</td><td className="p-4"><Status tone="good">learner</Status></td></tr>)}</tbody></table>}
+    <section className="mt-4 overflow-hidden rounded-lg border border-border/80 bg-card">
+      <div className="border-b border-border/70 p-4"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Directory</p><h2 className="mt-1 text-base font-bold">Learners by enrolment</h2></div>
+      {enrolments.isLoading ? <div className="space-y-2 p-4"><Skeleton className="h-10" /><Skeleton className="h-10" /><Skeleton className="h-10" /></div>
+      : enrolments.isError ? <div className="p-4"><ErrorState retry={() => enrolments.refetch()} /></div>
+      : !rows.length ? <div className="p-4"><EmptyState title="No learners yet" detail="Enrolments will build this directory automatically." /></div>
+      : <table className="w-full text-sm"><thead><tr className="text-left font-mono text-[10px] uppercase tracking-wider text-muted-foreground"><th className="px-4 py-2.5">Learner</th><th className="px-4 py-2.5">Enrolments</th><th className="px-4 py-2.5">Completed</th><th className="px-4 py-2.5">Role</th></tr></thead><tbody className="divide-y divide-border/70">{rows.map((r) => <tr key={r.learnerId}><td className="px-4 py-2.5 font-semibold">{r.learnerId}</td><td className="px-4 py-2.5">{r.courses}</td><td className="px-4 py-2.5">{r.completed}</td><td className="px-4 py-2.5"><Status tone="good">learner</Status></td></tr>)}</tbody></table>}
     </section>
   </div>;
 }

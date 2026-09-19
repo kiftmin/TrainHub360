@@ -88,14 +88,14 @@ export function CalendarPage() {
     {loading ? <div className="grid gap-5 xl:grid-cols-2"><Skeleton className="h-64" /><Skeleton className="h-64" /></div>
     : failed ? <ErrorState retry={() => { sessions.refetch(); bookings.refetch(); events.refetch(); }} />
     : <div className="grid gap-5 xl:grid-cols-[1.35fr_.65fr]">
-      <section className="rounded-xl border border-border/80 bg-card p-5"><div className="flex items-center justify-between"><div><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Unified calendar</p><h2 className="mt-1 text-lg font-bold">Upcoming moments</h2></div><Status>{(events.data?.length || 0) + (sessions.data?.length || 0)} upcoming</Status></div>
+      <section className="rounded-lg border border-border/80 bg-card p-5"><div className="flex items-center justify-between"><div><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Unified calendar</p><h2 className="mt-1 text-base font-bold">Upcoming moments</h2></div><Status>{(events.data?.length || 0) + (sessions.data?.length || 0)} upcoming</Status></div>
         <div className="mt-5 space-y-3">
           {(events.data || []).slice(0, 5).map((event) => <div key={event.id} className="flex items-center gap-3 rounded-lg border border-border/70 p-3"><div className="grid size-9 place-items-center rounded-lg bg-primary/10 text-primary"><CalendarDays className="size-4" /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{event.title}</p><p className="text-xs text-muted-foreground">{fmtDate(event.date)} · {event.time} · {event.type}</p></div></div>)}
           {(sessions.data || []).slice(0, 3).map((s) => <div key={s.id} className="flex items-center gap-3 rounded-lg border border-border/70 p-3"><div className="grid size-9 place-items-center rounded-lg bg-accent/25 text-primary"><Users className="size-4" /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{s.title}</p><p className="text-xs text-muted-foreground">{s.programme} · {fmtDate(s.date)} · {s.time} · {s.attendees} attending</p></div><Status tone="good">{s.status}</Status></div>)}
           {!(events.data?.length || sessions.data?.length) && <EmptyState title="Calendar is clear" detail="Upcoming sessions will appear here." />}
         </div>
       </section>
-      <section className="rounded-xl border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Booked coaching</p><h2 className="mt-1 text-lg font-bold">{bookings.data?.length || 0} sessions</h2>
+      <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Booked coaching</p><h2 className="mt-1 text-base font-bold">{bookings.data?.length || 0} sessions</h2>
         <div className="mt-4 space-y-2">{(bookings.data || []).slice(0, 5).map((b) => <div key={b.id} className="rounded-lg bg-secondary/55 p-3"><p className="text-sm font-semibold">{b.trainer}</p><p className="text-xs text-muted-foreground">{b.course} · {fmtDate(b.date)} · {b.time}</p></div>)}
         {!bookings.data?.length && <EmptyState title="No 1:1s booked" detail="Book focused support with a trainer." />}</div>
       </section>

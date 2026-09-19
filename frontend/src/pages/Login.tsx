@@ -80,7 +80,7 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
   }
 
   return (
-    <div className="grain app-shell flex min-h-[100dvh] items-center justify-center p-6">
+    <div className="flex min-h-[100dvh] items-center justify-center p-6">
       <div className="w-full max-w-md rounded-2xl border border-border/80 bg-card p-8 shadow-[0_20px_60px_rgba(25,51,57,.08)]">
         <div className="flex items-center gap-3">
           <div className="grid size-10 place-items-center rounded-lg bg-primary text-primary-foreground"><ShieldCheck className="size-5" /></div>

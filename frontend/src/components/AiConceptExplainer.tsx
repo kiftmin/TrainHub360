@@ -23,7 +23,7 @@ export function AiConceptExplainer({ courseId, moduleId, moduleTitle }: { course
   });
 
   return (
-    <div className="rounded-xl border border-border/80 bg-card p-4">
+    <div className="rounded-lg border border-border/80 bg-card p-4">
       <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 text-sm font-semibold" data-testid="button-ai-explainer">
         <LifeBuoy className="size-4 text-primary" /> Stuck on this concept?
       </button>
