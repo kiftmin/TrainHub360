@@ -36,11 +36,17 @@ async function main() {
   });
 
   const adminRole = await db.role.findUniqueOrThrow({ where: { name: "admin" } });
-  await db.userRole.upsert({
-    where: { userId_roleId: { userId: user.id, roleId: adminRole.id } },
-    create: { userId: user.id, roleId: adminRole.id, programmeId: programme.id },
-    update: {},
-  });
+  const ownerRole = await db.role.findUniqueOrThrow({ where: { name: "owner" } });
+
+  async function ensureGrant(roleId: string, programmeId: string | null) {
+    const existing = await db.userRole.findFirst({ where: { userId: user.id, roleId, programmeId } });
+    if (!existing) await db.userRole.create({ data: { userId: user.id, roleId, programmeId } });
+  }
+
+  // Org-wide owner so the seeded account can manage organization settings.
+  await ensureGrant(ownerRole.id, null);
+  // Also a programme-scoped admin grant to demonstrate multi-role membership.
+  await ensureGrant(adminRole.id, programme.id);
 
   await db.reviewCreditSetting.upsert({
     where: { orgId: org.id },

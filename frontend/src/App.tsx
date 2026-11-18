@@ -85,7 +85,8 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
   const [location, setLocation] = useLocation();
   const go = (href: string) => { setMobileOpen(false); setLocation(href); };
   const isStakeholder = getSessionUser()?.role === 'stakeholder';
-  const visibleNav = isStakeholder ? [] : nav;
+  const canSeeDirectory = ['owner', 'admin'].includes(getSessionUser()?.role ?? '');
+  const visibleNav = isStakeholder ? [] : nav.filter((n) => n.href !== '/people' || canSeeDirectory);
   const visibleAdminNav = isStakeholder ? [] : adminNav;
   const allNav = [...visibleNav, ...visibleAdminNav];
   const active = allNav.find((n) => n.href === location) ?? (location.startsWith('/programmes') ? { href: '/programmes', label: 'Programmes' } : null);

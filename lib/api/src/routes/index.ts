@@ -4,7 +4,7 @@ import { findCalendarGaps, sendNudges } from "../services/nudge.js";
 import { explainConcept } from "../services/aiExplainer.js";
 import { verifyLoginPassword } from "../services/password.js";
 import { signToken } from "../middleware/auth.js";
-import { requireRole, requireProgrammeRole, isProgrammeStaff, isOrgStaff } from "../middleware/rbac.js";
+import { requireRole, requireProgrammeRole, isProgrammeStaff, isOrgStaff, isOrgOwner, resolveRole, requireOrgStaff, hasAdminGrant } from "../middleware/rbac.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -25,9 +25,10 @@ router.post("/auth/login", async (req, res) => {
   const user = await db.user.findUnique({ where: { email } }).catch(() => null);
   const ok = await verifyLoginPassword(password, user?.passwordHash ?? null);
   if (!ok || !user) return res.status(401).json({ error: "invalid credentials" });
-  const role = (await db.userRole.findFirst({ where: { userId: user.id }, include: { role: true } }).catch(() => null))?.role.name ?? "learner";
+  if (user.isActive === false) return res.status(403).json({ error: "account deactivated � contact your organization administrator" });
+  const role = await resolveRole(user.id);
   const token = signToken({ id: user.id, role, orgId: user.orgId });
-  return res.json({ accessToken: token, user: { id: user.id, name: user.name, email: user.email, role, initials: user.name.slice(0, 2).toUpperCase() } });
+  return res.json({ accessToken: token, user: { id: user.id, name: user.name, email: user.email, role, isOrgStaff: await isOrgStaff(user.id), initials: user.name.slice(0, 2).toUpperCase() } });
 });
 router.post("/auth/forgot-password", async (req, res) => {
   if (!req.body?.email) return res.status(400).json({ error: "email required" });
@@ -51,9 +52,10 @@ router.post("/auth/sso", async (req, res) => {
   if (!result) return res.status(401).json({ error: "invalid credentials" });
   const user = await db.user.findUnique({ where: { id: result.userId } }).catch(() => null);
   if (!user) return res.status(401).json({ error: "invalid credentials" });
-  const role = (await db.userRole.findFirst({ where: { userId: user.id }, include: { role: true } }).catch(() => null))?.role.name ?? "learner";
+  if (user.isActive === false) return res.status(403).json({ error: "account deactivated � contact your organization administrator" });
+  const role = await resolveRole(user.id);
   const token = signToken({ id: user.id, role, orgId: user.orgId });
-  return res.json({ accessToken: token, user: { id: user.id, name: user.name, email: user.email, role, initials: user.name.slice(0, 2).toUpperCase() } });
+  return res.json({ accessToken: token, user: { id: user.id, name: user.name, email: user.email, role, isOrgStaff: await isOrgStaff(user.id), initials: user.name.slice(0, 2).toUpperCase() } });
 });
 
 router.get("/workspace", async (req, res) => {
@@ -68,6 +70,108 @@ router.get("/workspace", async (req, res) => {
     user: user ?? { id: me?.id ?? "u1", name: "Admin", email: "a@corp.com", role: me?.role ?? "admin", initials: "AD" },
     dataSource: "mssql",
   });
+});
+
+router.get("/users", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  if (!(await isOrgStaff(me.id)) && !(await hasAdminGrant(me.id))) {
+    return res.status(403).json({ error: "directory access required" });
+  }
+  const scope = orgScope(req as AuthedRequest);
+  const search = String(req.query.search ?? "").trim();
+  const take = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+  const users = (await db.user.findMany({
+    where: {
+      orgId: scope.orgId,
+      ...(search ? { OR: [{ name: { contains: search } }, { email: { contains: search } }, { department: { contains: search } }, { jobFunction: { contains: search } }] } : {}),
+    },
+    select: {
+      id: true, name: true, email: true, department: true, jobFunction: true, isActive: true,
+      roles: { select: { programmeId: true, role: { select: { name: true } } } },
+    },
+    orderBy: { name: "asc" },
+    take,
+  }).catch(() => [])) as Array<{ id: string; name: string; email: string; department: string | null; jobFunction: string | null; isActive: boolean; roles: Array<{ programmeId: string | null; role: { name: string } }> }>;
+  const programmeIds = [...new Set(users.flatMap((u) => u.roles.map((r) => r.programmeId).filter((v): v is string => !!v)))];
+  const programmeRows = (programmeIds.length
+    ? await db.programme.findMany({ where: { id: { in: programmeIds }, orgId: scope.orgId }, select: { id: true, name: true } }).catch(() => [])
+    : []) as Array<{ id: string; name: string }>;
+  const programmeNames = new Map(programmeRows.map((p) => [p.id, p.name]));
+  return res.json(users.map((u) => ({
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    department: u.department,
+    jobFunction: u.jobFunction,
+    isActive: u.isActive,
+    roles: u.roles.map((r) => ({ role: r.role.name, programmeId: r.programmeId, programmeName: r.programmeId ? programmeNames.get(r.programmeId) ?? null : null })),
+  })));
+});
+
+// Organization-level directory provisioning. Programme managers assign roles to
+// these people; they do not create accounts from the programme screen.
+router.post("/users", requireOrgStaff(), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
+  const name = String(req.body?.name ?? "").trim();
+  const department = req.body?.department ? String(req.body.department).trim() : null;
+  const jobFunction = req.body?.jobFunction ? String(req.body.jobFunction).trim() : null;
+  if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "valid email required" });
+  if (!name) return res.status(400).json({ error: "name required" });
+  const existing = await db.user.findUnique({ where: { email } }).catch(() => null);
+  if (existing) {
+    return res.status(409).json({ error: existing.orgId === scope.orgId ? "user already exists in your organization" : "this email is already registered to another organization — use a different email" });
+  }
+  const { hashPassword } = await import("../services/password.js");
+  const user = await db.user.create({
+    data: { orgId: scope.orgId, name, email, department, jobFunction, passwordHash: await hashPassword(`invite-${Date.now().toString(36)}`) },
+  }).catch(() => null);
+  if (!user) return res.status(500).json({ error: "could not create user" });
+  await db.auditLog.create({ data: { userId: me.id, action: "USER_CREATED", entity: "user", entityId: user.id, details: email } }).catch(() => null);
+  return res.status(201).json({ id: user.id, name: user.name, email: user.email, department: user.department, jobFunction: user.jobFunction, isActive: true });
+});
+
+// Update an org user (name, department, jobFunction) or deactivate/reactivate.
+router.patch("/users/:id", requireOrgStaff(), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const target = await db.user.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
+  if (!target) return res.status(404).json({ error: "user not found in your organization" });
+  const patch = req.body ?? {};
+  const data: Record<string, unknown> = {};
+  if (patch.name !== undefined && String(patch.name).trim()) data.name = String(patch.name).trim();
+  if (patch.department !== undefined) data.department = patch.department || null;
+  if (patch.jobFunction !== undefined) data.jobFunction = patch.jobFunction || null;
+  if (patch.isActive !== undefined) {
+    data.isActive = Boolean(patch.isActive);
+    data.deactivatedAt = patch.isActive ? null : new Date();
+  }
+  const updated = await db.user.update({ where: { id: target.id }, data }).catch(() => null);
+  if (!updated) return res.status(500).json({ error: "could not update user" });
+  await db.auditLog.create({ data: { userId: me.id, action: patch.isActive === false ? "USER_DEACTIVATED" : "USER_UPDATED", entity: "user", entityId: target.id, details: JSON.stringify(patch) } }).catch(() => null);
+  return res.json({ id: updated.id, name: updated.name, email: updated.email, department: updated.department, jobFunction: updated.jobFunction, isActive: updated.isActive });
+});
+
+// Assign or remove an org-wide role (owner/admin). Programme-scoped roles
+// are managed through POST /programmes/:id/members.
+router.post("/users/:id/org-role", requireOrgStaff(), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const target = await db.user.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
+  if (!target) return res.status(404).json({ error: "user not found in your organization" });
+  const roleName = String(req.body?.role ?? "").toLowerCase();
+  if (!["owner", "admin", ""].includes(roleName)) return res.status(400).json({ error: "org-wide role must be owner or admin (or empty to remove)" });
+  if (roleName === "owner" && !(await isOrgOwner(me.id))) return res.status(403).json({ error: "only organization owners may grant the owner role" });
+  // Remove existing org-wide role grants
+  await db.userRole.deleteMany({ where: { userId: target.id, programmeId: null } }).catch(() => null);
+  if (roleName) {
+    const role = await db.role.findUnique({ where: { name: roleName } }).catch(() => null);
+    if (!role) return res.status(400).json({ error: `unknown role ${roleName}` });
+    await db.userRole.create({ data: { userId: target.id, roleId: role.id, programmeId: null } });
+  }
+  await db.auditLog.create({ data: { userId: me.id, action: "ORG_ROLE_CHANGED", entity: "user", entityId: target.id, details: roleName || "removed" } }).catch(() => null);
+  return res.json({ userId: target.id, orgRole: roleName || null });
 });
 
 async function kpiPayload(orgId: string) {
@@ -157,7 +261,7 @@ router.patch("/enrolments/:id", async (req, res) => {
   }
   return res.json(e);
 });
-router.delete("/enrolments/:id", requireRole("admin", "owner"), async (req, res) => {
+router.delete("/enrolments/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const existing = await db.enrolment.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } });
   if (!existing) return res.status(404).json({ error: "not found" });
@@ -285,9 +389,40 @@ router.post("/assessments/:id/delete-requests", requireProgrammeRole("admin", "o
     return res.status(status).json({ error: (e as Error).message });
   }
 });
+async function deleteRequestProgrammeId(dr: { targetType: string; targetId: string }): Promise<string | null> {
+  if (dr.targetType === "programme") return dr.targetId;
+  if (dr.targetType === "course") {
+    const c = await db.course.findUnique({ where: { id: dr.targetId }, select: { programmeId: true } }).catch(() => null);
+    return c?.programmeId ?? null;
+  }
+  if (dr.targetType === "module") {
+    const m = await db.module.findUnique({ where: { id: dr.targetId }, select: { course: { select: { programmeId: true } } } }).catch(() => null);
+    return m?.course.programmeId ?? null;
+  }
+  if (dr.targetType === "assessment") {
+    const a = await db.assessment.findUnique({ where: { id: dr.targetId }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);
+    return a?.module.course.programmeId ?? null;
+  }
+  return null;
+}
+
+async function canDecideDeleteRequest(userId: string, dr: { targetType: string; targetId: string }): Promise<boolean> {
+  if (await isOrgStaff(userId)) return true;
+  const programmeId = await deleteRequestProgrammeId(dr);
+  if (!programmeId) return false;
+  const grant = await db.userRole
+    .findFirst({ where: { userId, programmeId, role: { name: { in: ["owner", "admin"] } } } })
+    .catch(() => null);
+  return !!grant;
+}
+
 router.get("/delete-requests", requireRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  res.json(await db.deleteRequest.findMany({ where: { orgId: scope.orgId }, include: { requester: { select: { name: true, email: true } }, approver: { select: { name: true, email: true } } }, orderBy: { createdAt: "desc" }, take: 200 }).catch(() => []));
+  const rows = await db.deleteRequest.findMany({ where: { orgId: scope.orgId }, include: { requester: { select: { name: true, email: true } }, approver: { select: { name: true, email: true } } }, orderBy: { createdAt: "desc" }, take: 200 }).catch(() => []);
+  const visible = [];
+  for (const dr of rows) if (await canDecideDeleteRequest(me.id, dr)) visible.push(dr);
+  return res.json(visible);
 });
 router.post("/delete-requests/:id/approve", requireRole("admin", "owner"), async (req, res) => {
   const me = (req as AuthedRequest).user!;
@@ -295,6 +430,7 @@ router.post("/delete-requests/:id/approve", requireRole("admin", "owner"), async
   const dr = await db.deleteRequest.findFirst({ where: { id: req.params.id, orgId: scope.orgId } });
   if (!dr) return res.status(404).json({ error: "request not found in your organization" });
   if (dr.status !== "pending") return res.status(409).json({ error: `request already ${dr.status}` });
+  if (!(await canDecideDeleteRequest(me.id, dr))) return res.status(403).json({ error: "forbidden for this programme" });
   if (dr.requestedBy === me.id) return res.status(403).json({ error: "approver must be a different user than the requester" });
   const now = new Date();
   if (dr.targetType === "programme") {
@@ -323,10 +459,11 @@ router.post("/delete-requests/:id/reject", requireRole("admin", "owner"), async 
   const dr = await db.deleteRequest.findFirst({ where: { id: req.params.id, orgId: scope.orgId } });
   if (!dr) return res.status(404).json({ error: "request not found in your organization" });
   if (dr.status !== "pending") return res.status(409).json({ error: `request already ${dr.status}` });
+  if (!(await canDecideDeleteRequest(me.id, dr))) return res.status(403).json({ error: "forbidden for this programme" });
   if (dr.requestedBy === me.id) return res.status(403).json({ error: "approver must be a different user than the requester" });
   return res.json(await db.deleteRequest.update({ where: { id: dr.id }, data: { status: "rejected", approvedBy: me.id, decidedAt: new Date() } }));
 });
-router.post("/programmes", requireRole("admin", "owner"), async (req, res) => {
+router.post("/programmes", requireOrgStaff(), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   if (!req.body?.name) return res.status(400).json({ error: "name required" });
   const me = (req as AuthedRequest).user!;
@@ -334,13 +471,146 @@ router.post("/programmes", requireRole("admin", "owner"), async (req, res) => {
     data: { orgId: scope.orgId, name: req.body.name, type: req.body.type ?? "Professional Development", status: "active", owner: req.body.owner ?? me.id },
   }));
 });
+
+const MEMBER_ROLES = new Set(["admin", "trainer", "learner", "stakeholder"]);
+
+router.get("/programmes/:id/members", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const grants = await db.userRole.findMany({
+    where: { programmeId: req.params.id, user: { orgId: scope.orgId } },
+    include: { user: { select: { id: true, name: true, email: true, department: true, jobFunction: true } }, role: true },
+    orderBy: { user: { name: "asc" } },
+  }).catch(() => []);
+  return res.json(grants.map((g) => ({ userId: g.userId, name: g.user.name, email: g.user.email, department: g.user.department, jobFunction: g.user.jobFunction, role: g.role.name })));
+});
+
+async function assignProgrammeMember(req: AuthedRequest, roleName: string) {
+  const scope = orgScope(req);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const role = await db.role.findUnique({ where: { name: roleName } });
+  if (!role) {
+    const err = new Error(`unknown role ${roleName}`) as Error & { status?: number };
+    err.status = 400;
+    throw err;
+  }
+  return role;
+}
+
+router.post("/programmes/:id/members", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const roleName = String(req.body?.role ?? "learner");
+  if (!MEMBER_ROLES.has(roleName)) return res.status(400).json({ error: "role must be admin|trainer|learner|stakeholder" });
+  const userIdInput = req.body?.userId ? String(req.body.userId) : null;
+  const email = String(req.body?.email ?? "").trim().toLowerCase();
+  let user: { id: string; name: string; email: string; orgId: string } | null = null;
+  if (userIdInput) {
+    user = await db.user.findFirst({ where: { id: userIdInput, orgId: scope.orgId } }).catch(() => null);
+    if (!user) return res.status(404).json({ error: "user not found in your organization" });
+  } else {
+    if (!EMAIL_RE.test(email)) return res.status(400).json({ error: "valid email or userId required" });
+    user = await db.user.findUnique({ where: { email } }).catch(() => null);
+    if (!user) return res.status(400).json({ error: "user not found in your organization — add them under People first" });
+    if (user.orgId !== scope.orgId) return res.status(409).json({ error: "this email is already registered to another organization — use a different email" });
+  }
+  let role: { id: string };
+  try {
+    role = await assignProgrammeMember(req as AuthedRequest, roleName);
+  } catch (e) {
+    return res.status((e as { status?: number }).status ?? 400).json({ error: (e as Error).message });
+  }
+  await db.userRole.deleteMany({ where: { userId: user.id, programmeId: req.params.id } }).catch(() => null);
+  await db.userRole.create({ data: { userId: user.id, roleId: role.id, programmeId: req.params.id } });
+  if (roleName === "learner" && req.body?.enrol !== false) {
+    const courses = await db.course.findMany({ where: { programmeId: req.params.id, deletedAt: null, isArchived: false }, select: { id: true } }).catch(() => []);
+    for (const c of courses) {
+      const already = await db.enrolment.findFirst({ where: { learnerId: user.id, courseId: c.id } }).catch(() => null);
+      if (!already) await db.enrolment.create({ data: { learnerId: user.id, courseId: c.id, programmeId: req.params.id, status: "enrolled" } }).catch(() => null);
+    }
+  }
+  await db.auditLog.create({ data: { userId: me.id, action: "PROGRAMME_MEMBER_ADDED", entity: "programme", entityId: req.params.id, details: `${email} as ${roleName}` } }).catch(() => null);
+  return res.status(201).json({ userId: user.id, name: user.name, email: user.email, role: roleName });
+});
+
+router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const roleName = req.body?.role === undefined ? undefined : String(req.body.role);
+  const nameInput = req.body?.name === undefined ? undefined : String(req.body.name).trim();
+  if (roleName === undefined && nameInput === undefined) return res.status(400).json({ error: "role or name required" });
+  if (nameInput !== undefined && !nameInput) return res.status(400).json({ error: "name cannot be empty" });
+  if (roleName !== undefined && !MEMBER_ROLES.has(roleName)) return res.status(400).json({ error: "role must be admin|trainer|learner|stakeholder" });
+  const target = await db.user.findFirst({ where: { id: req.params.userId, orgId: scope.orgId } }).catch(() => null);
+  if (!target) return res.status(404).json({ error: "member not found in your organization" });
+  const currentGrants = (await db.userRole.findMany({ where: { userId: target.id, programmeId: req.params.id }, include: { role: true } }).catch(() => [])) as Array<{ role: { name: string } }>;
+  const wasTrainer = currentGrants.some((g) => g.role.name === "trainer");
+  const willBeTrainer = roleName === undefined ? wasTrainer : roleName === "trainer";
+  if (roleName !== undefined && roleName !== "admin" && currentGrants.some((g) => g.role.name === "admin")) {
+    const adminCount = await db.userRole.count({ where: { programmeId: req.params.id, role: { name: "admin" } } }).catch(() => 0);
+    if (adminCount <= 1) return res.status(409).json({ error: "cannot demote the last programme admin — appoint another admin first" });
+  }
+  let role: { id: string } | undefined;
+  if (roleName !== undefined) {
+    try {
+      role = await assignProgrammeMember(req as AuthedRequest, roleName);
+    } catch (e) {
+      return res.status((e as { status?: number })?.status ?? 400).json({ error: (e as Error).message });
+    }
+  }
+  const user = nameInput !== undefined
+    ? await db.user.update({ where: { id: target.id }, data: { name: nameInput } })
+    : target;
+  if (role) {
+    await db.userRole.deleteMany({ where: { userId: target.id, programmeId: req.params.id } }).catch(() => null);
+    await db.userRole.create({ data: { userId: target.id, roleId: role.id, programmeId: req.params.id } });
+  }
+  let coursesUpdated = 0;
+  if (wasTrainer && !willBeTrainer) {
+    const result = await db.course.updateMany({ where: { programmeId: req.params.id, trainer: target.name }, data: { trainer: "" } }).catch(() => ({ count: 0 }));
+    coursesUpdated = result.count;
+  } else if (wasTrainer && willBeTrainer && user.name !== target.name) {
+    const result = await db.course.updateMany({ where: { programmeId: req.params.id, trainer: target.name }, data: { trainer: user.name } }).catch(() => ({ count: 0 }));
+    coursesUpdated = result.count;
+  }
+  await db.auditLog.create({ data: { userId: me.id, action: "PROGRAMME_MEMBER_UPDATED", entity: "programme", entityId: req.params.id, details: `${user.email}${roleName ? ` as ${roleName}` : ""}` } }).catch(() => null);
+  const currentGrant = roleName === undefined
+    ? await db.userRole.findFirst({ where: { userId: target.id, programmeId: req.params.id }, include: { role: true } }).catch(() => null)
+    : null;
+  return res.json({ userId: user.id, name: user.name, email: user.email, role: roleName ?? currentGrant?.role.name ?? "learner", coursesUpdated });
+});
+
+router.delete("/programmes/:id/members/:userId", requireProgrammeRole("admin", "owner"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const target = await db.user.findFirst({ where: { id: req.params.userId, orgId: scope.orgId } }).catch(() => null);
+  if (!target) return res.status(404).json({ error: "member not found in your organization" });
+  const grants = (await db.userRole.findMany({ where: { userId: target.id, programmeId: req.params.id }, include: { role: true } }).catch(() => [])) as Array<{ role: { name: string } }>;
+  const wasTrainer = grants.some((g) => g.role.name === "trainer");
+  if (grants.some((g) => g.role.name === "admin")) {
+    const adminCount = await db.userRole.count({ where: { programmeId: req.params.id, role: { name: "admin" } } }).catch(() => 0);
+    if (adminCount <= 1) return res.status(409).json({ error: "cannot remove the last programme admin — appoint another admin first" });
+  }
+  const removed = await db.userRole.deleteMany({ where: { userId: target.id, programmeId: req.params.id } }).catch(() => ({ count: 0 }));
+  await db.enrolment.deleteMany({ where: { learnerId: target.id, programmeId: req.params.id } }).catch(() => null);
+  let coursesUnassigned = 0;
+  if (wasTrainer) {
+    const result = await db.course.updateMany({ where: { programmeId: req.params.id, trainer: target.name }, data: { trainer: "" } }).catch(() => ({ count: 0 }));
+    coursesUnassigned = result.count;
+  }
+  await db.auditLog.create({ data: { userId: me.id, action: "PROGRAMME_MEMBER_REMOVED", entity: "programme", entityId: req.params.id, details: target.email } }).catch(() => null);
+  return res.json({ userId: target.id, removed: removed.count, coursesUnassigned });
+});
 router.get("/programmes/:id/modules", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.params.id, scope.orgId);
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
   res.json(await db.module.findMany({ where: { course: { programmeId: req.params.id, programme: { orgId: scope.orgId } }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
 });
-router.post("/programmes/:id/modules", requireProgrammeRole("admin", "owner"), async (req, res) => {
+router.post("/programmes/:id/modules", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.params.id, scope.orgId);
   let courseId = req.body.courseId;
@@ -352,7 +622,7 @@ router.post("/programmes/:id/modules", requireProgrammeRole("admin", "owner"), a
   }
   return res.status(201).json(await db.module.create({ data: { courseId, title: req.body.title ?? "New module" } }));
 });
-router.patch("/modules/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+router.patch("/modules/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const mod = await db.module.findFirst({ where: { id: req.params.id, course: { programme: { orgId: scope.orgId } } } });
   if (!mod) return res.status(404).json({ error: "module not found in your organization" });
@@ -362,7 +632,7 @@ router.patch("/modules/:id", requireProgrammeRole("admin", "owner"), async (req,
   if (patch.order !== undefined) data.order = Number(patch.order);
   return res.json(await db.module.update({ where: { id: mod.id }, data }));
 });
-router.patch("/assessments/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+router.patch("/assessments/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const a = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } });
   if (!a) return res.status(404).json({ error: "assessment not found in your organization" });
@@ -377,7 +647,7 @@ router.get("/modules/:id/assessments", async (req, res) => {
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
   res.json(await db.assessment.findMany({ where: { moduleId: req.params.id, module: { course: { programme: { orgId: scope.orgId } } }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
 });
-router.post("/modules/:id/assessments", requireProgrammeRole("admin", "owner"), async (req, res) => {
+router.post("/modules/:id/assessments", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
   const mod = await db.module.findFirst({ where: { id: req.params.id, course: { programme: { orgId: scope.orgId } } } });
@@ -396,12 +666,12 @@ router.get("/courses", async (req, res) => {
   const programmeFilter = programmeId ? { programmeId } : only ? { programmeId: { in: only } } : {};
   return res.json(await db.course.findMany({ where: { programme: { orgId: scope.orgId }, ...programmeFilter, ...lifecycleFilter(includeArchived) }, take: 200 }).catch(() => []));
 });
-router.post("/courses", requireProgrammeRole("admin", "owner"), async (req, res) => {
+router.post("/courses", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.body.programmeId, scope.orgId);
   return res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General" } }));
 });
-router.patch("/courses/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+router.patch("/courses/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertCourseInOrg(req.params.id, scope.orgId);
   const patch = req.body ?? {};
@@ -603,7 +873,7 @@ router.get("/certificates", async (req, res) => {
     res.json(await db.certificate.findMany({ where: { course: { programme: { orgId: scope.orgId } } }, include: { course: { select: { title: true } }, learner: { select: { name: true, email: true } } }, orderBy: { expiresAt: "asc" }, take: 500 }).catch(() => []));
   }
 });
-router.post("/certificates/check-expiry", requireRole("admin", "owner"), async (req, res) => {
+router.post("/certificates/check-expiry", requireOrgStaff(), async (req, res) => {
   const { runCertificateExpiryJob } = await import("../jobs/certificateExpiryJob.js");
   res.json(await runCertificateExpiryJob(Number(req.body?.withinDays ?? 30)));
 });
@@ -652,7 +922,7 @@ router.get("/review-credit/settings", async (req, res) => {
   if (!s) return res.json({ ...defaultSettings, orgId });
   return res.json({ enabled: !!s.enabled, maxWeighting: s.maxWeighting, assessmentWeight: s.assessmentWeight, timelinessWeight: s.timelinessWeight, applicationWeight: s.applicationWeight, requireManagerSignoff: true, collectApplicationScores: true, eligibleProgrammeTypes: defaultSettings.eligibleProgrammeTypes, orgId });
 });
-router.patch("/review-credit/settings", requireRole("admin", "owner"), async (req, res) => {
+router.patch("/review-credit/settings", requireOrgStaff(), async (req, res) => {
   const orgId = orgIdOf(req as AuthedRequest);
   const s = await db.reviewCreditSetting.upsert({ where: { orgId }, create: { orgId, enabled: req.body.enabled ? 1 : 0, maxWeighting: req.body.maxWeighting ?? 10, assessmentWeight: req.body.assessmentWeight ?? 50, timelinessWeight: req.body.timelinessWeight ?? 30, applicationWeight: req.body.applicationWeight ?? 20 }, update: { enabled: req.body.enabled !== undefined ? (req.body.enabled ? 1 : 0) : undefined, maxWeighting: req.body.maxWeighting ?? undefined, assessmentWeight: req.body.assessmentWeight ?? undefined, timelinessWeight: req.body.timelinessWeight ?? undefined, applicationWeight: req.body.applicationWeight ?? undefined } });
   res.json(s);
@@ -675,7 +945,7 @@ function assertSameOrg(req: AuthedRequest, orgId: string) {
     throw err;
   }
 }
-router.patch("/organizations/:id", requireRole("owner", "admin"), async (req, res) => {
+router.patch("/organizations/:id", requireOrgStaff(), async (req, res) => {
   assertSameOrg(req as AuthedRequest, req.params.id);
   const patch = req.body ?? {};
   const data: Record<string, unknown> = {};
@@ -716,7 +986,7 @@ router.post("/organizations/:id/verify-domain", async (req, res) => {
 });
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_ROLE_MAPPING: Record<string, string> = { trainer: "trainer", facilitator: "trainer", admin: "admin", owner: "owner", stakeholder: "stakeholder" };
-router.post("/organizations/:id/learners/import", requireRole("admin", "owner"), async (req, res) => {
+router.post("/organizations/:id/learners/import", requireOrgStaff(), async (req, res) => {
   assertSameOrg(req as AuthedRequest, req.params.id);
   const orgId = req.params.id;
   const rows = (req.body?.rows ?? []) as { name?: string; email?: string; department?: string; jobFunction?: string; managerEmail?: string }[];
@@ -759,7 +1029,11 @@ router.post("/organizations/:id/learners/import", requireRole("admin", "owner"),
       if (programmeId && mapped !== "learner") {
         await assertProgrammeInOrg(programmeId, orgId);
         const role = await db.role.findUnique({ where: { name: mapped } }).catch(() => null);
-        if (role) await db.userRole.upsert({ where: { userId_roleId: { userId, roleId: role.id } }, create: { userId, roleId: role.id, programmeId }, update: { programmeId } }).catch(() => null);
+        if (role) {
+          const existingGrant = await db.userRole.findFirst({ where: { userId, programmeId } }).catch(() => null);
+          if (existingGrant) await db.userRole.update({ where: { id: existingGrant.id }, data: { roleId: role.id } }).catch(() => null);
+          else await db.userRole.create({ data: { userId, roleId: role.id, programmeId } }).catch(() => null);
+        }
       }
     } catch (e) {
       failed += 1;
@@ -783,7 +1057,7 @@ router.get("/organizations/:id/review-credits", async (req, res) => {
   });
   res.json(rows);
 });
-router.get("/organizations/:id/review-credits/export", requireRole("admin", "owner"), async (req, res) => {
+router.get("/organizations/:id/review-credits/export", requireOrgStaff(), async (req, res) => {
   assertSameOrg(req as AuthedRequest, req.params.id);
   const format = (req.query.format as string) === "csv" ? "csv" : "json";
   const setting = await db.reviewCreditSetting.findUnique({ where: { orgId: req.params.id } }).catch(() => null);
@@ -812,7 +1086,7 @@ router.get("/organizations/:id/review-credits/export", requireRole("admin", "own
   }
   return res.json(rows);
 });
-router.post("/review-credits/lock", requireRole("admin", "owner"), async (req, res) => {
+router.post("/review-credits/lock", requireOrgStaff(), async (req, res) => {
   const orgId = orgIdOf(req as AuthedRequest);
   const now = new Date();
   const updated = await db.enrolment.updateMany({ where: { reviewCreditLockedAt: null, reviewCreditExcluded: false, programme: { orgId } }, data: { reviewCreditLockedAt: now } }).catch(() => ({ count: 0 }));
@@ -820,7 +1094,7 @@ router.post("/review-credits/lock", requireRole("admin", "owner"), async (req, r
   const webhook = await dispatchWebhook(orgId, "review_credit_finalized", { lockedAt: now.toISOString(), lockedCount: updated.count });
   res.json({ orgId, lockedAt: now.toISOString(), lockedCount: updated.count, webhook });
 });
-router.get("/audit/logs", requireRole("admin", "owner"), async (req, res) => {
+router.get("/audit/logs", requireOrgStaff(), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const members = await db.user.findMany({ where: { orgId: scope.orgId }, select: { id: true } }).catch(() => []);
   const ids = members.map((m) => m.id);
@@ -832,13 +1106,13 @@ router.post("/nudge/run", async (_req, res) => {
   const sent = await sendNudges(gaps);
   res.json({ sent });
 });
-router.post("/sla/run", requireRole("admin", "owner"), async (_req, res) => {
+router.post("/sla/run", requireOrgStaff(), async (_req, res) => {
   res.json(await runSlaJob());
 });
-router.post("/nudge/dispatch", requireRole("admin", "owner"), async (_req, res) => {
+router.post("/nudge/dispatch", requireOrgStaff(), async (_req, res) => {
   res.json(await runNudgeJob());
 });
-router.post("/content-lifecycle/run", requireRole("admin", "owner"), async (_req, res) => {
+router.post("/content-lifecycle/run", requireOrgStaff(), async (_req, res) => {
   res.json(await runContentLifecycleJob());
 });
 router.post("/help/ai", (req, res) => {

@@ -38,8 +38,14 @@ import {
   useUpdateCourse,
   useUpdateModule,
   useRequestContentDeletion,
+  useProgrammeMembers,
+  useAddProgrammeMember,
+  useUpdateProgrammeMember,
+  useRemoveProgrammeMember,
+  useUserDirectory,
   downloadReviewCreditCsv,
   type Course,
+  type ProgrammeMemberRole,
   type ReviewCreditSettings,
 } from '@/api/hooks';
 import { getToken, clearSession, getSessionUser } from '@/api/client';
@@ -122,12 +128,59 @@ export function ProgrammeDetail({ id }: { id: string }) {
   const updateCourse = useUpdateCourse();
   const requestContentDeletion = useRequestContentDeletion();
   const updateModule = useUpdateModule();
+  const canAuthorDetail = ['admin', 'owner', 'trainer'].includes(getSessionUser()?.role ?? '');
+  const canManageDetail = ['admin', 'owner'].includes(getSessionUser()?.role ?? '');
+  const members = useProgrammeMembers(id, canAuthorDetail);
+  const addMember = useAddProgrammeMember(id);
+  const updateMember = useUpdateProgrammeMember(id);
+  const removeMember = useRemoveProgrammeMember(id);
   const requestDelete = (target: 'courses' | 'modules', id: string, label: string) => { const reason = window.prompt(`Request deletion approval for "${label}"? A second admin must approve:`); if (reason === null) return; requestContentDeletion.mutate({ target, id, reason: reason || undefined }, { onSuccess: refreshDetail }); };
   const dqc = useQueryClient();
   const [editingCourse, setEditingCourse] = useState<null | { id: string; title: string; category: string; trainer: string }>(null);
   const [editingModule, setEditingModule] = useState<null | { id: string; title: string }>(null);
-  const canManageDetail = ['admin', 'owner'].includes(getSessionUser()?.role ?? '');
-  const refreshDetail = () => { dqc.invalidateQueries({ queryKey: ['courses'] }); dqc.invalidateQueries({ queryKey: ['programmes'] }); };
+  const [editingMember, setEditingMember] = useState<null | { userId: string; name: string; email: string; role: ProgrammeMemberRole }>(null);
+  const [memberOpen, setMemberOpen] = useState(false);
+  const [memberSearch, setMemberSearch] = useState('');
+  const [memberForm, setMemberForm] = useState<{ userId: string; name: string; email: string; role: ProgrammeMemberRole }>({ userId: '', name: '', email: '', role: 'learner' });
+  const [memberError, setMemberError] = useState<string | null>(null);
+  const [memberEditError, setMemberEditError] = useState<string | null>(null);
+  const [removingMember, setRemovingMember] = useState<null | { userId: string; name: string; email: string; role: ProgrammeMemberRole }>(null);
+  const [memberRemoveError, setMemberRemoveError] = useState<string | null>(null);
+  const directory = useUserDirectory(memberSearch, memberOpen && canManageDetail);
+  const availableUsers = useMemo(() => {
+    const existing = new Set((members.data || []).map((m) => m.userId));
+    return (directory.data || []).filter((u) => !existing.has(u.id));
+  }, [directory.data, members.data]);
+  const submitMember = () => {
+    if (!memberForm.userId) return;
+    setMemberError(null);
+    addMember.mutate({ userId: memberForm.userId, role: memberForm.role }, {
+      onSuccess: () => { setMemberOpen(false); setMemberForm({ userId: '', name: '', email: '', role: 'learner' }); setMemberSearch(''); },
+      onError: (e) => setMemberError((e as Error).message),
+    });
+  };
+  const saveMember = () => {
+    if (!editingMember) return;
+    setMemberEditError(null);
+    updateMember.mutate({ userId: editingMember.userId, name: editingMember.name, role: editingMember.role }, {
+      onSuccess: () => setEditingMember(null),
+      onError: (e) => setMemberEditError((e as Error).message),
+    });
+  };
+  const confirmRemoveMember = () => {
+    if (!removingMember) return;
+    setMemberRemoveError(null);
+    removeMember.mutate(removingMember.userId, {
+      onSuccess: () => setRemovingMember(null),
+      onError: (e) => setMemberRemoveError((e as Error).message),
+    });
+  };
+  const trainerNames = useMemo(() => {
+    const names = (members.data || []).filter((m) => m.role === 'trainer').map((m) => m.name);
+    if (editingCourse?.trainer && !names.includes(editingCourse.trainer)) names.unshift(editingCourse.trainer);
+    return Array.from(new Set(names));
+  }, [members.data, editingCourse]);
+  const refreshDetail = () => { dqc.invalidateQueries({ queryKey: ['courses'] }); dqc.invalidateQueries({ queryKey: ['programmes'] }); dqc.invalidateQueries({ queryKey: ['programme-members', id] }); };
   const programme = programmes.data?.find((p) => p.id === id);
   return <div className="page-in">
     <PageHeading eyebrow="Programme detail" title={programme?.name || 'Programme'} detail={programme ? `${programme.type} · ${programme.owner} · ${programme.learnerCount} learners` : 'Loading programme…'} action={<Link href="/programmes" className="text-xs font-semibold text-primary hover:underline">Back to portfolio</Link>} />
@@ -136,17 +189,93 @@ export function ProgrammeDetail({ id }: { id: string }) {
     : !programme ? <EmptyState title="Programme not found" detail="It may have been archived." />
     : <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
       <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>
-        <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <div key={c.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-semibold">{c.title}</p><Status tone={c.status === 'published' ? 'good' : 'warn'}>{c.status}</Status></div><p className="mt-1 text-xs text-muted-foreground">{c.category} · {c.trainer}</p><div className="mt-3"><ProgressLine value={c.progress} /></div>{canManageDetail && <div className="mt-3 flex gap-2"><Button size="sm" variant="outline" onClick={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })}>Edit</Button><Button size="sm" variant="outline" onClick={() => { requestDelete('courses', c.id, c.title); }}>Delete</Button></div>}</div>)}
+        <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <div key={c.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-semibold">{c.title}</p><Status tone={c.status === 'published' ? 'good' : 'warn'}>{c.status}</Status></div><p className="mt-1 text-xs text-muted-foreground">{c.category} · {c.trainer}</p><div className="mt-3"><ProgressLine value={c.progress} /></div>{canAuthorDetail && <div className="mt-3 flex gap-2"><Button size="sm" variant="outline" onClick={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })}>Edit</Button>{canManageDetail && <Button size="sm" variant="outline" onClick={() => { requestDelete('courses', c.id, c.title); }}>Delete</Button>}</div>}</div>)}
         {!courses.data?.length && <EmptyState title="No courses yet" detail="Courses assigned to this programme will appear here." />}</div>
-        <Dialog open={!!editingCourse} onOpenChange={(v) => { if (!v) setEditingCourse(null); }}><DialogContent><DialogHeader><DialogTitle>Edit course</DialogTitle></DialogHeader>{editingCourse && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingCourse.title} onChange={(e) => setEditingCourse({ ...editingCourse, title: e.target.value })} /></label><label className="block text-xs font-semibold">Category<Input className="mt-2" value={editingCourse.category} onChange={(e) => setEditingCourse({ ...editingCourse, category: e.target.value })} /></label><label className="block text-xs font-semibold">Trainer<Input className="mt-2" value={editingCourse.trainer} onChange={(e) => setEditingCourse({ ...editingCourse, trainer: e.target.value })} /></label><Button className="w-full" disabled={updateCourse.isPending} onClick={() => updateCourse.mutate({ id: editingCourse.id, patch: { title: editingCourse.title, category: editingCourse.category, trainer: editingCourse.trainer } }, { onSuccess: () => { refreshDetail(); setEditingCourse(null); } })}>{updateCourse.isPending ? 'Saving…' : 'Save changes'}</Button></div>}</DialogContent></Dialog></section>
+        <Dialog open={!!editingCourse} onOpenChange={(v) => { if (!v) setEditingCourse(null); }}><DialogContent><DialogHeader><DialogTitle>Edit course</DialogTitle></DialogHeader>{editingCourse && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingCourse.title} onChange={(e) => setEditingCourse({ ...editingCourse, title: e.target.value })} /></label><label className="block text-xs font-semibold">Category<Input className="mt-2" value={editingCourse.category} onChange={(e) => setEditingCourse({ ...editingCourse, category: e.target.value })} /></label><label className="block text-xs font-semibold">Trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={editingCourse.trainer} onChange={(e) => setEditingCourse({ ...editingCourse, trainer: e.target.value })} data-testid="select-course-trainer"><option value="">Unassigned</option>{trainerNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>{!trainerNames.length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainers in this programme yet — add one under Members.</span>}</label><Button className="w-full" disabled={updateCourse.isPending} onClick={() => updateCourse.mutate({ id: editingCourse.id, patch: { title: editingCourse.title, category: editingCourse.category, trainer: editingCourse.trainer } }, { onSuccess: () => { refreshDetail(); setEditingCourse(null); } })}>{updateCourse.isPending ? 'Saving…' : 'Save changes'}</Button></div>}</DialogContent></Dialog></section>
       <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Modules & concept help</p>
         <div className="mt-4 space-y-3">{(modules.data || []).map((m) => {
           const course = (courses.data || []).find((c) => c.id === m.courseId);
-          return <div key={m.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{m.title}</p><p className="mt-1 text-xs text-muted-foreground">{course?.title ?? 'Course module'}</p></div><div className="flex shrink-0 gap-2"><Button size="sm" variant="outline" onClick={() => setHelpModuleId(helpModuleId === m.id ? null : m.id)} data-testid={`button-module-help-${m.id}`}>Stuck on this concept?</Button>{canManageDetail && <><Button size="sm" variant="outline" onClick={() => setEditingModule({ id: m.id, title: m.title })}>Edit</Button><Button size="sm" variant="outline" onClick={() => { requestDelete('modules', m.id, m.title); }}>Delete</Button></>}</div></div>
+          return <div key={m.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{m.title}</p><p className="mt-1 text-xs text-muted-foreground">{course?.title ?? 'Course module'}</p></div><div className="flex shrink-0 gap-2"><Button size="sm" variant="outline" onClick={() => setHelpModuleId(helpModuleId === m.id ? null : m.id)} data-testid={`button-module-help-${m.id}`}>Stuck on this concept?</Button>{canAuthorDetail && <><Button size="sm" variant="outline" onClick={() => setEditingModule({ id: m.id, title: m.title })}>Edit</Button>{canManageDetail && <Button size="sm" variant="outline" onClick={() => { requestDelete('modules', m.id, m.title); }}>Delete</Button>}</>}</div></div>
           {helpModuleId === m.id && <div className="mt-3"><AiConceptExplainer courseId={m.courseId} moduleId={m.id} moduleTitle={m.title} /></div>}</div>;
         })}
         {!modules.data?.length && <EmptyState title="No modules yet" detail="Micro-learning modules will appear here once added." />}</div>
         <Dialog open={!!editingModule} onOpenChange={(v) => { if (!v) setEditingModule(null); }}><DialogContent><DialogHeader><DialogTitle>Edit module</DialogTitle></DialogHeader>{editingModule && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingModule.title} onChange={(e) => setEditingModule({ ...editingModule, title: e.target.value })} /></label><Button className="w-full" disabled={updateModule.isPending} onClick={() => updateModule.mutate({ id: editingModule.id, patch: { title: editingModule.title } }, { onSuccess: () => { refreshDetail(); setEditingModule(null); } })}>{updateModule.isPending ? 'Saving…' : 'Save changes'}</Button></div>}</DialogContent></Dialog></section>
+      <section className="rounded-lg border border-border/80 bg-card p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Members</p>
+            <p className="mt-1 text-xs text-muted-foreground">Trainers, learners and stakeholders assigned to this programme.</p>
+          </div>
+          {canManageDetail && <Dialog open={memberOpen} onOpenChange={(v) => { setMemberOpen(v); if (!v) { setMemberError(null); setMemberSearch(''); setMemberForm({ userId: '', name: '', email: '', role: 'learner' }); } }}>
+            <DialogTrigger asChild><Button size="sm"><Plus className="size-4" />Add member</Button></DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle>Add programme member</DialogTitle></DialogHeader>
+              <div className="space-y-4 pt-2">
+                <label className="block text-xs font-semibold">Search the organization directory<Input className="mt-2" placeholder="Name, email or department" value={memberSearch} onChange={(e) => setMemberSearch(e.target.value)} data-testid="input-member-search" /></label>
+                <div className="max-h-52 space-y-1 overflow-y-auto rounded-md border border-border/70 p-1" data-testid="list-member-directory">
+                  {directory.isLoading ? <p className="p-2 text-xs text-muted-foreground">Loading directory…</p>
+                  : directory.isError ? <p className="p-2 text-xs text-destructive">{(directory.error as Error)?.message ?? 'Could not load the directory.'}</p>
+                  : !availableUsers.length ? <p className="p-2 text-xs text-muted-foreground">No matching people available to add.</p>
+                  : availableUsers.map((u) => (
+                    <button key={u.id} type="button" onClick={() => setMemberForm({ ...memberForm, userId: u.id, name: u.name, email: u.email })} className={cn('w-full rounded-md px-2.5 py-2 text-left text-sm transition-colors hover:bg-secondary/60', memberForm.userId === u.id && 'bg-primary/10 ring-1 ring-primary/40')} data-testid={`option-member-${u.id}`}>
+                      <span className="font-semibold">{u.name}</span>
+                      <span className="block text-xs font-normal text-muted-foreground">{u.email}{u.department ? ` · ${u.department}` : ''}</span>
+                    </button>
+                  ))}
+                </div>
+                {memberSearch.trim() && !directory.isLoading && !availableUsers.length && <p className="text-xs text-muted-foreground">Not in the directory? {getSessionUser()?.isOrgStaff ? <>Add them under <Link href="/people" className="font-semibold text-primary hover:underline">People</Link> first, then grant a role here.</> : 'Ask an organization administrator to add them under People first.'}</p>}
+                <label className="block text-xs font-semibold">Role<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={memberForm.role} onChange={(e) => setMemberForm({ ...memberForm, role: e.target.value as ProgrammeMemberRole })}>
+                  {(['learner', 'trainer', 'stakeholder', 'admin'] as ProgrammeMemberRole[]).map((r) => <option value={r} key={r}>{r}</option>)}
+                </select></label>
+                {memberError && <p className="text-xs text-destructive">{memberError}</p>}
+                <Button className="w-full" disabled={addMember.isPending || !memberForm.userId} onClick={submitMember} data-testid="button-submit-member">{addMember.isPending ? 'Adding…' : 'Add member'}</Button>
+              </div>
+            </DialogContent>
+          </Dialog>}
+        </div>
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead><tr className="border-b border-border/70 text-left font-mono text-[10px] uppercase tracking-[.12em] text-muted-foreground"><th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Email</th><th className="py-2 pr-3">Role</th><th className="py-2 text-right">Actions</th></tr></thead>
+            <tbody>
+              {(members.data || []).map((m) => <tr key={`${m.userId}-${m.role}`} className="border-b border-border/50 last:border-0">
+                <td className="py-2 pr-3 font-medium">{m.name}</td>
+                <td className="py-2 pr-3 text-muted-foreground">{m.email}</td>
+                <td className="py-2 pr-3"><Status tone={m.role === 'admin' ? 'good' : 'neutral'}>{m.role}</Status></td>
+                <td className="py-2 text-right">{canManageDetail && <div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => { setMemberEditError(null); setEditingMember({ userId: m.userId, name: m.name, email: m.email, role: m.role as ProgrammeMemberRole }); }}>Edit</Button><Button size="sm" variant="outline" onClick={() => { setMemberRemoveError(null); setRemovingMember({ userId: m.userId, name: m.name, email: m.email, role: m.role as ProgrammeMemberRole }); }}>Remove</Button></div>}</td>
+              </tr>)}
+            </tbody>
+          </table>
+          {!members.data?.length && <div className="py-3"><EmptyState title="No members yet" detail="Add trainers, learners or stakeholders to this programme." /></div>}
+        </div>
+        <Dialog open={!!editingMember} onOpenChange={(v) => { if (!v) { setEditingMember(null); setMemberEditError(null); } }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Edit programme member</DialogTitle></DialogHeader>
+            {editingMember && <div className="space-y-4 pt-2">
+              <label className="block text-xs font-semibold">Email<Input className="mt-2" value={editingMember.email} disabled /></label>
+              <label className="block text-xs font-semibold">Name<Input className="mt-2" value={editingMember.name} onChange={(e) => setEditingMember({ ...editingMember, name: e.target.value })} data-testid="input-edit-member-name" /></label>
+              <label className="block text-xs font-semibold">Role<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={editingMember.role} onChange={(e) => setEditingMember({ ...editingMember, role: e.target.value as ProgrammeMemberRole })} data-testid="select-edit-member-role">
+                {(['learner', 'trainer', 'stakeholder', 'admin'] as ProgrammeMemberRole[]).map((r) => <option value={r} key={r}>{r}</option>)}
+              </select></label>
+              {memberEditError && <p className="text-xs text-destructive">{memberEditError}</p>}
+              <Button className="w-full" disabled={updateMember.isPending || !editingMember.name.trim()} onClick={saveMember} data-testid="button-save-member">{updateMember.isPending ? 'Saving…' : 'Save changes'}</Button>
+            </div>}
+          </DialogContent>
+        </Dialog>
+        <Dialog open={!!removingMember} onOpenChange={(v) => { if (!v) { setRemovingMember(null); setMemberRemoveError(null); } }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Remove programme member</DialogTitle></DialogHeader>
+            {removingMember && <div className="space-y-4 pt-2">
+              <p className="text-sm text-muted-foreground">Remove <span className="font-semibold text-foreground">{removingMember.name}</span> ({removingMember.email}) from this programme? Their role and programme enrolments will be deleted.</p>
+              {removingMember.role === 'trainer' && <p className="text-xs text-muted-foreground">Courses assigned to this trainer will be set to Unassigned.</p>}
+              {memberRemoveError && <p className="text-xs text-destructive">{memberRemoveError}</p>}
+              <div className="flex gap-2">
+                <Button className="flex-1" variant="outline" onClick={() => { setRemovingMember(null); setMemberRemoveError(null); }}>Cancel</Button>
+                <Button className="flex-1" variant="destructive" disabled={removeMember.isPending} onClick={confirmRemoveMember} data-testid="button-confirm-remove-member">{removeMember.isPending ? 'Removing…' : 'Remove member'}</Button>
+              </div>
+            </div>}
+          </DialogContent>
+        </Dialog>
+      </section>
       <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Workspace detail</p><h2 className="mt-1 text-base font-bold">Progress {pct(programme.progress)}</h2><div className="mt-4"><ProgressLine value={programme.progress} color="bg-emerald-600" /></div><div className="mt-4 space-y-2 text-sm"><p className="flex justify-between"><span className="text-muted-foreground">Status</span><Status tone={programme.status === 'active' ? 'good' : 'neutral'}>{programme.status}</Status></p><p className="flex justify-between"><span className="text-muted-foreground">Learners</span><span className="font-semibold">{programme.learnerCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Courses</span><span className="font-semibold">{programme.courseCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Owner</span><span className="font-semibold">{programme.owner}</span></p></div></section>
     </div>}
   </div>;

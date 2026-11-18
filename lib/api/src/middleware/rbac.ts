@@ -10,6 +10,28 @@ export function requireRole(...roles: string[]) {
   };
 }
 
+const ROLE_PRIORITY = ["owner", "admin", "trainer", "stakeholder", "learner"];
+
+// A person may hold several roles (§4). The JWT carries a single scalar role for
+// cheap checks, so resolve it deterministically: highest privilege wins, and an
+// org-wide grant (programmeId null) wins over a programme-scoped one.
+export async function resolveRole(userId: string): Promise<string> {
+  const grants = await db.userRole
+    .findMany({ where: { userId }, include: { role: true } })
+    .catch(() => [] as Array<{ programmeId: string | null; role: { name: string } }>);
+  if (!grants.length) return "learner";
+  const rank = (name: string) => {
+    const i = ROLE_PRIORITY.indexOf(name);
+    return i === -1 ? ROLE_PRIORITY.length : i;
+  };
+  grants.sort((a, b) => {
+    const diff = rank(a.role.name) - rank(b.role.name);
+    if (diff !== 0) return diff;
+    return (a.programmeId === null ? 0 : 1) - (b.programmeId === null ? 0 : 1);
+  });
+  return grants[0].role.name;
+}
+
 async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
   const params = req.params as Record<string, string | undefined>;
   const body = (req.body ?? {}) as Record<string, unknown>;
@@ -57,6 +79,42 @@ export async function isOrgStaff(userId: string): Promise<boolean> {
     .findFirst({ where: { userId, programmeId: null, role: { name: { in: ["owner", "admin"] } } } })
     .catch(() => null);
   return !!grant;
+}
+
+export async function isOrgOwner(userId: string): Promise<boolean> {
+  const grant = await db.userRole
+    .findFirst({ where: { userId, programmeId: null, role: { name: "owner" } } })
+    .catch(() => null);
+  return !!grant;
+}
+
+// Any admin/owner grant (org-wide or programme-scoped). Used to let programme
+// administrators read the org directory so they can add existing people to
+// their programme without provisioning new accounts.
+export async function hasAdminGrant(userId: string): Promise<boolean> {
+  const grant = await db.userRole
+    .findFirst({ where: { userId, role: { name: { in: ["owner", "admin"] } } } })
+    .catch(() => null);
+  return !!grant;
+}
+
+// Org-wide settings (billing/plan, SAML, audit log, review-credit cycle,
+// bulk import) are owned by organization staff — a programme-scoped admin must
+// not reach them (proposal §4 IT-vs-L&D separation, §6).
+export function requireOrgStaff() {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: "unauthorized" });
+    if (!(await isOrgStaff(req.user.id))) return res.status(403).json({ error: "organization staff access required" });
+    return next();
+  };
+}
+
+export function requireOrgOwner() {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: "unauthorized" });
+    if (!(await isOrgOwner(req.user.id))) return res.status(403).json({ error: "organization owner access required" });
+    return next();
+  };
 }
 
 // Checks that the caller holds one of `roles` FOR THE SPECIFIC PROGRAMME in

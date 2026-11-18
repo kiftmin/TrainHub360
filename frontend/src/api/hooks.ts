@@ -363,6 +363,120 @@ export function useModules(programmeId: string, enabled = true) {
   return useQuery(queryOpts(qk.modules(programmeId), () => api<Module[]>(`/programmes/${programmeId}/modules`), enabled));
 }
 
+export interface ProgrammeMember {
+  userId: string;
+  name: string;
+  email: string;
+  department?: string | null;
+  jobFunction?: string | null;
+  role: string;
+}
+
+export type ProgrammeMemberRole = 'admin' | 'trainer' | 'learner' | 'stakeholder';
+
+export interface DirectoryUser {
+  id: string;
+  name: string;
+  email: string;
+  department?: string | null;
+  jobFunction?: string | null;
+  isActive: boolean;
+  roles: Array<{ role: string; programmeId: string | null; programmeName: string | null }>;
+}
+
+export function useUserDirectory(search = '', enabled = true) {
+  return useQuery(
+    queryOpts(
+      ['users', search],
+      () => api<DirectoryUser[]>(`/users${search.trim() ? `?search=${encodeURIComponent(search.trim())}` : ''}`),
+      enabled,
+    ),
+  );
+}
+
+export function useCreateOrgUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; email: string; department?: string; jobFunction?: string }) =>
+      api<DirectoryUser>('/users', { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['users'] });
+      qc.invalidateQueries({ queryKey: ['programmes'] });
+    },
+  });
+}
+
+export function useUpdateOrgUser() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: { name?: string; department?: string; jobFunction?: string; isActive?: boolean } }) =>
+      api<DirectoryUser>(`/users/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['users'] });
+      qc.invalidateQueries({ queryKey: qk.programmes });
+    },
+  });
+}
+
+export function useSetOrgRole() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, role }: { userId: string; role: string }) =>
+      api<{ userId: string; orgRole: string | null }>(`/users/${userId}/org-role`, { method: 'POST', body: JSON.stringify({ role }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+}
+
+export function useProgrammeMembers(programmeId: string, enabled = true) {
+  return useQuery(
+    queryOpts(['programme-members', programmeId], () => api<ProgrammeMember[]>(`/programmes/${programmeId}/members`), enabled && !!programmeId),
+  );
+}
+
+export function useAddProgrammeMember(programmeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { userId: string; role: ProgrammeMemberRole; enrol?: boolean }) =>
+      api<ProgrammeMember>(`/programmes/${programmeId}/members`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['programme-members', programmeId] });
+      qc.invalidateQueries({ queryKey: ['enrolments'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+      qc.invalidateQueries({ queryKey: qk.programmes });
+    },
+  });
+}
+
+export function useUpdateProgrammeMember(programmeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ userId, role, name }: { userId: string; role?: ProgrammeMemberRole; name?: string }) =>
+      api<ProgrammeMember>(`/programmes/${programmeId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role, name }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['programme-members', programmeId] });
+      qc.invalidateQueries({ queryKey: ['enrolments'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+      qc.invalidateQueries({ queryKey: qk.programmes });
+    },
+  });
+}
+
+export function useRemoveProgrammeMember(programmeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) =>
+      api<{ userId: string; removed: number; coursesUnassigned: number }>(`/programmes/${programmeId}/members/${userId}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['programme-members', programmeId] });
+      qc.invalidateQueries({ queryKey: ['enrolments'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+      qc.invalidateQueries({ queryKey: qk.programmes });
+    },
+  });
+}
+
 export function useSessions() {
   return useQuery(queryOpts(qk.sessions, () => api<TrainingSession[]>('/sessions')));
 }

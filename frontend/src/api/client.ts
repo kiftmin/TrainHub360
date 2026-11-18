@@ -12,7 +12,7 @@ export function clearSession() {
   localStorage.removeItem("th360_user");
 }
 
-export function getSessionUser(): { id?: string; role?: string; name?: string } | null {
+export function getSessionUser(): { id?: string; role?: string; name?: string; isOrgStaff?: boolean } | null {
   try {
     return JSON.parse(localStorage.getItem("th360_user") ?? "null");
   } catch {
@@ -29,7 +29,16 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     clearSession();
     throw new Error("API 401 — please log in again");
   }
-  if (!res.ok) throw new Error(`API ${res.status}`);
+  if (!res.ok) {
+    let message = `API ${res.status}`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.error === "string") message = body.error;
+    } catch {
+      // non-JSON error body — keep the status-based message
+    }
+    throw new Error(message);
+  }
   const ct = res.headers.get("content-type") ?? "";
   if (ct.includes("text/csv")) return (await res.text()) as T;
   return (await res.json()) as T;

@@ -159,6 +159,8 @@ model User {
   createdAt    DateTime     @default(now()) @map("created_at")
   iCalFeedUrl  String?      @map("ical_feed_url") @db.NVarChar(1024)
   preferredNudgeDays String  @default("[\"MONDAY\",\"WEDNESDAY\",\"FRIDAY\"]") @map("preferred_nudge_days") @db.NVarChar(256)
+  isActive     Boolean   @default(true) @map("is_active")
+  deactivatedAt DateTime? @map("deactivated_at")
   managerId String? @map("manager_id")
   manager   User?   @relation("Reports", fields: [managerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   reports   User[]  @relation("Reports")
@@ -199,13 +201,15 @@ model Permission {
 }
 
 model UserRole {
+  id          String  @id @default(cuid())
   userId      String  @map("user_id")
   user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
   roleId      String  @map("role_id")
   role        Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
   programmeId String? @map("programme_id")
 
-  @@id([userId, roleId])
+  @@unique([userId, roleId, programmeId])
+  @@index([programmeId])
   @@map("user_roles")
 }
 
