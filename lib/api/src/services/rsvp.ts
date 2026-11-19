@@ -32,7 +32,12 @@ export async function declineRsvp(sessionId: string, learnerId: string, orgId?: 
     const next = await db.sessionRSVP.findFirst({ where: { sessionId, status: "waitlisted" }, orderBy: { respondedAt: "asc" } });
     if (next) {
       await db.sessionRSVP.update({ where: { id: next.id }, data: { status: "confirmed" } });
-      console.log(`[rsvp] promoted waitlisted learner=${next.learnerId} to confirmed for session=${sessionId}`);
+      const { notify } = await import("./notify.js");
+      await notify(next.learnerId, "session_waitlist_promoted", {
+        title: "You are confirmed for a session",
+        body: "A seat opened up and your RSVP was promoted from the waitlist.",
+        link: "/calendar",
+      });
     }
   }
   return updated;
@@ -41,6 +46,14 @@ export async function declineRsvp(sessionId: string, learnerId: string, orgId?: 
 export async function runRsvpReminders(staleHours = 48, now: Date = new Date()): Promise<{ reminded: number }> {
   const cutoff = new Date(now.getTime() - staleHours * 3600000);
   const stale = await db.sessionRSVP.findMany({ where: { status: "invited", respondedAt: null, createdAt: { lt: cutoff } }, include: { learner: { select: { email: true } }, session: { select: { title: true } } }, take: 200 }).catch(() => []);
-  for (const r of stale) console.log(`[rsvp] reminder: ${r.learner.email} has not responded to "${r.session.title}"`);
-  return { reminded: stale.length };
+  const { notify } = await import("./notify.js");
+  let reminded = 0;
+  for (const r of stale) {
+    const existing = await db.reminderLog.findUnique({ where: { sessionId_learnerId_kind: { sessionId: r.sessionId, learnerId: r.learnerId, kind: "rsvp_reminder" } } }).catch(() => null);
+    if (existing) continue;
+    await notify(r.learnerId, "rsvp_reminder", { title: "Please respond to your session invitation", body: `You have not yet RSVP'd to "${r.session.title}".`, link: "/calendar" });
+    await db.reminderLog.create({ data: { sessionId: r.sessionId, learnerId: r.learnerId, kind: "rsvp_reminder" } }).catch(() => null);
+    reminded += 1;
+  }
+  return { reminded };
 }

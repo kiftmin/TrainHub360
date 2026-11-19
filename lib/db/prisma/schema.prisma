@@ -23,6 +23,8 @@ model Organization {
   reviewCreditEligibleProgrammeTypes   String    @default("[]") @map("review_credit_eligible_programme_types")
   reviewCreditRequireManagerSignoff    Boolean   @default(true) @map("review_credit_require_manager_signoff")
   reviewCreditCollectApplicationScores Boolean   @default(true) @map("review_credit_collect_application_scores")
+  bulkRemovalThreshold Int      @default(5) @map("bulk_removal_threshold")
+  reminderCadenceJson  String   @default("{\"unansweredHours\":[48,120],\"confirmedBeforeStartHours\":[24,1],\"maxUnanswered\":2}") @map("reminder_cadence_json") @db.NVarChar(Max)
   webhookUrls  String    @default("[]") @map("webhook_urls") @db.NVarChar(Max)
   domain       String?   @db.NVarChar(256)
   domainVerified Boolean  @default(false) @map("domain_verified")
@@ -40,6 +42,8 @@ model Organization {
   threads                              MessageThread[]
   calendarEvents                       CalendarEvent[]
   deleteRequests                       DeleteRequest[]
+  contentItems                         ContentItem[]
+  notifications                        Notification[]
 
   @@map("organizations")
 }
@@ -75,6 +79,8 @@ model Course {
   appliedThreshold Float     @default(70) @map("applied_threshold")
   dueDate          String?   @map("due_date")
   trainer          String    @default("")
+  trainerId        String?   @map("trainer_id")
+  trainerRef       User?     @relation("CourseTrainer", fields: [trainerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   duration         String?
   version          Int       @default(1)
   isArchived       Boolean   @default(false) @map("is_archived")
@@ -87,6 +93,7 @@ model Course {
   certificates     Certificate[]
   feedback         CourseFeedback[]
   bookings         Booking[]
+  sessions         Session[]     @relation("SessionCourse")
 
   @@map("courses")
 }
@@ -102,6 +109,7 @@ model Module {
   archivedAt DateTime?   @map("archived_at")
   deletedAt  DateTime?   @map("deleted_at")
   assessments Assessment[]
+  contentItems ContentItem[]
 
   @@map("modules")
 }
@@ -111,13 +119,86 @@ model Assessment {
   moduleId String @map("module_id")
   module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
   type     String @default("recall")
+  title    String @default("")
   maxScore Float  @default(100) @map("max_score")
+  passMark Float? @map("pass_mark")
+  maxAttempts Int? @map("max_attempts")
+  timeLimitMinutes Int? @map("time_limit_minutes")
+  isPublished Boolean @default(false) @map("is_published")
   version   Int     @default(1)
   isArchived Boolean @default(false) @map("is_archived")
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
+  questions Question[]
+  attempts  AssessmentAttempt[]
 
   @@map("assessments")
+}
+
+model Question {
+  id              String @id @default(cuid())
+  assessmentId    String @map("assessment_id")
+  assessment      Assessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  order           Int    @default(0) @map("order_index")
+  kind            String
+  prompt          String @db.NVarChar(Max)
+  scenarioContext String? @map("scenario_context") @db.NVarChar(Max)
+  points          Float  @default(1)
+  rubric          String? @db.NVarChar(Max)
+  options         QuestionOption[]
+  answers         AttemptAnswer[]
+
+  @@map("questions")
+}
+
+model QuestionOption {
+  id         String @id @default(cuid())
+  questionId String @map("question_id")
+  question   Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  text       String @db.NVarChar(Max)
+  isCorrect  Boolean @default(false) @map("is_correct")
+  order      Int    @default(0) @map("order_index")
+
+  @@map("question_options")
+}
+
+model AssessmentAttempt {
+  id           String @id @default(cuid())
+  assessmentId String @map("assessment_id")
+  assessment   Assessment @relation(fields: [assessmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  enrolmentId  String @map("enrolment_id")
+  enrolment    Enrolment @relation(fields: [enrolmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  learnerId    String @map("learner_id")
+  learner      User   @relation("AttemptLearner", fields: [learnerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  attemptNumber Int   @default(1) @map("attempt_number")
+  startedAt    DateTime @default(now()) @map("started_at")
+  submittedAt  DateTime? @map("submitted_at")
+  status       String @default("in_progress")
+  score        Float?
+  maxScore     Float? @map("max_score")
+  percent      Float?
+  passed       Boolean?
+  gradedBy     String? @map("graded_by")
+  grader       User?   @relation("AttemptGrader", fields: [gradedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  gradedAt     DateTime? @map("graded_at")
+  answers      AttemptAnswer[]
+
+  @@map("assessment_attempts")
+}
+
+model AttemptAnswer {
+  id             String @id @default(cuid())
+  attemptId      String @map("attempt_id")
+  attempt        AssessmentAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  questionId     String @map("question_id")
+  question       Question @relation(fields: [questionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  answer         String @db.NVarChar(Max)
+  pointsAwarded  Float? @map("points_awarded")
+  autoGraded     Boolean @default(false) @map("auto_graded")
+  graderComment  String? @map("grader_comment") @db.NVarChar(Max)
+
+  @@unique([attemptId, questionId])
+  @@map("attempt_answers")
 }
 
 model Enrolment {
@@ -144,7 +225,12 @@ model Enrolment {
   managerSignOff              Boolean?   @map("manager_sign_off")
   managerSignOffBy            String?    @map("manager_sign_off_by")
   managerSignOffAt            DateTime?  @map("manager_sign_off_at")
+  progress                    Float      @default(0)
+  withdrawnAt                 DateTime?  @map("withdrawn_at")
+  withdrawnBy                 String?    @map("withdrawn_by")
   createdAt                   DateTime   @default(now()) @map("created_at")
+  contentProgress             ContentProgress[]
+  attempts                    AssessmentAttempt[]
 
   @@map("enrolments")
 }
@@ -161,6 +247,9 @@ model User {
   preferredNudgeDays String  @default("[\"MONDAY\",\"WEDNESDAY\",\"FRIDAY\"]") @map("preferred_nudge_days") @db.NVarChar(256)
   isActive     Boolean   @default(true) @map("is_active")
   deactivatedAt DateTime? @map("deactivated_at")
+  tokenVersion Int       @default(0) @map("token_version")
+  activatedAt  DateTime? @map("activated_at")
+  icalFeedToken String? @map("ical_feed_token") @db.NVarChar(128)
   managerId String? @map("manager_id")
   manager   User?   @relation("Reports", fields: [managerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   reports   User[]  @relation("Reports")
@@ -179,6 +268,14 @@ model User {
   deleteRequestsApproved DeleteRequest[] @relation("DeleteApprover")
   sessionsAsTrainer Session[] @relation("SessionTrainer")
   bookingsAsTrainer Booking[] @relation("BookingTrainer")
+  coursesAsTrainer Course[] @relation("CourseTrainer")
+  threadParticipants ThreadParticipant[]
+  messagesAuthored Message[] @relation("MessageAuthor")
+  notifications Notification[]
+  contentVerified ContentProgress[] @relation("ContentVerifier")
+  attempts AssessmentAttempt[] @relation("AttemptLearner")
+  gradedAttempts AssessmentAttempt[] @relation("AttemptGrader")
+  reminders ReminderLog[]
 
   @@map("users")
 }
@@ -253,8 +350,23 @@ model MessageThread {
   escalatedAt           DateTime? @map("escalated_at")
   updatedAt   DateTime  @default(now()) @updatedAt @map("updated_at")
   messages    Message[]
+  participants ThreadParticipant[]
 
   @@map("message_threads")
+}
+
+model ThreadParticipant {
+  id       String   @id @default(cuid())
+  threadId String   @map("thread_id")
+  thread   MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  userId   String   @map("user_id")
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role     String   @default("learner")
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  @@unique([threadId, userId])
+  @@index([userId])
+  @@map("thread_participants")
 }
 
 model Message {
@@ -262,6 +374,8 @@ model Message {
   threadId  String        @map("thread_id")
   thread    MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
   author    String
+  authorId  String?       @map("author_id")
+  authorRef User?         @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   body      String        @db.NVarChar(Max)
   urgent    Boolean       @default(false)
   createdAt DateTime      @default(now()) @map("created_at")
@@ -301,6 +415,7 @@ model DeleteRequest {
   approver    User?     @relation("DeleteApprover", fields: [approvedBy], references: [id], onUpdate: NoAction, onDelete: NoAction)
   status      String    @default("pending")
   reason      String?   @db.NVarChar(1024)
+  payload     String?   @db.NVarChar(Max)
   createdAt   DateTime  @default(now()) @map("created_at")
   decidedAt   DateTime? @map("decided_at")
 
@@ -411,9 +526,12 @@ model PasswordResetToken {
   userId    String   @map("user_id")
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   tokenHash String   @map("token_hash") @db.NVarChar(128)
+  purpose   String   @default("password_reset")
   expiresAt DateTime @map("expires_at")
   usedAt    DateTime? @map("used_at")
   createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([tokenHash, purpose])
 
   @@map("password_reset_tokens")
 }
@@ -440,13 +558,21 @@ model Session {
   trainer   String  @default("")
   trainerId String? @map("trainer_id")
   trainerRef User?  @relation("SessionTrainer", fields: [trainerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  courseId  String? @map("course_id")
+  courseRef Course? @relation("SessionCourse", fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   date      String
   time      String
+  startsAt  DateTime? @map("starts_at")
+  endsAt    DateTime? @map("ends_at")
+  timezone  String @default("UTC")
+  joinUrl   String? @map("join_url") @db.NVarChar(1024)
+  location  String? @db.NVarChar(512)
   mode      String @default("online")
   attendees Int    @default(0)
   status    String @default("scheduled")
   capacity  Int?
   rsvps     SessionRSVP[]
+  reminders ReminderLog[]
 
   @@map("sessions")
 }
@@ -461,6 +587,88 @@ model SessionRSVP {
   respondedAt DateTime? @map("responded_at")
   createdAt   DateTime  @default(now()) @map("created_at")
 
+  @@unique([sessionId, learnerId])
   @@map("session_rsvps")
+}
+
+model ContentItem {
+  id               String  @id @default(cuid())
+  orgId            String  @map("org_id")
+  organization     Organization @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  moduleId         String  @map("module_id")
+  module           Module  @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  type             String
+  title            String
+  description      String? @db.NVarChar(Max)
+  order            Int     @default(0) @map("order_index")
+  required         Boolean @default(true)
+  estimatedMinutes Int?    @map("estimated_minutes")
+  body             String? @db.NVarChar(Max)
+  storageKey       String? @map("storage_key") @db.NVarChar(512)
+  fileName         String? @map("file_name") @db.NVarChar(512)
+  mimeType         String? @map("mime_type") @db.NVarChar(256)
+  sizeBytes        Int?    @map("size_bytes")
+  checksum         String? @db.NVarChar(128)
+  url              String? @db.NVarChar(1024)
+  provider         String? @db.NVarChar(64)
+  completionMode   String  @default("trainer_verified") @map("completion_mode")
+  version          Int     @default(1)
+  isArchived       Boolean @default(false) @map("is_archived")
+  archivedAt       DateTime? @map("archived_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+  progress         ContentProgress[]
+
+  @@index([moduleId])
+  @@index([orgId])
+  @@map("content_items")
+}
+
+model ContentProgress {
+  id             String    @id @default(cuid())
+  enrolmentId    String    @map("enrolment_id")
+  enrolment      Enrolment @relation(fields: [enrolmentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  contentItemId  String    @map("content_item_id")
+  contentItem    ContentItem @relation(fields: [contentItemId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  status         String    @default("not_started")
+  startedAt      DateTime? @map("started_at")
+  completedAt    DateTime? @map("completed_at")
+  evidenceNote   String?   @map("evidence_note") @db.NVarChar(Max)
+  evidenceFileKey String?  @map("evidence_file_key") @db.NVarChar(512)
+  verifiedBy     String?   @map("verified_by")
+  verifier       User?     @relation("ContentVerifier", fields: [verifiedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  verifiedAt     DateTime? @map("verified_at")
+
+  @@unique([enrolmentId, contentItemId])
+  @@map("content_progress")
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgId     String?  @map("org_id")
+  organization Organization? @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  type      String
+  title     String
+  body      String?  @db.NVarChar(Max)
+  link      String?  @db.NVarChar(1024)
+  readAt    DateTime? @map("read_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+model ReminderLog {
+  id        String   @id @default(cuid())
+  sessionId String   @map("session_id")
+  session   Session  @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  learnerId String   @map("learner_id")
+  learner   User     @relation(fields: [learnerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  kind      String
+  sentAt    DateTime @default(now()) @map("sent_at")
+
+  @@unique([sessionId, learnerId, kind])
+  @@map("reminder_logs")
 }
 

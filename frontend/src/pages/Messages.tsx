@@ -24,6 +24,8 @@ import {
   useThreads,
   useThreadMessages,
   useSendMessage,
+  useCreateThread,
+  useProgrammeMembers,
   useBookings,
   useCreateBooking,
   useCalendarEvents,
@@ -71,6 +73,33 @@ const adminNav = [
 import { fmtDate, pct, initials, Skeleton, EmptyState, ErrorState, Status, ProgressLine, PageHeading, KpiCard } from '@/components/shared';
 export function Messages() {
   const threads = useThreads();
+  const programmes = useProgrammes();
+  const createThread = useCreateThread();
+  const [newOpen, setNewOpen] = useState(false);
+  const [newSubject, setNewSubject] = useState('');
+  const [newBody, setNewBody] = useState('');
+  const [newProgrammeId, setNewProgrammeId] = useState('');
+  const [newParticipants, setNewParticipants] = useState<string[]>([]);
+  const [newUrgent, setNewUrgent] = useState(false);
+  const [newError, setNewError] = useState<string | null>(null);
+  const members = useProgrammeMembers(newProgrammeId, newOpen && !!newProgrammeId);
+  const meId = getSessionUser()?.id;
+  const submitThread = () => {
+    if (!newSubject.trim() || !newBody.trim() || !newProgrammeId || !newParticipants.length) {
+      setNewError('Subject, programme, body and at least one participant are required.');
+      return;
+    }
+    setNewError(null);
+    createThread.mutate({
+      subject: newSubject.trim(), body: newBody.trim(), programmeId: newProgrammeId,
+      participantIds: newParticipants, urgent: newUrgent,
+    }, {
+      onSuccess: () => {
+        setNewOpen(false); setNewSubject(''); setNewBody(''); setNewParticipants([]); setNewProgrammeId(''); setNewUrgent(false);
+      },
+      onError: (e) => setNewError((e as Error).message),
+    });
+  };
   const [selected, setSelected] = useState<string | null>(null);
   const [body, setBody] = useState('');
   const [urgent, setUrgent] = useState(false);
@@ -83,7 +112,37 @@ export function Messages() {
     send.mutate({ body: body.trim(), urgent }, { onSuccess: () => { setBody(''); setUrgent(false); } });
   };
   return <div className="page-in">
-    <PageHeading eyebrow="Workspace communication" title="Keep the context close." detail="Threaded conversations tied to programmes and courses, with urgency where it matters." />
+    <PageHeading eyebrow="Workspace communication" title="Keep the context close." detail="Threaded conversations tied to programmes and courses, with urgency where it matters." action={
+      <Dialog open={newOpen} onOpenChange={setNewOpen}>
+        <DialogTrigger asChild><Button><Plus className="size-4" />New message</Button></DialogTrigger>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Start a new conversation</DialogTitle></DialogHeader>
+          <div className="space-y-4 pt-2">
+            <label className="block text-xs font-semibold">Programme<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={newProgrammeId} onChange={(e) => { setNewProgrammeId(e.target.value); setNewParticipants([]); }} data-testid="select-thread-programme">
+              <option value="">Select a programme</option>
+              {(programmes.data || []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select></label>
+            <label className="block text-xs font-semibold">Subject<Input className="mt-2" value={newSubject} onChange={(e) => setNewSubject(e.target.value)} data-testid="input-thread-subject" /></label>
+            <div className="block text-xs font-semibold">Participants
+              <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-md border border-border/70 p-1" data-testid="list-thread-participants">
+                {!newProgrammeId ? <p className="p-2 text-xs font-normal text-muted-foreground">Choose a programme first.</p>
+                : members.isLoading ? <p className="p-2 text-xs font-normal text-muted-foreground">Loading members-</p>
+                : (members.data || []).filter((m) => m.userId !== meId).map((m) => (
+                  <label key={`${m.userId}-${m.role}`} className="flex items-center gap-2 rounded px-2 py-1.5 text-xs font-normal hover:bg-secondary/50">
+                    <input type="checkbox" checked={newParticipants.includes(m.userId)} onChange={(e) => setNewParticipants(e.target.checked ? [...new Set([...newParticipants, m.userId])] : newParticipants.filter((x) => x !== m.userId))} />
+                    <span className="font-semibold">{m.name}</span><span className="text-muted-foreground">{m.email} - {m.role}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <label className="block text-xs font-semibold">Message<Textarea className="mt-2" value={newBody} onChange={(e) => setNewBody(e.target.value)} data-testid="input-thread-body" /></label>
+            <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={newUrgent} onChange={(e) => setNewUrgent(e.target.checked)} /> Mark as urgent</label>
+            {newError && <p className="text-xs text-destructive">{newError}</p>}
+            <Button className="w-full" disabled={createThread.isPending} onClick={submitThread} data-testid="button-create-thread">{createThread.isPending ? 'Sending-' : 'Send message'}</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    } />
     {threads.isLoading ? <Skeleton className="h-[590px]" />
     : threads.isError ? <ErrorState retry={() => threads.refetch()} />
     : <div className="grid min-h-[590px] overflow-hidden rounded-lg border border-border/80 bg-card lg:grid-cols-[340px_1fr]">
@@ -94,14 +153,14 @@ export function Messages() {
       </section>
       <section className="flex flex-col">
         {active ? <>
-          <div className="border-b border-border/70 p-4"><div className="flex items-center gap-2"><p className="font-bold">{active.subject}</p>{active.urgent && <Status tone="warn">urgent</Status>}</div><p className="mt-1 text-xs text-muted-foreground">{active.participant} · {active.context}</p></div>
+          <div className="border-b border-border/70 p-4"><div className="flex items-center gap-2"><p className="font-bold">{active.subject}</p>{active.urgent && <Status tone="warn">urgent</Status>}</div><p className="mt-1 text-xs text-muted-foreground">{active.participant} - {active.context}</p></div>
           <div className="flex-1 space-y-3 p-4">
             {messages.isLoading ? <><Skeleton className="h-16" /><Skeleton className="h-16" /></>
             : messages.isError ? <ErrorState retry={() => messages.refetch()} />
             : !(messages.data?.length) ? <EmptyState title="No messages yet" detail="Start the conversation below." />
             : messages.data.map((m) => <div key={m.id} className="rounded-lg border border-border/70 bg-secondary/40 p-3"><div className="flex items-center gap-2 text-xs"><span className="font-bold">{m.author}</span>{m.urgent && <Status tone="warn">urgent</Status>}<span className="ml-auto text-muted-foreground">{fmtDate(m.createdAt)}</span></div><p className="mt-2 text-sm">{m.body}</p></div>)}
           </div>
-          <div className="border-t border-border/70 p-4"><div className="flex items-center gap-2"><Textarea placeholder="Write a reply…" aria-label="Write a reply" value={body} onChange={(e) => setBody(e.target.value)} className="min-h-11" /><Button onClick={sendMessage} disabled={send.isPending || !body.trim()}><Send className="size-4" /></Button></div><label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} /> Mark as urgent</label></div>
+          <div className="border-t border-border/70 p-4"><div className="flex items-center gap-2"><Textarea placeholder="Write a reply-" aria-label="Write a reply" value={body} onChange={(e) => setBody(e.target.value)} className="min-h-11" /><Button onClick={sendMessage} disabled={send.isPending || !body.trim()}><Send className="size-4" /></Button></div><label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} /> Mark as urgent</label></div>
         </> : <div className="p-8"><EmptyState title="Select a thread" detail="Choose a conversation from the inbox." /></div>}
       </section>
     </div>}

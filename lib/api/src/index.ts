@@ -8,6 +8,7 @@ import type { AuthedRequest } from "./middleware/auth.js";
 import { scheduleKpiJob } from "./jobs/kpiJob.js";
 import { scheduleContentLifecycleJob } from "./jobs/contentLifecycleJob.js";
 import { scheduleCertificateExpiryJob } from "./jobs/certificateExpiryJob.js";
+import { scheduleSessionReminderJob } from "./jobs/sessionReminderJob.js";
 
 const app = express();
 app.use(cors());
@@ -41,6 +42,7 @@ if (process.env.NODE_ENV !== "test") {
   scheduleKpiJob();
   scheduleContentLifecycleJob();
   scheduleCertificateExpiryJob();
+  scheduleSessionReminderJob();
 }
 export default app;
 

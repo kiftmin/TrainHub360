@@ -9,7 +9,8 @@ export interface SlaThread {
 }
 
 export interface ThreadMessageLike {
-  author: string;
+  author?: string;
+  authorId?: string | null;
   authorRole?: string | null;
   createdAt: Date | string;
   learner?: boolean;
@@ -54,14 +55,27 @@ export function findOverdueThreads(threads: SlaThread[], now: Date = new Date())
 }
 
 export async function runSlaJob(now: Date = new Date()): Promise<{ escalated: number }> {
-  const threads = await db.messageThread.findMany({ where: { isEscalated: false } });
+  const threads = await db.messageThread.findMany({ where: { isEscalated: false }, include: { participants: { select: { userId: true, role: true } }, programme: { select: { id: true, orgId: true } } } });
   const overdue = findOverdueThreads(threads as SlaThread[], now);
+  const { notifyMany } = await import("../services/notify.js");
   for (const t of overdue) {
     await db.messageThread.update({ where: { id: t.id }, data: { isEscalated: true, escalatedAt: now, slaBreached: true } });
     await db.auditLog.create({
       data: { userId: null, action: "SLA_ESCALATION", entity: "message_thread", entityId: t.id, details: null },
     }).catch(() => null);
+    const full = threads.find((row) => row.id === t.id);
+    const recipients = new Set<string>();
+    // Programme admins first; fall back to org owners/admins for unscoped threads.
+    const admins = full?.programme?.id
+      ? await db.userRole.findMany({ where: { programmeId: full.programme.id, role: { name: "admin" } }, select: { userId: true } }).catch(() => [])
+      : await db.userRole.findMany({ where: { role: { name: { in: ["owner", "admin"] } }, user: { orgId: full?.programme?.orgId } }, select: { userId: true } }).catch(() => []);
+    for (const a of admins) recipients.add(a.userId);
+    for (const p of full?.participants ?? []) if (p.role === "trainer") recipients.add(p.userId);
+    await notifyMany([...recipients], "sla_escalation", {
+      title: "Response SLA breached",
+      body: `Thread "${(t as SlaThread & { subject?: string }).subject ?? t.id}" has been waiting for a trainer response.`,
+      link: "/messages",
+    });
   }
-  if (overdue.length) console.log(`[sla] escalated ${overdue.length} overdue thread(s)`);
   return { escalated: overdue.length };
 }

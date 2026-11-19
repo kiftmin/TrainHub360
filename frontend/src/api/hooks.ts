@@ -438,7 +438,7 @@ export function useProgrammeMembers(programmeId: string, enabled = true) {
 export function useAddProgrammeMember(programmeId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { userId: string; role: ProgrammeMemberRole; enrol?: boolean }) =>
+    mutationFn: (input: { userId: string; role?: ProgrammeMemberRole; roles?: ProgrammeMemberRole[]; enrol?: boolean }) =>
       api<ProgrammeMember>(`/programmes/${programmeId}/members`, { method: 'POST', body: JSON.stringify(input) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['programme-members', programmeId] });
@@ -452,8 +452,8 @@ export function useAddProgrammeMember(programmeId: string) {
 export function useUpdateProgrammeMember(programmeId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ userId, role, name }: { userId: string; role?: ProgrammeMemberRole; name?: string }) =>
-      api<ProgrammeMember>(`/programmes/${programmeId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role, name }) }),
+    mutationFn: ({ userId, role, roles, name }: { userId: string; role?: ProgrammeMemberRole; roles?: ProgrammeMemberRole[]; name?: string }) =>
+      api<ProgrammeMember>(`/programmes/${programmeId}/members/${userId}`, { method: 'PATCH', body: JSON.stringify({ role, roles, name }) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['programme-members', programmeId] });
       qc.invalidateQueries({ queryKey: ['enrolments'] });
@@ -619,4 +619,328 @@ export async function downloadReviewCreditCsv(): Promise<void> {
   anchor.download = 'trainhub360-review-credit.csv';
   anchor.click();
   URL.revokeObjectURL(url);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2-5: threads, content, assessments, sessions and calendar feed
+// ---------------------------------------------------------------------------
+
+export interface NewThreadInput {
+  subject: string;
+  programmeId: string;
+  courseId?: string;
+  participantIds: string[];
+  body: string;
+  urgent?: boolean;
+}
+
+export function useCreateThread() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: NewThreadInput) => api<MessageThread>('/threads', { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.threads }),
+  });
+}
+
+export type ContentType = 'native' | 'file' | 'external_link';
+
+export interface ContentItem {
+  id: string;
+  moduleId?: string;
+  type: ContentType;
+  title: string;
+  description?: string | null;
+  order: number;
+  required: boolean;
+  estimatedMinutes?: number | null;
+  body?: string | null;
+  fileName?: string | null;
+  mimeType?: string | null;
+  sizeBytes?: number | null;
+  url?: string | null;
+  provider?: string | null;
+  completionMode?: 'trainer_verified' | 'self_report' | null;
+  isArchived?: boolean;
+  progress?: { status: string; completedAt?: string | null; verifiedAt?: string | null };
+}
+
+export interface CourseContent {
+  courseId: string;
+  progress: number;
+  modules: Array<{ id: string; title: string; order: number; contentItems: ContentItem[] }>;
+}
+
+export function useCourseContent(courseId: string, enabled = true) {
+  return useQuery(queryOpts(['course-content', courseId] as const, () => api<CourseContent>(`/courses/${courseId}/content`), enabled && !!courseId));
+}
+
+export function useModuleContent(moduleId: string, enabled = true) {
+  return useQuery(queryOpts(['module-content', moduleId] as const, () => api<ContentItem[]>(`/modules/${moduleId}/content`), enabled && !!moduleId));
+}
+
+export type ContentInput = Partial<Omit<ContentItem, 'id' | 'progress'>> & { type: ContentType; title: string };
+
+export function useCreateContent(moduleId: string, courseId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ContentInput) => api<ContentItem>(`/modules/${moduleId}/content`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['module-content', moduleId] });
+      if (courseId) qc.invalidateQueries({ queryKey: ['course-content', courseId] });
+    },
+  });
+}
+
+export function useUpdateContent(moduleId: string, courseId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<ContentInput> }) => api<ContentItem>(`/content/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['module-content', moduleId] });
+      if (courseId) qc.invalidateQueries({ queryKey: ['course-content', courseId] });
+    },
+  });
+}
+
+export function useArchiveContent(moduleId: string, courseId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<ContentItem>(`/content/${id}`, { method: 'DELETE' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['module-content', moduleId] });
+      if (courseId) qc.invalidateQueries({ queryKey: ['course-content', courseId] });
+    },
+  });
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+export function useUploadContent(moduleId: string) {
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const dataBase64 = await fileToBase64(file);
+      return api<{ storageKey: string; fileName: string; mimeType: string; sizeBytes: number; checksum: string }>(`/modules/${moduleId}/content/upload`, {
+        method: 'POST',
+        body: JSON.stringify({ fileName: file.name, mimeType: file.type || 'application/octet-stream', dataBase64 }),
+      });
+    },
+  });
+}
+
+export function useContentProgress(courseId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, status, evidenceNote, evidenceFileKey }: { id: string; status: 'in_progress' | 'completed'; evidenceNote?: string; evidenceFileKey?: string }) =>
+      api(`/content/${id}/progress`, { method: 'POST', body: JSON.stringify({ status, evidenceNote, evidenceFileKey }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['course-content', courseId] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
+export function useVerifyContent(moduleId: string, courseId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, verified, note }: { id: string; verified: boolean; note?: string }) =>
+      api(`/content-progress/${id}/verify`, { method: 'POST', body: JSON.stringify({ verified, note }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['module-content', moduleId] });
+      if (courseId) qc.invalidateQueries({ queryKey: ['course-content', courseId] });
+    },
+  });
+}
+
+export interface AssessmentQuestion {
+  id: string;
+  kind: string;
+  prompt: string;
+  points: number;
+  order: number;
+  options?: Array<{ id: string; text: string; isCorrect?: boolean; order: number }>;
+}
+
+export interface CourseAssessment {
+  id: string;
+  moduleId: string;
+  type: 'recall' | 'applied';
+  title: string;
+  passMark: number;
+  maxAttempts?: number | null;
+  timeLimitMinutes?: number | null;
+  isPublished: boolean;
+  questions: AssessmentQuestion[];
+  module?: { id: string; title: string };
+  attemptCount: number;
+  bestScore: number | null;
+  remainingAttempts: number | null;
+  locked: boolean;
+}
+
+export function useCourseAssessments(courseId: string, enabled = true) {
+  return useQuery(queryOpts(['course-assessments', courseId] as const, () => api<CourseAssessment[]>(`/courses/${courseId}/assessments`), enabled && !!courseId));
+}
+
+export function useAssessment(id: string, enabled = true) {
+  return useQuery(queryOpts(['assessment', id] as const, () => api<CourseAssessment & { questions: AssessmentQuestion[] }>(`/assessments/${id}`), enabled && !!id));
+}
+
+export function useCreateQuestion(assessmentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { prompt: string; type: 'recall' | 'applied'; points?: number; options: Array<{ text: string; isCorrect: boolean }> }) =>
+      api<AssessmentQuestion>(`/assessments/${assessmentId}/questions`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['assessment', assessmentId] }),
+  });
+}
+
+export function usePublishAssessment(assessmentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api(`/assessments/${assessmentId}/publish`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['assessment', assessmentId] });
+      qc.invalidateQueries({ queryKey: ['course-assessments'] });
+    },
+  });
+}
+
+export interface StartedAttempt {
+  attemptId: string;
+  attemptNumber: number;
+  startedAt: string;
+  expiresAt: string | null;
+  timeLimitMinutes: number | null;
+  assessmentId: string;
+  questions: Array<{ id: string; type: string; prompt: string; points: number; order: number; options: Array<{ id: string; text: string; order: number }> }>;
+}
+
+export function useStartAttempt(courseId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (assessmentId: string) => api<StartedAttempt>(`/assessments/${assessmentId}/attempts`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['course-assessments', courseId] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
+export interface AttemptSubmission {
+  attemptId: string;
+  attemptNumber: number;
+  score: number;
+  earnedPoints: number;
+  totalPoints: number;
+  passMark: number;
+  passed: boolean;
+  competenceMet: boolean;
+  results: Array<{ questionId: string; correct: boolean; points: number }>;
+}
+
+export function useSubmitAttemptAnswers(courseId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ attemptId, answers }: { attemptId: string; answers: Array<{ questionId: string; optionIds: string[] }> }) =>
+      api<AttemptSubmission>(`/attempts/${attemptId}/submit`, { method: 'POST', body: JSON.stringify({ answers }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['course-assessments', courseId] });
+      qc.invalidateQueries({ queryKey: ['course-attempts', courseId] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
+export interface SessionInput {
+  title: string;
+  programmeId?: string;
+  courseId?: string;
+  trainerId?: string;
+  trainer?: string;
+  date: string;
+  time: string;
+  startsAt?: string;
+  endsAt?: string;
+  timezone?: string;
+  mode?: 'online' | 'offline';
+  joinUrl?: string;
+  location?: string;
+  capacity?: number | null;
+}
+
+export function useCreateSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: SessionInput) => api('/sessions', { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.sessions });
+      qc.invalidateQueries({ queryKey: qk.calendar });
+    },
+  });
+}
+
+export function useInviteSession(sessionId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (learnerIds: string[]) => api<{ invited: number; skipped: string[] }>(`/sessions/${sessionId}/invite`, { method: 'POST', body: JSON.stringify({ learnerIds }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.sessions }),
+  });
+}
+
+export function useRsvpSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, status }: { sessionId: string; status: 'confirmed' | 'declined' }) =>
+      api(`/sessions/${sessionId}/rsvp`, { method: 'POST', body: JSON.stringify({ status }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.sessions }),
+  });
+}
+
+export function useBulkRemoveProgrammeMembers(programmeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userIds: string[]) =>
+      api<{ removed: number; withdrawn: number; coursesUnassigned: number; requiresApproval?: boolean; deleteRequestId?: string }>(`/programmes/${programmeId}/members/bulk-remove`, { method: 'POST', body: JSON.stringify({ userIds }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['programme-members', programmeId] });
+      qc.invalidateQueries({ queryKey: ['delete-requests'] });
+      qc.invalidateQueries({ queryKey: ['enrolments'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+    },
+  });
+}
+
+export function useIcalToken() {
+  return useQuery(queryOpts(['ical-token'] as const, () => api<{ token: string | null; url: string | null }>('/me/ical-token')));
+}
+
+export function useGenerateIcalToken() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (userId: string) => api<{ token: string; url: string }>(`/users/${userId}/ical-token`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['ical-token'] }),
+  });
+}
+
+export function useCreateAssessment(moduleId: string, courseId?: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { title?: string; type: 'recall' | 'applied'; passMark?: number; maxAttempts?: number; timeLimitMinutes?: number }) =>
+      api<CourseAssessment>(`/modules/${moduleId}/assessments`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => {
+      if (courseId) qc.invalidateQueries({ queryKey: ['course-assessments', courseId] });
+      qc.invalidateQueries({ queryKey: ['module-assessments', moduleId] });
+    },
+  });
+}
+
+export function useModuleAssessments(moduleId: string, enabled = true) {
+  return useQuery(queryOpts(['module-assessments', moduleId] as const, () => api<CourseAssessment[]>(`/modules/${moduleId}/assessments`), enabled && !!moduleId));
 }

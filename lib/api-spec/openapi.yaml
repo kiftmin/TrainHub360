@@ -117,26 +117,246 @@ paths:
     post:
       operationId: submitAssessmentAttempt
       tags: [learning]
-      summary: Submit an assessment attempt
+      summary: Legacy course-level attempt (removed; use assessments/{assessmentId}/attempts)
+      deprecated: true
       parameters:
         - name: courseId
           in: path
           required: true
           schema:
             type: string
+      responses:
+        "410":
+          description: Removed. Use POST /assessments/{assessmentId}/attempts then POST /attempts/{attemptId}/submit.
+    get:
+      operationId: listCourseAttempts
+      tags: [learning]
+      summary: List the caller's assessment attempts for a course
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Attempts with score and competence
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /courses/{courseId}/assessments:
+    get:
+      operationId: listCourseAssessments
+      tags: [learning]
+      summary: List assessments for a course (no correct answers; includes lock state)
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Assessments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+  /assessments/{assessmentId}:
+    get:
+      operationId: getAssessment
+      tags: [learning]
+      summary: Get assessment detail (staff responses include correct answers)
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Assessment
+          content:
+            application/json:
+              schema:
+                type: object
+        "403":
+          description: Not permitted
+        "404":
+          description: Not found
+    patch:
+      operationId: updateAssessment
+      tags: [learning]
+      summary: Update assessment settings (title, passMark, maxAttempts, timeLimitMinutes)
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/AssessmentAttemptInput"
+              type: object
+              properties:
+                title: { type: string }
+                passMark: { type: integer, minimum: 0, maximum: 100 }
+                maxAttempts: { type: integer, minimum: 1 }
+                timeLimitMinutes: { type: integer, minimum: 1, nullable: true }
       responses:
         "200":
-          description: Assessment result
+          description: Updated assessment
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/AssessmentResult"
+                type: object
+  /assessments/{assessmentId}/questions:
+    post:
+      operationId: createQuestion
+      tags: [learning]
+      summary: Add a question (recall must have exactly one correct answer)
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt, kind, options]
+              properties:
+                prompt: { type: string }
+                kind: { type: string, enum: [single_choice, multiple_choice, true_false, short_text] }
+                points: { type: integer, minimum: 1 }
+                options:
+                  type: array
+                  items:
+                    type: object
+                    required: [text]
+                    properties:
+                      text: { type: string }
+                      correct: { type: boolean }
+      responses:
+        "201":
+          description: Created question
+          content:
+            application/json:
+              schema:
+                type: object
+  /questions/{questionId}:
+    patch:
+      operationId: updateQuestion
+      tags: [learning]
+      summary: Update a question before publication
+      parameters:
+        - name: questionId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated question
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      operationId: deleteQuestion
+      tags: [learning]
+      summary: Delete a question before publication
+      parameters:
+        - name: questionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted
+  /assessments/{assessmentId}/publish:
+    post:
+      operationId: publishAssessment
+      tags: [learning]
+      summary: Publish an assessment (blocks further question edits)
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Published assessment
+          content:
+            application/json:
+              schema:
+                type: object
+  /assessments/{assessmentId}/attempts:
+    post:
+      operationId: startAssessmentAttempt
+      tags: [learning]
+      summary: Start an assessment attempt (questions shuffled, answers omitted)
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Started attempt
+          content:
+            application/json:
+              schema:
+                type: object
+        "409":
+          description: Attempts exhausted or assessment not published
+  /attempts/{attemptId}/submit:
+    post:
+      operationId: submitAttemptAnswers
+      tags: [learning]
+      summary: Submit answers (graded server-side)
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers]
+              properties:
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    required: [questionId]
+                    properties:
+                      questionId: { type: string }
+                      optionIds: { type: array, items: { type: string } }
+                      text: { type: string }
+      responses:
+        "200":
+          description: Grading result with per-question outcomes and competence
+          content:
+            application/json:
+              schema:
+                type: object
+        "409":
+          description: Attempt already submitted
   /sessions:
     get:
       operationId: listSessions
@@ -151,20 +371,84 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/TrainingSession"
+    post:
+      operationId: createSession
+      tags: [engagement]
+      summary: Schedule a training session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, startsAt, endsAt]
+              properties:
+                title: { type: string }
+                courseId: { type: string, nullable: true }
+                programmeId: { type: string, nullable: true }
+                startsAt: { type: string, format: date-time }
+                endsAt: { type: string, format: date-time }
+                date: { type: string, description: Fallback when startsAt is omitted }
+                time: { type: string, description: Fallback when startsAt is omitted }
+                mode: { type: string, enum: [online, offline], default: online }
+                joinUrl: { type: string, format: uri, description: Required for online sessions }
+                location: { type: string, description: Required for offline sessions }
+                capacity: { type: integer, minimum: 1, nullable: true }
+                trainerId: { type: string, nullable: true }
+      responses:
+        "201":
+          description: Created session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainingSession"
   /threads:
     get:
       operationId: listMessageThreads
       tags: [engagement]
       summary: List message threads for the active workspace
+      description: Stakeholders are denied. Participants and programme admins receive messages; other org staff receive metadata only.
       responses:
         "200":
-          description: Message threads
+          description: Message threads (org staff may have metadataOnly=true and empty messages)
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/MessageThread"
+        "403":
+          description: Stakeholders cannot access threads
+    post:
+      operationId: createThread
+      tags: [engagement]
+      summary: Start a message thread
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subject, participantIds, body]
+              properties:
+                subject: { type: string }
+                body: { type: string }
+                programmeId: { type: string, nullable: true }
+                participantIds:
+                  type: array
+                  items: { type: string }
+                urgent: { type: boolean }
+      responses:
+        "201":
+          description: Created thread
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageThread"
+        "400":
+          description: Invalid participant or programme membership
+        "403":
+          description: Learners may only message a programme trainer or admin
   /threads/{threadId}/messages:
     get:
       operationId: listThreadMessages
@@ -570,6 +854,427 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/ReviewCreditRow"
+  /sessions/{sessionId}/invite:
+    post:
+      operationId: inviteSessionParticipants
+      tags: [engagement]
+      summary: Invite learners (validates org and course/programme enrolment)
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [learnerIds]
+              properties:
+                learnerIds:
+                  type: array
+                  items: { type: string }
+      responses:
+        "200":
+          description: Invite results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invited: { type: integer }
+                  skipped: { type: integer }
+  /sessions/{sessionId}/rsvp:
+    post:
+      operationId: rsvpSession
+      tags: [engagement]
+      summary: RSVP to a session (waitlist promotion and reminders)
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [confirmed, declined] }
+      responses:
+        "200":
+          description: Updated RSVP
+          content:
+            application/json:
+              schema:
+                type: object
+  /me/ical-token:
+    get:
+      operationId: getMyIcalToken
+      tags: [engagement]
+      summary: Get or create the caller's personal calendar feed token
+      responses:
+        "200":
+          description: Calendar feed URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  url: { type: string }
+  /users/{userId}/ical-token:
+    post:
+      operationId: regenerateUserIcalToken
+      tags: [engagement]
+      summary: Regenerate a user's calendar feed token (self or org admin)
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Rotated calendar feed URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string }
+                  url: { type: string }
+  /calendar/feed.ics:
+    get:
+      operationId: getCalendarFeed
+      tags: [engagement]
+      summary: Personal iCalendar feed authenticated by opaque token
+      security: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: ICS calendar
+          content:
+            text/calendar:
+              schema:
+                type: string
+        "401":
+          description: Invalid token
+  /programmes/{programmeId}/members:
+    post:
+      operationId: addProgrammeMember
+      tags: [programmes]
+      summary: Add a member with one or more roles
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userId]
+              properties:
+                userId: { type: string }
+                roles:
+                  type: array
+                  items: { type: string, enum: [admin, trainer, learner, stakeholder] }
+                role: { type: string, enum: [admin, trainer, learner, stakeholder] }
+                enrol: { type: boolean }
+      responses:
+        "201":
+          description: Member added
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Invalid role set
+  /programmes/{programmeId}/members/{userId}:
+    patch:
+      operationId: updateProgrammeMember
+      tags: [programmes]
+      summary: Update member name and/or replace their full programme role set
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                roles:
+                  type: array
+                  items: { type: string, enum: [admin, trainer, learner, stakeholder] }
+                fromRole: { type: string }
+                toRole: { type: string }
+      responses:
+        "200":
+          description: Updated member
+          content:
+            application/json:
+              schema:
+                type: object
+        "409":
+          description: Cannot remove the last programme admin
+  /modules/{moduleId}/content:
+    get:
+      operationId: listModuleContent
+      tags: [learning]
+      summary: List ordered content for a module
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Content items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+    post:
+      operationId: createContent
+      tags: [learning]
+      summary: Add content to a module
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [type, title]
+              properties:
+                type: { type: string, enum: [native, file, external_link] }
+                title: { type: string }
+                body: { type: string }
+                url: { type: string }
+                completionMode: { type: string, enum: [trainer_verified, self_report] }
+                required: { type: boolean }
+                storageKey: { type: string }
+                fileName: { type: string }
+                mimeType: { type: string }
+                sizeBytes: { type: integer }
+                checksum: { type: string }
+      responses:
+        "201":
+          description: Created content
+          content:
+            application/json:
+              schema:
+                type: object
+  /content/{contentId}:
+    patch:
+      operationId: updateContent
+      tags: [learning]
+      summary: Update content metadata or tutorial
+      parameters:
+        - name: contentId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated content
+          content:
+            application/json:
+              schema:
+                type: object
+    delete:
+      operationId: archiveContent
+      tags: [learning]
+      summary: Archive content (soft delete)
+      parameters:
+        - name: contentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Archived
+  /modules/{moduleId}/content/reorder:
+    post:
+      operationId: reorderContent
+      tags: [learning]
+      summary: Set content ordering
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contentIds]
+              properties:
+                contentIds:
+                  type: array
+                  items: { type: string }
+      responses:
+        "200":
+          description: Reordered
+  /modules/{moduleId}/content/upload:
+    post:
+      operationId: uploadContent
+      tags: [learning]
+      summary: Upload a file as base64 JSON (50MB limit, MIME/extension allowlist)
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fileName, mimeType, dataBase64]
+              properties:
+                fileName: { type: string }
+                mimeType: { type: string }
+                dataBase64: { type: string }
+      responses:
+        "201":
+          description: Stored file metadata
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  storageKey: { type: string }
+                  fileName: { type: string }
+                  mimeType: { type: string }
+                  sizeBytes: { type: integer }
+                  checksum: { type: string }
+        "413":
+          description: File too large
+  /courses/{courseId}/content:
+    get:
+      operationId: getCourseContent
+      tags: [learning]
+      summary: Learner view of course content with per-user progress
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Modules and content with progress
+          content:
+            application/json:
+              schema:
+                type: object
+        "403":
+          description: Not enrolled
+  /content/{contentId}/progress:
+    post:
+      operationId: markContentProgress
+      tags: [learning]
+      summary: Mark content complete (trainer_verified items become pending_verification)
+      parameters:
+        - name: contentId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [in_progress, completed] }
+                evidenceNote: { type: string }
+      responses:
+        "200":
+          description: Updated progress and course progress
+          content:
+            application/json:
+              schema:
+                type: object
+  /content-progress/{progressId}/verify:
+    post:
+      operationId: verifyContentProgress
+      tags: [learning]
+      summary: Trainer verifies or rejects submitted evidence
+      parameters:
+        - name: progressId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                verified: { type: boolean, default: true }
+                note: { type: string }
+      responses:
+        "200":
+          description: Verified progress
+          content:
+            application/json:
+              schema:
+                type: object
+  /content/{contentId}/download:
+    get:
+      operationId: downloadContent
+      tags: [learning]
+      summary: Download a stored file (attachment, nosniff)
+      parameters:
+        - name: contentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: File bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "403":
+          description: Not permitted
 components:
   schemas:
     HealthStatus:

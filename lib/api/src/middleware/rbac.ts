@@ -45,6 +45,14 @@ async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
     const m = await db.module.findUnique({ where: { id: body.moduleId }, select: { course: { select: { programmeId: true } } } }).catch(() => null);
     if (m) return m.course.programmeId;
   }
+  if (typeof params.moduleId === "string") {
+    const m = await db.module.findUnique({ where: { id: params.moduleId }, select: { course: { select: { programmeId: true } } } }).catch(() => null);
+    if (m) return m.course.programmeId;
+  }
+  if (typeof params.contentId === "string") {
+    const c = await db.contentItem.findUnique({ where: { id: params.contentId }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);
+    if (c) return c.module.course.programmeId;
+  }
   if (typeof params.id === "string") {
     if (req.path.includes("/programmes/")) return params.id;
     if (req.path.includes("/courses/")) {
@@ -62,6 +70,14 @@ async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
     if (req.path.includes("/enrolments/")) {
       const e = await db.enrolment.findUnique({ where: { id: params.id }, select: { programmeId: true } }).catch(() => null);
       if (e?.programmeId) return e.programmeId;
+    }
+    if (req.path.includes("/content-progress/")) {
+      const cp = await db.contentProgress.findUnique({ where: { id: params.id }, select: { contentItem: { select: { module: { select: { course: { select: { programmeId: true } } } } } } } }).catch(() => null);
+      if (cp) return cp.contentItem.module.course.programmeId;
+    }
+    if (req.path.includes("/content/")) {
+      const c = await db.contentItem.findUnique({ where: { id: params.id }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);
+      if (c) return c.module.course.programmeId;
     }
   }
   return null;
@@ -105,6 +121,70 @@ export function requireOrgStaff() {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
     if (!req.user) return res.status(401).json({ error: "unauthorized" });
     if (!(await isOrgStaff(req.user.id))) return res.status(403).json({ error: "organization staff access required" });
+    return next();
+  };
+}
+
+// DB-backed guard: a programme must always keep at least one admin grant.
+// Returns/throws a 409 so routes cannot remove the last admin by accident.
+export async function assertNotLastProgrammeAdmin(programmeId: string, userId: string, removingRole?: string): Promise<void> {
+  if (removingRole && removingRole !== "admin") return;
+  const grant = await db.userRole.findFirst({ where: { userId, programmeId, role: { name: "admin" } } }).catch(() => null);
+  if (!grant) return;
+  const adminCount = await db.userRole.count({ where: { programmeId, role: { name: "admin" } } }).catch(() => 0);
+  if (adminCount <= 1) {
+    const err = new Error("cannot remove the last programme admin — appoint another admin first") as Error & { status?: number };
+    err.status = 409;
+    throw err;
+  }
+}
+
+// DB-backed guard: an organization must always keep at least one active owner.
+export async function assertNotLastOrgOwner(orgId: string, userId: string): Promise<void> {
+  const grants = await db.userRole.findMany({
+    where: { userId, programmeId: null, role: { name: "owner" }, user: { orgId } },
+    select: { id: true },
+  }).catch(() => []);
+  if (!grants.length) return;
+  const owners = await db.userRole.findMany({
+    where: { programmeId: null, role: { name: "owner" }, user: { orgId, isActive: true } },
+    select: { userId: true },
+  }).catch(() => [] as Array<{ userId: string }>);
+  const distinct = new Set(owners.map((o) => o.userId));
+  if (distinct.size <= 1 && distinct.has(userId)) {
+    const err = new Error("cannot remove or deactivate the last organization owner") as Error & { status?: number };
+    err.status = 409;
+    throw err;
+  }
+}
+
+// Only an org owner may modify another owner's org-wide role or deactivate them.
+export async function canModifyOwner(actorId: string): Promise<boolean> {
+  return isOrgOwner(actorId);
+}
+
+export async function isProgrammeAdmin(userId: string, programmeId: string): Promise<boolean> {
+  const grant = await db.userRole
+    .findFirst({ where: { userId, programmeId, role: { name: "admin" } } })
+    .catch(() => null);
+  return !!grant;
+}
+
+export async function hasAnyProgrammeStaffGrant(userId: string): Promise<boolean> {
+  const grant = await db.userRole
+    .findFirst({ where: { userId, programmeId: { not: null }, role: { name: { in: ["admin", "owner", "trainer"] } } } })
+    .catch(() => null);
+  return !!grant;
+}
+
+export function requireOrgStaffOrProgrammeAdmin() {
+  return async (req: AuthedRequest, res: Response, next: NextFunction) => {
+    if (!req.user) return res.status(401).json({ error: "unauthorized" });
+    if (await isOrgStaff(req.user.id)) return next();
+    const grant = await db.userRole
+      .findFirst({ where: { userId: req.user.id, programmeId: { not: null }, role: { name: "admin" } } })
+      .catch(() => null);
+    if (!grant) return res.status(403).json({ error: "programme admin access required" });
     return next();
   };
 }
