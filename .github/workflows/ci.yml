@@ -12,18 +12,20 @@ jobs:
         image: mcr.microsoft.com/mssql/server:2022-latest
         env:
           ACCEPT_EULA: "Y"
-          MSSQL_SA_PASSWORD: "TrainHubCI!2024Strong"
+          # Throwaway credential for an ephemeral, network-isolated service container in a
+          # single CI job. Not a secret; never reused outside this job.
+          MSSQL_SA_PASSWORD: "CiOnly_Throwaway_1"
           MSSQL_PID: Developer
         ports:
           - 1433:1433
         options: >-
-          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'TrainHubCI!2024Strong' -C -Q 'SELECT 1' || exit 1"
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'CiOnly_Throwaway_1' -C -Q 'SELECT 1' || exit 1"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 20
           --health-start-period 30s
     env:
-      DATABASE_URL: "sqlserver://localhost:1433;database=TrainHubCI;user=sa;password=TrainHubCI!2024Strong;trustServerCertificate=true"
+      DATABASE_URL: "sqlserver://localhost:1433;database=TrainHubCI;user=sa;password=CiOnly_Throwaway_1;trustServerCertificate=true"
       JWT_SECRET: "ci-secret-not-for-production"
       CI: "true"
     steps:
