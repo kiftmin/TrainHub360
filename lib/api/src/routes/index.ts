@@ -1953,6 +1953,42 @@ router.get("/recognitions", async (req, res) => {
     res.json(await db.recognition.findMany({ where: { user: { orgId: scope.orgId } }, include: { user: { select: { name: true, email: true } } }, orderBy: { awardedAt: "desc" }, take: 200 }).catch(() => []));
   }
 });
+// A.2 notification bell. Scoped to the caller: there is no path to another user's
+// notifications, and orgId is not trusted from the client.
+router.get("/notifications", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const unreadOnly = String(req.query.unread ?? "") === "true";
+  const take = Math.min(Number(req.query.limit ?? 50) || 50, 100);
+  const rows = await db.notification.findMany({
+    where: { userId: me.id, ...(unreadOnly ? { readAt: null } : {}) },
+    orderBy: { createdAt: "desc" },
+    take,
+  }).catch(() => []);
+  const unread = await db.notification.count({ where: { userId: me.id, readAt: null } }).catch(() => 0);
+  res.json({ items: rows, unread });
+});
+router.post("/notifications/:id/read", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  // Scoped by userId in the same statement, so a guessed id from another user is a no-op
+  // rather than a cross-user write.
+  const result = await db.notification.updateMany({
+    where: { id: String(req.params.id), userId: me.id, readAt: null },
+    data: { readAt: new Date() },
+  }).catch(() => ({ count: 0 }));
+  if (!result.count) {
+    const mine = await db.notification.findFirst({ where: { id: String(req.params.id), userId: me.id }, select: { id: true } }).catch(() => null);
+    if (!mine) {
+      res.status(404).json({ error: "notification not found" });
+      return;
+    }
+  }
+  res.json({ ok: true });
+});
+router.post("/notifications/read-all", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const result = await db.notification.updateMany({ where: { userId: me.id, readAt: null }, data: { readAt: new Date() } }).catch(() => ({ count: 0 }));
+  res.json({ ok: true, updated: result.count });
+});
 router.get("/certificates", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);

@@ -62,10 +62,12 @@ export async function issueActivationToken(userId: string): Promise<{ token: str
 
 export async function sendActivationEmail(email: string, name: string, token: string): Promise<void> {
   const { getEmailSender } = await import("./email.js");
+  const { appUrl } = await import("./links.js");
   await getEmailSender().send({
     to: email,
     subject: "Activate your TrainHub360 account",
-    text: `Hello ${name}, activate your TrainHub360 account (valid 7 days): /activate?token=${token}`,
+    text: `Hello ${name}, activate your TrainHub360 account (valid 7 days): ${appUrl(`/activate?token=${token}`)}`,
+    html: `<p>Hello ${name},</p><p>Activate your TrainHub360 account (valid 7 days):</p><p><a href="${appUrl(`/activate?token=${token}`)}">Activate your account</a></p>`,
   }).catch(() => false);
 }
 
@@ -76,7 +78,13 @@ export async function requestPasswordReset(email: string): Promise<{ sent: boole
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
   await db.passwordResetToken.create({ data: { userId: user.id, tokenHash: hashToken(token), purpose: "password_reset", expiresAt } });
   const { getEmailSender } = await import("./email.js");
-  await getEmailSender().send({ to: email, subject: "Reset your TrainHub360 password", text: `Reset link: /reset-password?token=${token}` }).catch(() => false);
+  const { appUrl } = await import("./links.js");
+  await getEmailSender().send({
+    to: email,
+    subject: "Reset your TrainHub360 password",
+    text: `Reset your TrainHub360 password (valid 1 hour): ${appUrl(`/reset-password?token=${token}`)}`,
+    html: `<p>Reset your TrainHub360 password (valid 1 hour):</p><p><a href="${appUrl(`/reset-password?token=${token}`)}">Choose a new password</a></p>`,
+  }).catch(() => false);
   return { sent: true };
 }
 

@@ -39,9 +39,11 @@ import {
 import { getToken, clearSession, getSessionUser } from '@/api/client';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
+import { Activate } from '@/pages/Activate';
 import { Register } from '@/pages/Register';
 import { AiConceptExplainer } from '@/components/AiConceptExplainer';
 import { BulkImportButton } from '@/components/BulkImport';
+import { NotificationBell } from '@/components/NotificationBell';
 import { initials } from '@/components/shared';
 import {
   Activity, ArrowUpRight, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown,
@@ -136,7 +138,7 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
         </div>
         <div className="flex items-center gap-2">
           <button className="hidden rounded-md border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground md:flex md:items-center md:gap-2"><Search className="size-3.5" />Search <kbd className="rounded border border-border px-1 font-mono text-[9px]">⌘ K</kbd></button>
-          <button className="relative rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Notifications"><Bell className="size-[18px]" /><span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-accent" /></button>
+          <NotificationBell onNavigate={go} />
           <div className="ml-1 grid size-8 place-items-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">{user?.initials || 'TH'}</div>
         </div>
       </header>
@@ -177,6 +179,16 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 export function App() {
   const [authed, setAuthed] = useState(() => !!getToken());
   const [registering, setRegistering] = useState(false);
+  // Activation links arrive from an email with ?token=…, so they must render before any
+  // session exists. wouter is not mounted on the signed-out screen, so read the path here.
+  if (window.location.pathname === '/activate') {
+    return <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Activate onDone={() => { window.history.replaceState(null, '', '/'); window.location.reload(); }} />
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>;
+  }
   return <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       {authed ? (

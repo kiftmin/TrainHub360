@@ -19,6 +19,8 @@ tags:
   - name: engagement
     description: Messaging, bookings, and calendar
   - name: auth
+  - name: notifications
+    description: In-app notification bell (scoped to the calling user)
   - name: enrolments
   - name: analytics
   - name: governance
@@ -615,6 +617,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List the caller's notifications
+      description: Always scoped to the authenticated user. Newest first.
+      parameters:
+        - name: unread
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: Only notifications that have not been read
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Notifications plus the unread count for the bell badge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationList"
+  /notifications/{notificationId}/read:
+    post:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark one of the caller's notifications as read
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Marked read (or already read)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationReadResult"
+        "404":
+          description: No notification with that id belongs to the caller
+  /notifications/read-all:
+    post:
+      operationId: markAllNotificationsRead
+      tags: [notifications]
+      summary: Mark every unread notification of the caller as read
+      responses:
+        "200":
+          description: Number of notifications updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationReadAllResult"
+
   /enrolments:
     get:
       operationId: listEnrolments
@@ -1277,6 +1334,41 @@ paths:
           description: Not permitted
 components:
   schemas:
+    Notification:
+      type: object
+      required: [id, type, title, createdAt, readAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        orgId: { type: [string, "null"] }
+        type: { type: string, description: e.g. session_invite, certificate_expiring }
+        title: { type: string }
+        body: { type: [string, "null"] }
+        link: { type: [string, "null"], description: App-relative path, e.g. /calendar }
+        readAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    NotificationList:
+      type: object
+      required: [items, unread]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
+        unread:
+          type: integer
+          description: Unread count for the bell badge
+    NotificationReadResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    NotificationReadAllResult:
+      type: object
+      required: [ok, updated]
+      properties:
+        ok: { type: boolean }
+        updated: { type: integer }
     HealthStatus:
       type: object
       properties:

@@ -944,3 +944,42 @@ export function useCreateAssessment(moduleId: string, courseId?: string) {
 export function useModuleAssessments(moduleId: string, enabled = true) {
   return useQuery(queryOpts(['module-assessments', moduleId] as const, () => api<CourseAssessment[]>(`/modules/${moduleId}/assessments`), enabled && !!moduleId));
 }
+
+export interface Notification {
+  id: string;
+  userId: string;
+  orgId: string | null;
+  type: string;
+  title: string;
+  body: string | null;
+  link: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface NotificationList {
+  items: Notification[];
+  unread: number;
+}
+
+export function useNotifications(enabled = true) {
+  return useQuery(
+    queryOpts(['notifications'] as const, () => api<NotificationList>('/notifications?limit=20'), enabled),
+  );
+}
+
+export function useMarkNotificationRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<{ ok: boolean }>(`/notifications/${id}/read`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+  });
+}
+
+export function useMarkAllNotificationsRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<{ ok: boolean; updated: number }>('/notifications/read-all', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+  });
+}
