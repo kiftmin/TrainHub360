@@ -19,7 +19,7 @@ import {
   hasAnyProgrammeStaffGrant,
   requireOrgStaffOrProgrammeAdmin,
 } from "../middleware/rbac.js";
-import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures } from "../middleware/rateLimit.js";
+import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures, loginThrottleDisabledForTests } from "../middleware/rateLimit.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -42,16 +42,19 @@ router.post("/auth/login", async (req, res) => {
   const { email, password } = req.body ?? {};
   if (!email || !password) return res.status(400).json({ error: "email and password required" });
   const keys = loginKeys(req.ip, email);
-  // Locked-out and wrong-password responses are deliberately identical.
-  if (isLoginLocked(keys)) return res.status(401).json({ error: "invalid credentials" });
+  // Locked-out and wrong-password responses are deliberately identical. The lockout is off
+  // in tests only: every suite shares one loopback IP and runs in its own process, so the
+  // accumulated failures of unrelated files would otherwise lock out a correct password.
+  const throttleOff = loginThrottleDisabledForTests();
+  if (!throttleOff && isLoginLocked(keys)) return res.status(401).json({ error: "invalid credentials" });
   const user = await db.user.findUnique({ where: { email } }).catch(() => null);
   const ok = await verifyLoginPassword(password, user?.passwordHash ?? null);
   if (!ok || !user) {
-    recordLoginFailure(keys);
+    if (!throttleOff) recordLoginFailure(keys);
     return res.status(401).json({ error: "invalid credentials" });
   }
   if (user.isActive === false) {
-    recordLoginFailure(keys);
+    if (!throttleOff) recordLoginFailure(keys);
     return res.status(401).json({ error: "invalid credentials" });
   }
   clearLoginFailures(keys);

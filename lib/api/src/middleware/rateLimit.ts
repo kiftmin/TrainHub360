@@ -58,3 +58,12 @@ export function clearLoginFailures(keys: string[]): void {
 export function resetLoginThrottleForTests(): void {
   buckets.clear();
 }
+
+// Test-only: the throttle is keyed partly by IP, and `node --test` runs each test file in
+// its own process, so several files' failed logins all land in the "ip:127.0.0.1" bucket.
+// Without this, a later file's legitimate login is answered with the generic lockout 401 and
+// the failure looks like a wrong password. Off unless NODE_ENV=test, and every file that
+// runs a real server calls resetLoginThrottleForTests() in its before() hook.
+export function loginThrottleDisabledForTests(): boolean {
+  return process.env.NODE_ENV === "test";
+}
