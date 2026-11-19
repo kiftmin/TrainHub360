@@ -61,8 +61,11 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           version: 10
+      # Node 22, not 20: jsdom 30's bundled undici calls webidl.util.markAsUncloneable,
+      # which Node 20 does not have, so every jsdom test file dies with
+      # "webidl.util.markAsUncloneable is not a function" before a single test runs.
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
+        with: { node-version: 22 }
       # --ignore-workspace keeps pnpm from walking up to the root workspace and
       # installing the backend instead of the frontend.
       - run: pnpm install --ignore-workspace --frozen-lockfile
