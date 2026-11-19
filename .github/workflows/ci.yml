@@ -46,3 +46,25 @@ jobs:
       - name: Apply schema to the CI database
         run: pnpm --filter @workspace/db run prisma:push
       - run: pnpm --filter @workspace/api run test
+
+  frontend:
+    # The frontend is NOT a member of the root pnpm workspace: it has its own
+    # package.json and lockfile (frontend/pnpm-lock.yaml), so it installs on its own.
+    # Before this job nothing in CI typechecked or tested it, which is how a broken
+    # page component could reach main with a green build.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      # --ignore-workspace keeps pnpm from walking up to the root workspace and
+      # installing the backend instead of the frontend.
+      - run: pnpm install --ignore-workspace --frozen-lockfile
+      - run: pnpm run typecheck
+      - run: pnpm run test:ui
