@@ -10,6 +10,7 @@ import "express-async-errors";
 import express from "express";
 import cors from "cors";
 import { router } from "./routes/index.js";
+import { Prisma } from "./db.js";
 import { authMiddleware } from "./middleware/auth.js";
 import { auditMiddleware } from "./middleware/audit.js";
 import type { AuthedRequest } from "./middleware/auth.js";
@@ -23,10 +24,16 @@ type StatusError = Error & { status?: unknown };
 /** Errors that mean "the database is unreachable", not "the request was wrong". */
 const DB_UNAVAILABLE_PRISMA_CODES = new Set(["P1001", "P1002", "P1017"]);
 
+/**
+ * A bare `code` string is not enough to call something a database outage: a foreign-key
+ * violation (P2003) or a unique clash (P2002) also carries a `code` on some errors, and
+ * treating those as 503 would hide a real request error. Only a generated Prisma client
+ * error with a connectivity code counts.
+ */
 function isDbUnavailable(err: unknown): boolean {
   if (typeof err !== "object" || err === null) return false;
-  const code = (err as { code?: unknown }).code;
-  return typeof code === "string" && DB_UNAVAILABLE_PRISMA_CODES.has(code);
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError)) return false;
+  return DB_UNAVAILABLE_PRISMA_CODES.has((err as unknown as { code: string }).code);
 }
 
 /**
