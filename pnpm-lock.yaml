@@ -654,6 +654,9 @@ importers:
       express:
         specifier: ^4.21.2
         version: 4.22.2
+      express-async-errors:
+        specifier: ^3.1.1
+        version: 3.1.1(express@4.22.2)
       jsonwebtoken:
         specifier: ^9.0.2
         version: 9.0.3
@@ -2491,6 +2494,11 @@ packages:
   execa@9.6.1:
     resolution: {integrity: sha512-9Be3ZoN4LmYR90tUoVu2te2BsbzHfhJyfEiAVfz7N5/zv+jduIfLrV2xdQXOHbaD6KgpGdO9PRPM1Y4Q9QkPkA==}
     engines: {node: ^18.19.0 || >=20.5.0}
+
+  express-async-errors@3.1.1:
+    resolution: {integrity: sha512-h6aK1da4tpqWSbyCa3FxB/V6Ehd4EEB15zyQq9qe75OZBp0krinNKuH4rAY+S/U/2I36vdLAUFSjQJ+TFmODng==}
+    peerDependencies:
+      express: ^4.16.2
 
   express@4.22.2:
     resolution: {integrity: sha512-IuL+Elrou2ZvCFHs18/CIzy2Nzvo25nZ1/D2eIZlz7c+QUayAcYoiM2BthCjs+EBHVpjYjcuLDAiCWgeIX3X1Q==}
@@ -5621,6 +5629,10 @@ snapshots:
       signal-exit: 4.1.0
       strip-final-newline: 4.0.0
       yoctocolors: 2.2.0
+
+  express-async-errors@3.1.1(express@4.22.2):
+    dependencies:
+      express: 4.22.2
 
   express@4.22.2:
     dependencies:
