@@ -13,6 +13,29 @@ Corporate training platform proving training worked, not just that it happened.
 3. Run API: `PORT=4000 pnpm --filter @workspace/api run dev`
 4. Health: `GET /api/healthz` (liveness) � `GET /api/readyz` (includes MSSQL `SELECT 1` check)
 
+### Running the API tests
+The suite needs a real SQL Server. Use a **separate database** from your working one:
+
+```bash
+# .env in the repo root (gitignored)
+DATABASE_URL="sqlserver://localhost:1433;database=TrainHub360_Test;user=trainhub_test;password=…;trustServerCertificate=true"
+```
+
+```bash
+pnpm install
+pnpm --filter @workspace/db run prisma:generate
+pnpm --filter @workspace/db run prisma:push        # creates the schema in that database
+pnpm --filter @workspace/api run build             # tests import from dist/
+pnpm --filter @workspace/api run test
+```
+
+A healthy run reports **0 skipped**. Without `DATABASE_URL` the database tests are skipped
+with a single warning; with `CI=true` a missing `DATABASE_URL` is a hard failure, so CI can
+never go green while most of the suite never ran.
+
+CI does this automatically: `.github/workflows/ci.yml` starts a SQL Server 2022 service
+container, pushes the schema and runs the same suite (`DATABASE_URL` is set in the job env).
+
 Never commit `.env` or the SA password � it is gitignored. CI uses a placeholder URL.
 
 ## API

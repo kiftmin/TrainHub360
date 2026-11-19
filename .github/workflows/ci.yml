@@ -3,6 +3,29 @@ on: [push, pull_request]
 jobs:
   build:
     runs-on: ubuntu-latest
+    services:
+      # Module F.2: the API suite must run against a real database, not skip.
+      # The suite's `return` / `t.skip` guards key off DATABASE_URL, so a run without one
+      # fails loudly (lib/api/tests/support/requireDatabase.js) instead of reporting green
+      # while every database test quietly skipped.
+      mssql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "TrainHubCI!2024Strong"
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'TrainHubCI!2024Strong' -C -Q 'SELECT 1' || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+          --health-start-period 30s
+    env:
+      DATABASE_URL: "sqlserver://localhost:1433;database=TrainHubCI;user=sa;password=TrainHubCI!2024Strong;trustServerCertificate=true"
+      JWT_SECRET: "ci-secret-not-for-production"
+      CI: "true"
     steps:
       - uses: actions/checkout@v4
       # The version must be pinned here (or via "packageManager" in package.json):
@@ -18,5 +41,6 @@ jobs:
       - run: pnpm --filter @workspace/db run prisma:generate
       - run: pnpm run typecheck
       - run: pnpm --filter @workspace/api run build
+      - name: Apply schema to the CI database
+        run: pnpm --filter @workspace/db run prisma:push
       - run: pnpm --filter @workspace/api run test
-
