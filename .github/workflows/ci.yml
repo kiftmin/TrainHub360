@@ -13,6 +13,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20, cache: pnpm }
       - run: pnpm install
+      # Prisma Client is generated, not committed: without this every row type is
+      # `any` and the API build fails with TS7006 on a clean checkout.
+      - run: pnpm --filter @workspace/db run prisma:generate
       - run: pnpm run typecheck
       - run: pnpm --filter @workspace/api run build
       - run: pnpm --filter @workspace/api run test
