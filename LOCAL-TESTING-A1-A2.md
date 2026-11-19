@@ -52,16 +52,36 @@ pnpm --filter @workspace/api run test
   expected default. That is what A.2 replaced with a real one.
 - `[api] unhandled error: TypeError: kaboom` is the 500 test throwing on purpose.
 
-To prove CI's rule works, run once with the database switched off — it must **fail loudly**
-instead of skipping:
+### Checking CI's "no silent skips" rule
+
+**`$env:DATABASE_URL=""` will not do it**, and it is worth knowing why: every database suite
+loads the repo-root `.env` with dotenv, and dotenv treats an empty variable as unset — so it
+puts the real URL back and all 106 tests run green. That looks like a broken guard; it isn't.
+
+Use the dedicated script, which deletes `DATABASE_URL` (so the `.env` cannot supply one
+either) before any suite loads:
 
 ```powershell
-$env:CI="true"; $env:DATABASE_URL=""
-pnpm --filter @workspace/api run test
-$env:CI=""; Remove-Item Env:\DATABASE_URL
+cd C:\projects\TrainHub360
+$env:CI="true"
+pnpm --filter @workspace/api run test:ci
+Remove-Item Env:\CI
 ```
 
-You should get `DATABASE_URL is not set. CI must run the API suite against a real SQL Server`.
+You should see `DATABASE_URL is not set. CI must run the API suite against a real SQL Server`
+and a non-zero exit.
+
+To test the guard without the whole suite, this is quick and unambiguous:
+
+```powershell
+cd C:\projects\TrainHub360\lib\api
+$env:CI="true"
+node --import ./tests/support/ci-no-env.js -e "const { requireDatabase } = await import('./tests/support/requireDatabase.js'); try { requireDatabase('x'); console.log('NO THROW (bad)'); } catch (e) { console.log('throws:', e.message.slice(0,60)); }"
+```
+
+Limitation: `node --test` gives every test file its own process and runs the preload in that
+child, so a suite that loads `.env` itself still connects. `test:ci` is a guard against
+"did I really unset it", not a sandbox.
 
 ---
 
