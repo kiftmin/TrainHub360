@@ -231,7 +231,7 @@ router.patch("/users/:id", requireOrgStaff(), async (req, res) => {
     const row = await tx.user.update({ where: { id: target.id }, data });
     if (data.name && data.name !== target.name) {
       // Keep the denormalized display name in sync; identity stays trainerId.
-      await tx.course.updateMany({ where: { trainerId: target.id }, data: { trainer: String(data.name) } }).catch(() => null);
+      await tx.course.updateMany({ where: { OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainer: String(data.name) } }).catch(() => null);
     }
     return row;
   }).catch(() => null);
@@ -651,7 +651,10 @@ export async function removeProgrammeMembers(
       data: { status: "withdrawn", withdrawnAt: now, withdrawnBy: actorId },
     });
     withdrawn = w.count;
-    const unassign = await tx.course.updateMany({ where: { programmeId, trainerId: { in: ids } }, data: { trainerId: null, trainer: "" } });
+    const unassign = await tx.course.updateMany({
+      where: { programmeId, OR: [{ trainerId: { in: ids } }, { trainer: { in: users.map((u) => u.name) } }] },
+      data: { trainerId: null, trainer: "" },
+    });
     coursesUnassigned = unassign.count;
     await tx.user.updateMany({ where: { id: { in: ids } }, data: { tokenVersion: { increment: 1 } } });
     await tx.auditLog.create({
@@ -747,7 +750,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
       }
       if (desired.includes("learner")) await ensureLearnerEnrolments(tx, target.id, req.params.id);
       if (currentNames.has("trainer") && !desired.includes("trainer")) {
-        const result = await tx.course.updateMany({ where: { programmeId: req.params.id, trainerId: target.id }, data: { trainerId: null, trainer: "" } });
+        const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
         coursesUnassigned += result.count;
       }
       if (currentGrants.length !== desired.length) await tx.user.update({ where: { id: target.id }, data: { tokenVersion: { increment: 1 } } });
@@ -787,7 +790,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
         if (role.name === "learner" && req.body?.enrol !== false) await ensureLearnerEnrolments(tx, target.id, req.params.id);
         const remainingTrainer = await tx.userRole.findFirst({ where: { userId: target.id, programmeId: req.params.id, role: { name: "trainer" } } });
         if (sourceRoleName === "trainer" && !remainingTrainer) {
-          const result = await tx.course.updateMany({ where: { programmeId: req.params.id, trainerId: target.id }, data: { trainerId: null, trainer: "" } });
+          const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
           coursesUpdated = result.count;
         }
       }
@@ -821,7 +824,7 @@ router.delete("/programmes/:id/members/:userId", requireProgrammeRole("admin", "
         if (roleFilter === "trainer") {
           const remainingTrainer = await tx.userRole.findFirst({ where: { userId: target.id, programmeId: req.params.id, role: { name: "trainer" } } });
           if (!remainingTrainer) {
-            const result = await tx.course.updateMany({ where: { programmeId: req.params.id, trainerId: target.id }, data: { trainerId: null, trainer: "" } });
+            const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
             coursesUnassigned = result.count;
           }
         }

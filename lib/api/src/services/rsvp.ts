@@ -14,12 +14,10 @@ export async function confirmRsvp(sessionId: string, learnerId: string, orgId?: 
   const confirmed = await db.sessionRSVP.count({ where: { sessionId, status: "confirmed" } });
   const status = session.capacity != null && confirmed >= session.capacity ? "waitlisted" : "confirmed";
   return db.sessionRSVP.upsert({
-    where: { id: `${sessionId}:${learnerId}` },
-    create: { id: `${sessionId}:${learnerId}`, sessionId, learnerId, status, respondedAt: new Date() },
+    where: { sessionId_learnerId: { sessionId, learnerId } },
+    create: { sessionId, learnerId, status, respondedAt: new Date() },
     update: { status, respondedAt: new Date() },
-  }).catch(() =>
-    db.sessionRSVP.create({ data: { sessionId, learnerId, status, respondedAt: new Date() } }),
-  );
+  });
 }
 
 export async function declineRsvp(sessionId: string, learnerId: string, orgId?: string) {
