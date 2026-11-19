@@ -714,7 +714,12 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
   const toRole = req.body?.toRole === undefined ? (req.body?.role === undefined ? undefined : String(req.body.role)) : String(req.body.toRole);
   const fromRole = req.body?.fromRole === undefined ? undefined : String(req.body.fromRole);
   const nameInput = req.body?.name === undefined ? undefined : String(req.body.name).trim();
-  if (toRole === undefined && nameInput === undefined && fromRole === undefined) return res.status(400).json({ error: "fromRole/toRole or name required" });
+  // Round 6: a `roles` array is a complete replacement of this programme's grants, so it
+  // needs no fromRole/toRole. The single-grant guard must therefore only apply when no
+  // roles array was sent — checking it first made the multi-role branch below unreachable
+  // (every roles-only PATCH returned 400 "fromRole/toRole or name required").
+  const replacesGrants = Array.isArray(req.body?.roles);
+  if (!replacesGrants && toRole === undefined && nameInput === undefined && fromRole === undefined) return res.status(400).json({ error: "fromRole/toRole or name required" });
   if (nameInput !== undefined && !nameInput) return res.status(400).json({ error: "name cannot be empty" });
   if (toRole !== undefined && !MEMBER_ROLES.has(toRole)) return res.status(400).json({ error: "role must be admin|trainer|learner|stakeholder" });
   if (fromRole !== undefined && !MEMBER_ROLES.has(fromRole)) return res.status(400).json({ error: "fromRole must be admin|trainer|learner|stakeholder" });
