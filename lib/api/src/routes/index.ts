@@ -252,7 +252,12 @@ router.patch("/users/:id", requireOrgStaff(), async (req, res) => {
     const row = await tx.user.update({ where: { id: target.id }, data });
     if (data.name && data.name !== target.name) {
       // Keep the denormalized display name in sync; identity stays trainerId.
-      await tx.course.updateMany({ where: { OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainer: String(data.name) } }).catch(() => null);
+      // Round 6 / H3: the name fallback is only for legacy rows with no trainerId, and it is
+      // scoped to this organization, so a rename never rewrites another tenant's courses.
+      await tx.course.updateMany({
+        where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] },
+        data: { trainer: String(data.name) },
+      }).catch(() => null);
     }
     return row;
   }).catch(() => null);
@@ -369,9 +374,16 @@ router.patch("/enrolments/:id", async (req, res) => {
     signOffBy = me.id;
     signOffAt = new Date();
   }
+  // Round 6 / M1: the in-transaction withdrawal hook below must see the row as it was, so it is
+  // captured here rather than read back after the update.
+  const wasWithdrawn = current.status === "withdrawn";
   const merged = { ...current, ...patch };
   const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: merged.appliedAssessmentScore ?? null, completionDate: merged.completionDate ?? null, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
   const e = await db.enrolment.update({ where: { id: req.params.id }, data: { status: patch.status ?? undefined, appliedAssessmentScore: patch.appliedAssessmentScore ?? undefined, applicationScore: patch.applicationScore ?? undefined, timelinessScore: b, enrolmentScore: score, managerSignOff: patch.managerSignOff ?? undefined, managerSignOffBy: signOffBy ?? undefined, managerSignOffAt: signOffAt ?? undefined } });
+  if (patch.status === "withdrawn" && !wasWithdrawn) {
+    // Round 6 / M1: a withdrawn learner loses the threads of that programme.
+    await revokeStaleThreadAccess(e.learnerId, scope.orgId);
+  }
   if (patch.status === "completed") {
     const [{ issueCertificateForEnrolment }, { checkStreakRecognition }] = await Promise.all([
       import("../services/certificates.js"),
@@ -672,8 +684,10 @@ export async function removeProgrammeMembers(
       data: { status: "withdrawn", withdrawnAt: now, withdrawnBy: actorId },
     });
     withdrawn = w.count;
+    // Round 6 / H3: match by identity first; the name fallback only for legacy rows with no
+    // trainerId, so two trainers who share a name do not affect each other's courses.
     const unassign = await tx.course.updateMany({
-      where: { programmeId, OR: [{ trainerId: { in: ids } }, { trainer: { in: users.map((u) => u.name) } }] },
+      where: { programmeId, OR: [{ trainerId: { in: ids } }, { trainerId: null, trainer: { in: users.map((u) => u.name) } }] },
       data: { trainerId: null, trainer: "" },
     });
     coursesUnassigned = unassign.count;
@@ -688,6 +702,14 @@ export async function removeProgrammeMembers(
       },
     }).catch(() => null);
   });
+  // Round 6 / M1: removed members lose their threads in this programme with their grant.
+  const threadRows = await db.threadParticipant.findMany({
+    where: { userId: { in: ids }, thread: { programmeId } },
+    select: { id: true },
+  }).catch(() => [] as Array<{ id: string }>);
+  if (threadRows.length) {
+    await db.threadParticipant.deleteMany({ where: { id: { in: threadRows.map((r) => r.id) } } }).catch(() => null);
+  }
   return { removed, withdrawn, coursesUnassigned, userIds: ids };
 }
 
@@ -763,7 +785,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
         const previousName = target.name;
         row = await tx.user.update({ where: { id: target.id }, data: { name: nameInput } });
         const renamed = await tx.course.updateMany({
-          where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainer: previousName }] },
+          where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainerId: null, trainer: previousName }] },
           data: { trainer: nameInput },
         }).catch(() => ({ count: 0 }));
         coursesUpdated += renamed.count;
@@ -776,7 +798,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
       }
       if (desired.includes("learner")) await ensureLearnerEnrolments(tx, target.id, req.params.id);
       if (currentNames.has("trainer") && !desired.includes("trainer")) {
-        const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
+        const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
         coursesUnassigned += result.count;
       }
       if (currentGrants.length !== desired.length) await tx.user.update({ where: { id: target.id }, data: { tokenVersion: { increment: 1 } } });
@@ -799,7 +821,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
         const previousName = target.name;
         row = await tx.user.update({ where: { id: target.id }, data: { name: nameInput } });
         const renamed = await tx.course.updateMany({
-          where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainer: previousName }] },
+          where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainerId: null, trainer: previousName }] },
           data: { trainer: nameInput },
         }).catch(() => ({ count: 0 }));
         coursesUpdated += renamed.count;
@@ -816,7 +838,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
         if (role.name === "learner" && req.body?.enrol !== false) await ensureLearnerEnrolments(tx, target.id, req.params.id);
         const remainingTrainer = await tx.userRole.findFirst({ where: { userId: target.id, programmeId: req.params.id, role: { name: "trainer" } } });
         if (sourceRoleName === "trainer" && !remainingTrainer) {
-          const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
+          const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
           coursesUpdated = result.count;
         }
       }
@@ -850,7 +872,7 @@ router.delete("/programmes/:id/members/:userId", requireProgrammeRole("admin", "
         if (roleFilter === "trainer") {
           const remainingTrainer = await tx.userRole.findFirst({ where: { userId: target.id, programmeId: req.params.id, role: { name: "trainer" } } });
           if (!remainingTrainer) {
-            const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
+            const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
             coursesUnassigned = result.count;
           }
         }
@@ -1653,9 +1675,36 @@ router.get("/content/:id/download", async (req, res) => {
   }
 });
 
+/**
+ * Round 6 / M3: every session in the organization used to go to every user, `joinUrl` and
+ * `location` included. A join link is the right to be in the room, so it is only sent to people
+ * who have one: org staff, programme staff of the session's programme, the session's trainer,
+ * an invited learner (an RSVP row), or a learner enrolled on the session's course.
+ * Everyone else still sees that the session exists, with the link fields withheld.
+ */
 router.get("/sessions", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  res.json(await db.session.findMany({ where: { orgId: scope.orgId }, take: 200 }).catch(() => []));
+  const sessions = await db.session.findMany({ where: { orgId: scope.orgId }, orderBy: { startsAt: "asc" }, take: 200 }).catch(() => []);
+  const staff = await isOrgStaff(me.id);
+  const [rsvps, enrolments, staffGrants] = await Promise.all([
+    db.sessionRSVP.findMany({ where: { learnerId: me.id }, select: { sessionId: true } }).catch(() => [] as Array<{ sessionId: string }>),
+    db.enrolment.findMany({ where: { learnerId: me.id, status: { not: "withdrawn" } }, select: { courseId: true } }).catch(() => [] as Array<{ courseId: string }>),
+    db.userRole.findMany({ where: { userId: me.id, programmeId: { not: null }, role: { name: { in: ["admin", "trainer"] } } }, select: { programmeId: true } }).catch(() => [] as Array<{ programmeId: string | null }>),
+  ]);
+  const invited = new Set(rsvps.map((r) => r.sessionId));
+  const enrolledCourses = new Set(enrolments.map((e) => e.courseId));
+  const staffProgrammes = new Set(staffGrants.map((g) => g.programmeId));
+  return res.json(sessions.map((session) => {
+    const canJoin = staff
+      || session.trainerId === me.id
+      || invited.has(session.id)
+      || (session.courseId ? enrolledCourses.has(session.courseId) : false)
+      || (session.programmeId ? staffProgrammes.has(session.programmeId) : false);
+    if (canJoin) return { ...session, canJoin: true };
+    const { joinUrl: _joinUrl, location: _location, ...visible } = session;
+    return { ...visible, joinUrl: null, location: null, canJoin: false };
+  }));
 });
 async function canManageSessionProgramme(userId: string, programmeId: string | null | undefined): Promise<boolean> {
   if (await isOrgStaff(userId)) return true;
@@ -1787,12 +1836,26 @@ router.post("/sessions/:id/invite", async (req, res) => {
     return res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
   }
 });
+// Round 6 / M2(d): a token never answers on someone else's behalf. A learner answers only for
+// themselves; anyone answering for another person must be staff of the session's programme (or
+// org staff) AND enrolled as a learner there — a plain org member cannot seat anyone.
 router.post("/sessions/:id/rsvp", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const { confirmRsvp, declineRsvp } = await import("../services/rsvp.js");
-  const learnerId = me.role === "learner" ? me.id : (req.body?.learnerId ?? me.id);
-  if (me.role === "learner" && learnerId !== me.id) return res.status(403).json({ error: "learners may only RSVP for themselves" });
   const rsvpOrg = orgIdOf(req as AuthedRequest);
+  const requested = req.body?.learnerId ? String(req.body.learnerId) : me.id;
+  const learnerId = requested === me.id ? me.id : requested;
+  if (learnerId !== me.id) {
+    const session = await db.session.findFirst({ where: { id: req.params.id, orgId: rsvpOrg }, select: { programmeId: true } }).catch(() => null);
+    if (!session) return res.status(404).json({ error: "session not found in your organization" });
+    const staff = (await isOrgStaff(me.id)) || (session.programmeId ? await isProgrammeStaff(me.id, session.programmeId) : false);
+    if (!staff) return res.status(403).json({ error: "only programme staff may answer for another learner" });
+    const target = await db.user.findFirst({ where: { id: learnerId, orgId: rsvpOrg }, select: { id: true } }).catch(() => null);
+    if (!target) return res.status(404).json({ error: "learner not found in your organization" });
+    const isLearner = await db.userRole.findFirst({ where: { userId: learnerId, role: { name: "learner" } }, select: { id: true } }).catch(() => null);
+    const enrolled = await db.enrolment.findFirst({ where: { learnerId, status: { not: "withdrawn" } }, select: { id: true } }).catch(() => null);
+    if (!isLearner && !enrolled) return res.status(400).json({ error: "that user is not a learner in this organization" });
+  }
   try {
     if (req.body?.status === "declined") return res.json(await declineRsvp(req.params.id, learnerId, rsvpOrg));
     return res.json(await confirmRsvp(req.params.id, learnerId, rsvpOrg));
@@ -1826,10 +1889,66 @@ async function threadAccess(userId: string, threadId: string, orgId: string) {
   return { thread, participant, programmeAdmin } as const;
 }
 
+/**
+ * Round 6 / M1: a ThreadParticipant row used to outlive the reason for it, so someone removed
+ * from a programme — or withdrawn from their enrolment — kept reading and posting in its
+ * threads. This revokes those rows. It runs on every thread read and write (cheap: only the
+ * caller's own rows, one query) and whenever members are removed.
+ *
+ * Returns the number of rows revoked. Org staff are never revoked: they administer every
+ * programme in the organization.
+ */
+export async function revokeStaleThreadAccess(userId: string, orgId: string): Promise<number> {
+  const rows = await db.threadParticipant.findMany({
+    where: { userId, thread: { orgId } },
+    select: { id: true, thread: { select: { id: true, programmeId: true } } },
+  }).catch(() => [] as Array<{ id: string; thread: { id: string; programmeId: string | null } }>);
+  if (!rows.length) return 0;
+  if (await isOrgStaff(userId)) return 0;
+  const programmeIds = [...new Set(rows.map((r) => r.thread.programmeId).filter((v): v is string => !!v))];
+  const grants = programmeIds.length
+    ? await db.userRole.findMany({ where: { userId, programmeId: { in: programmeIds } }, select: { programmeId: true } }).catch(() => [] as Array<{ programmeId: string | null }>)
+    : [];
+  const granted = new Set(grants.map((g) => g.programmeId));
+  // A learner whose enrolment was withdrawn on that programme has lost access too.
+  const enrolled = programmeIds.length
+    ? await db.enrolment.findMany({ where: { learnerId: userId, programmeId: { in: programmeIds }, status: { not: "withdrawn" } }, select: { programmeId: true } }).catch(() => [] as Array<{ programmeId: string }>)
+    : [];
+  const enrolledSet = new Set(enrolled.map((e) => e.programmeId));
+  // A withdrawal keeps the programme grant (the person is still on the roster), so for anyone
+  // who holds a learner grant in that programme the enrolment decides. Staff grants keep access.
+  const staffGrants = programmeIds.length
+    ? await db.userRole.findMany({
+        where: { userId, programmeId: { in: programmeIds }, role: { name: { in: ["admin", "trainer", "owner"] } } },
+        select: { programmeId: true },
+      }).catch(() => [] as Array<{ programmeId: string | null }>)
+    : [];
+  const staffSet = new Set(staffGrants.map((g) => g.programmeId));
+  const stale = rows
+    .filter((r) => r.thread.programmeId)
+    .filter((r) => {
+      const programmeId = r.thread.programmeId!;
+      if (staffSet.has(programmeId)) return false;
+      if (granted.has(programmeId)) {
+        // Learner grant: access lasts while an enrolment is live.
+        return !enrolledSet.has(programmeId);
+      }
+      return true;
+    })
+    .map((r) => r.id);
+  if (!stale.length) return 0;
+  const deleted = await db.threadParticipant.deleteMany({ where: { id: { in: stale } } }).catch(() => ({ count: 0 }));
+  if (deleted.count) {
+    await db.auditLog.create({ data: { userId, action: "THREAD_ACCESS_REVOKED", entity: "thread_participant", entityId: userId, details: `${deleted.count} thread(s)` } }).catch(() => null);
+  }
+  return deleted.count;
+}
+
 router.get("/threads", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   if (await isStakeholder(me.id)) return res.status(403).json({ error: "stakeholders do not have access to direct messages" });
+  await revokeStaleThreadAccess(me.id, scope.orgId);
   const [participations, adminIds, orgStaff] = await Promise.all([adminProgrammeIds(me.id), adminProgrammeIds(me.id), isOrgStaff(me.id)]);
   const participantThreads = await db.threadParticipant.findMany({ where: { userId: me.id }, select: { threadId: true } }).catch(() => [] as Array<{ threadId: string }>);
   const participantIds = new Set(participantThreads.map((p) => p.threadId));
@@ -1932,6 +2051,7 @@ router.get("/threads/:id/messages", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   if (await isStakeholder(me.id)) return res.status(403).json({ error: "stakeholders do not have access to direct messages" });
+  await revokeStaleThreadAccess(me.id, scope.orgId);
   const { thread, participant, programmeAdmin } = await threadAccess(me.id, req.params.id, scope.orgId);
   // 404 (not 403) so non-participants cannot probe thread existence.
   if (!thread || (!participant && !programmeAdmin)) return res.status(404).json({ error: "thread not found" });
@@ -1942,6 +2062,7 @@ router.post("/threads/:id/messages", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   if (await isStakeholder(me.id)) return res.status(403).json({ error: "stakeholders do not have access to direct messages" });
+  await revokeStaleThreadAccess(me.id, scope.orgId);
   const { thread, participant, programmeAdmin } = await threadAccess(me.id, req.params.id, scope.orgId);
   if (!thread || (!participant && !programmeAdmin)) return res.status(404).json({ error: "thread not found" });
   const bodyText = String(req.body?.body ?? "").trim();
