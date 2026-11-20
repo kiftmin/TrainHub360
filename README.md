@@ -43,7 +43,41 @@ Spec: `lib/api-spec/openapi.yaml`. Regenerate clients:
 `pnpm --filter @workspace/api-spec run codegen`
 
 ### Schema migrations
-Deployment decision (recorded 2026-11-19): this repository deploys with `prisma db push` (see `lib/db/package.json` `prisma:push`), not `prisma migrate`; there is no historical `migrations/` folder. Every schema change must be applied to a backup-restored copy first and reviewed for data-loss warnings. `UserRole` already carries a surrogate `id` primary key plus `@@unique([userId, roleId, programmeId])`; no PK rewrite is required on existing deployments.
+
+**Until 2026-11-20** this repository deployed with `prisma db push` and had no migration
+history. That is no longer the whole story: there is now a baseline migration,
+`lib/db/prisma/migrations/20261120_baseline_user_role_primary_key/`, and a runner that switches
+an existing database over to it. `db push` still creates the schema in a fresh development or CI
+database; `prisma migrate deploy` is what an existing deployment should use from now on.
+
+**Existing deployment (has data, no `_prisma_migrations` table)** — one time, with `DATABASE_URL`
+loaded:
+
+```sh
+set -a && . ./.env && set +a
+node lib/db/scripts/migrate-baseline.cjs --dry-run   # shows what it would do
+node lib/db/scripts/migrate-baseline.cjs             # runs the baseline, records it as applied
+pnpm --filter @workspace/db exec prisma migrate status
+```
+
+The runner is safe to re-run: every step in the baseline is guarded on the current shape, so on
+a database that already matches `schema.prisma` it changes nothing and only records the baseline.
+It refuses to run if the baseline is already recorded, and it does not run if `_prisma_migrations`
+holds other history it would have to pretend not to see.
+
+**Fresh database** — `prisma migrate deploy` creates the schema and records the baseline in one
+step.
+
+**After the switch** — change `schema.prisma`, then `prisma migrate dev --name <what changed>`
+locally and `prisma migrate deploy` in deployment. Apply every schema change to a
+backup-restored copy first and read the data-loss warnings.
+
+**What the baseline does.** It replaces the old composite primary key on `user_roles`
+(`user_id`, `role_id`) with a surrogate `id`, backfills the ids deterministically from each row's
+own key, and keeps the old pair as a unique constraint. It is tested against a database seeded
+with the old shape by `lib/api/tests/migrations.test.js`, which is part of the API suite. The
+constraint it leaves behind is still the old pair, not `(userId, roleId, programmeId)` — the same
+role in two programmes is a separate schema change, and `schema.prisma` says so.
 
 Backfills (run after `db push`, idempotent):
 - `pnpm --filter @workspace/db exec tsx scripts/backfill-session-booking-org.ts`

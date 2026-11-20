@@ -146,35 +146,179 @@ export const CreateCourseResponse = zod.object({
 
 
 /**
- * @summary Submit an assessment attempt
+ * Returns 410. Client-submitted scores are never accepted: competence comes from the applied assessment, graded on the server.
+ * @deprecated
+ * @summary Legacy course-level attempt (removed; use assessments/{assessmentId}/attempts)
  */
 export const SubmitAssessmentAttemptParams = zod.object({
   "courseId": zod.coerce.string()
 })
 
-export const submitAssessmentAttemptBodyAppliedScoreMin = 0;
-export const submitAssessmentAttemptBodyAppliedScoreMax = 100;
-
-export const submitAssessmentAttemptBodyRecallScoreMin = 0;
-export const submitAssessmentAttemptBodyRecallScoreMax = 100;
-
-
-
-export const SubmitAssessmentAttemptBody = zod.object({
-  "appliedScore": zod.number().min(submitAssessmentAttemptBodyAppliedScoreMin).max(submitAssessmentAttemptBodyAppliedScoreMax),
-  "recallScore": zod.number().min(submitAssessmentAttemptBodyRecallScoreMin).max(submitAssessmentAttemptBodyRecallScoreMax)
-})
-
-export const SubmitAssessmentAttemptResponse = zod.object({
-  "appliedScore": zod.number(),
-  "recallScore": zod.number(),
-  "passed": zod.boolean(),
-  "competenceMet": zod.boolean(),
-  "message": zod.string()
-})
+export const SubmitAssessmentAttemptResponse = zod.void()
 
 
 /**
+ * @summary List the caller's assessment attempts for a course
+ */
+export const ListCourseAttemptsParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const ListCourseAttemptsResponseItem = zod.object({
+
+}).passthrough()
+export const ListCourseAttemptsResponse = zod.array(ListCourseAttemptsResponseItem)
+
+
+/**
+ * @summary List assessments for a course (no correct answers; includes lock state)
+ */
+export const ListCourseAssessmentsParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const ListCourseAssessmentsResponseItem = zod.object({
+
+}).passthrough()
+export const ListCourseAssessmentsResponse = zod.array(ListCourseAssessmentsResponseItem)
+
+
+/**
+ * @summary Get assessment detail (staff responses include correct answers)
+ */
+export const GetAssessmentParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const GetAssessmentResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Update assessment settings (title, passMark, maxAttempts, timeLimitMinutes)
+ */
+export const UpdateAssessmentParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const updateAssessmentBodyPassMarkMin = 0;
+export const updateAssessmentBodyPassMarkMax = 100;
+
+
+
+
+
+export const UpdateAssessmentBody = zod.object({
+  "title": zod.string().optional(),
+  "passMark": zod.number().int().min(updateAssessmentBodyPassMarkMin).max(updateAssessmentBodyPassMarkMax).optional(),
+  "maxAttempts": zod.number().int().min(1).optional(),
+  "timeLimitMinutes": zod.number().int().min(1).nullish()
+})
+
+export const UpdateAssessmentResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Add a question (recall must have exactly one correct answer)
+ */
+export const CreateQuestionParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+
+
+
+export const CreateQuestionBody = zod.object({
+  "prompt": zod.string(),
+  "kind": zod.enum(['single_choice', 'multiple_choice', 'true_false', 'short_text']),
+  "points": zod.number().int().min(1).optional(),
+  "options": zod.array(zod.object({
+  "text": zod.string(),
+  "correct": zod.boolean().optional()
+}))
+})
+
+export const CreateQuestionResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Update a question before publication
+ */
+export const UpdateQuestionParams = zod.object({
+  "questionId": zod.coerce.string()
+})
+
+export const UpdateQuestionBody = zod.object({
+
+}).passthrough()
+
+export const UpdateQuestionResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Delete a question before publication
+ */
+export const DeleteQuestionParams = zod.object({
+  "questionId": zod.coerce.string()
+})
+
+export const DeleteQuestionResponse = zod.void()
+
+
+/**
+ * @summary Publish an assessment (blocks further question edits)
+ */
+export const PublishAssessmentParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const PublishAssessmentResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Start an assessment attempt (questions shuffled, answers omitted)
+ */
+export const StartAssessmentAttemptParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const StartAssessmentAttemptResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * Objective questions are graded here, on the server. A submitted score in the body is ignored; there is no field for one. An applied assessment whose questions include a scenario or a short answer goes to status "grading" instead of being marked, and a trainer finishes it with POST /attempts/{attemptId}/grade.
+ * @summary Submit answers (graded server-side)
+ */
+export const SubmitAttemptAnswersParams = zod.object({
+  "attemptId": zod.coerce.string()
+})
+
+export const SubmitAttemptAnswersBody = zod.object({
+  "answers": zod.array(zod.object({
+  "questionId": zod.string(),
+  "optionIds": zod.array(zod.string()).optional(),
+  "text": zod.string().optional()
+}))
+})
+
+export const SubmitAttemptAnswersResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * Every session in the organization is listed, but joinUrl and location are only sent to someone who could attend: org staff, programme staff, the session's trainer, an invited learner, or a learner enrolled on the session's course. Everyone else gets nulls and canJoin=false.
  * @summary List upcoming training sessions
  */
 export const ListSessionsResponseItem = zod.object({
@@ -193,6 +337,42 @@ export const ListSessionsResponse = zod.array(ListSessionsResponseItem)
 
 
 /**
+ * @summary Schedule a training session
+ */
+export const createSessionBodyModeDefault = `online`;
+
+
+export const CreateSessionBody = zod.object({
+  "title": zod.string(),
+  "courseId": zod.string().nullish(),
+  "programmeId": zod.string().nullish(),
+  "startsAt": zod.coerce.date(),
+  "endsAt": zod.coerce.date(),
+  "date": zod.string().optional().describe('Fallback when startsAt is omitted'),
+  "time": zod.string().optional().describe('Fallback when startsAt is omitted'),
+  "mode": zod.enum(['online', 'offline']).default(createSessionBodyModeDefault),
+  "joinUrl": zod.string().url().optional().describe('Required for online sessions'),
+  "location": zod.string().optional().describe('Required for offline sessions'),
+  "capacity": zod.number().int().min(1).nullish(),
+  "trainerId": zod.string().nullish()
+})
+
+export const CreateSessionResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "programme": zod.string(),
+  "date": zod.string(),
+  "time": zod.string(),
+  "mode": zod.string(),
+  "location": zod.string().nullish(),
+  "videoLink": zod.string().nullish(),
+  "attendees": zod.number().int(),
+  "status": zod.string()
+})
+
+
+/**
+ * Stakeholders are denied. Participants and programme admins receive messages; other org staff receive metadata only.
  * @summary List message threads for the active workspace
  */
 export const ListMessageThreadsResponseItem = zod.object({
@@ -209,6 +389,30 @@ export const ListMessageThreadsResponse = zod.array(ListMessageThreadsResponseIt
 
 
 /**
+ * @summary Start a message thread
+ */
+export const CreateThreadBody = zod.object({
+  "subject": zod.string(),
+  "body": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "participantIds": zod.array(zod.string()),
+  "urgent": zod.boolean().optional()
+})
+
+export const CreateThreadResponse = zod.object({
+  "id": zod.string(),
+  "subject": zod.string(),
+  "context": zod.string(),
+  "participant": zod.string(),
+  "preview": zod.string(),
+  "updatedAt": zod.string(),
+  "unread": zod.boolean(),
+  "urgent": zod.boolean()
+})
+
+
+/**
+ * Participants, and programme admins of the thread's programme, only. Anyone else gets 404 rather than 403, so a thread's existence is not leaked. Stakeholders are denied. Access is re-checked on every read, so a removed member loses it immediately.
  * @summary List messages in a thread
  */
 export const ListThreadMessagesParams = zod.object({
@@ -227,6 +431,7 @@ export const ListThreadMessagesResponse = zod.array(ListThreadMessagesResponseIt
 
 
 /**
+ * The author is taken from the token; any author or authorRole in the body is ignored. Escalation is cleared only when the poster holds a trainer role on that thread.
  * @summary Send a message in a thread
  */
 export const SendThreadMessageParams = zod.object({
@@ -346,5 +551,1078 @@ export const UpdateReviewCreditSettingsResponse = zod.object({
  * @summary Export review credit evidence as CSV
  */
 export const ExportReviewCreditsResponse = zod.unknown()
+
+
+/**
+ * @summary Login with email/password (JWT)
+ */
+export const LoginBody = zod.object({
+  "email": zod.string(),
+  "password": zod.string()
+})
+
+export const LoginResponse = zod.object({
+  "accessToken": zod.string(),
+  "user": zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "initials": zod.string()
+})
+})
+
+
+/**
+ * @summary SSO/SAML token exchange
+ */
+export const SsoLoginBody = zod.object({
+  "samlAssertion": zod.string()
+})
+
+export const SsoLoginResponse = zod.object({
+  "accessToken": zod.string(),
+  "user": zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "role": zod.string(),
+  "initials": zod.string()
+})
+})
+
+
+/**
+ * Always scoped to the authenticated user. Newest first.
+ * @summary List the caller's notifications
+ */
+export const listNotificationsQueryLimitDefault = 50;
+export const listNotificationsQueryLimitMax = 100;
+
+
+
+export const ListNotificationsQueryParams = zod.object({
+  "unread": zod.coerce.boolean().optional().describe('Only notifications that have not been read'),
+  "limit": zod.coerce.number().int().min(1).max(listNotificationsQueryLimitMax).default(listNotificationsQueryLimitDefault)
+})
+
+export const ListNotificationsResponse = zod.object({
+  "items": zod.array(zod.object({
+  "id": zod.string(),
+  "userId": zod.string().optional(),
+  "orgId": zod.string().nullish(),
+  "type": zod.string().describe('e.g. session_invite'),
+  "title": zod.string(),
+  "body": zod.string().nullish(),
+  "link": zod.string().nullish().describe('App-relative path'),
+  "readAt": zod.coerce.date().nullable(),
+  "createdAt": zod.coerce.date()
+})),
+  "unread": zod.number().int().describe('Unread count for the bell badge')
+})
+
+
+/**
+ * @summary Mark one of the caller's notifications as read
+ */
+export const MarkNotificationReadParams = zod.object({
+  "notificationId": zod.coerce.string()
+})
+
+export const MarkNotificationReadResponse = zod.object({
+  "ok": zod.boolean()
+})
+
+
+/**
+ * @summary Mark every unread notification of the caller as read
+ */
+export const MarkAllNotificationsReadResponse = zod.object({
+  "ok": zod.boolean(),
+  "updated": zod.number().int()
+})
+
+
+/**
+ * @summary List enrolments
+ */
+export const ListEnrolmentsResponseItem = zod.object({
+  "id": zod.string(),
+  "learnerId": zod.string(),
+  "courseId": zod.string(),
+  "status": zod.string(),
+  "enrolmentScore": zod.number().nullish(),
+  "managerSignOff": zod.boolean().nullish()
+})
+export const ListEnrolmentsResponse = zod.array(ListEnrolmentsResponseItem)
+
+
+/**
+ * @summary Create enrolment
+ */
+export const CreateEnrolmentBody = zod.object({
+  "learnerId": zod.string(),
+  "courseId": zod.string(),
+  "deadlineDate": zod.string().nullish()
+})
+
+export const CreateEnrolmentResponse = zod.object({
+  "id": zod.string(),
+  "learnerId": zod.string(),
+  "courseId": zod.string(),
+  "status": zod.string(),
+  "enrolmentScore": zod.number().nullish(),
+  "managerSignOff": zod.boolean().nullish()
+})
+
+
+/**
+ * @summary Update enrolment (recomputes score, audit-logged)
+ */
+export const UpdateEnrolmentParams = zod.object({
+  "enrolmentId": zod.coerce.string()
+})
+
+export const UpdateEnrolmentBody = zod.object({
+  "status": zod.string().optional(),
+  "appliedAssessmentScore": zod.number().optional(),
+  "applicationScore": zod.number().optional(),
+  "managerSignOff": zod.boolean().optional()
+})
+
+export const UpdateEnrolmentResponse = zod.object({
+  "id": zod.string(),
+  "learnerId": zod.string(),
+  "courseId": zod.string(),
+  "status": zod.string(),
+  "enrolmentScore": zod.number().nullish(),
+  "managerSignOff": zod.boolean().nullish()
+})
+
+
+/**
+ * Removing a learner's last grant in a programme withdraws their enrolments: the row is kept with status "withdrawn", withdrawnAt and withdrawnBy, so scores and history survive and the learner's thread access is revoked. A withdrawal is excluded from active KPIs and from review-credit eligibility unless an admin overrides it.
+ * @summary Withdraw an enrolment (requires second-admin approval per governance)
+ */
+export const DeleteEnrolmentParams = zod.object({
+  "enrolmentId": zod.coerce.string()
+})
+
+export const DeleteEnrolmentResponse = zod.void()
+
+
+/**
+ * @summary Get computed review-credit score for an enrolment
+ */
+export const GetEnrolmentScoreParams = zod.object({
+  "enrolmentId": zod.coerce.string()
+})
+
+export const GetEnrolmentScoreResponse = zod.object({
+  "enrolmentId": zod.string(),
+  "score": zod.number(),
+  "breakdown": zod.object({
+
+}).passthrough()
+})
+
+
+/**
+ * @summary List modules in a programme course set
+ */
+export const ListModulesParams = zod.object({
+  "programmeId": zod.coerce.string()
+})
+
+export const ListModulesResponseItem = zod.object({
+  "id": zod.string(),
+  "courseId": zod.string(),
+  "title": zod.string()
+})
+export const ListModulesResponse = zod.array(ListModulesResponseItem)
+
+
+/**
+ * @summary Create module (micro-learning unit)
+ */
+export const CreateModuleParams = zod.object({
+  "programmeId": zod.coerce.string()
+})
+
+export const CreateModuleBody = zod.object({
+  "courseId": zod.string(),
+  "title": zod.string()
+})
+
+export const CreateModuleResponse = zod.object({
+  "id": zod.string(),
+  "courseId": zod.string(),
+  "title": zod.string()
+})
+
+
+/**
+ * @summary List assessments (recall vs applied)
+ */
+export const ListAssessmentsParams = zod.object({
+  "moduleId": zod.coerce.string()
+})
+
+export const ListAssessmentsResponseItem = zod.object({
+  "id": zod.string(),
+  "moduleId": zod.string(),
+  "type": zod.enum(['recall', 'applied'])
+})
+export const ListAssessmentsResponse = zod.array(ListAssessmentsResponseItem)
+
+
+/**
+ * @summary Create assessment tagged recall|applied
+ */
+export const CreateAssessmentParams = zod.object({
+  "moduleId": zod.coerce.string()
+})
+
+export const CreateAssessmentBody = zod.object({
+  "type": zod.enum(['recall', 'applied']),
+  "maxScore": zod.number().optional()
+})
+
+export const CreateAssessmentResponse = zod.object({
+  "id": zod.string(),
+  "moduleId": zod.string(),
+  "type": zod.enum(['recall', 'applied'])
+})
+
+
+/**
+ * @summary KPI aggregates (competencyRate, dropOff, timeToCompetency, trainerUtilization)
+ */
+export const GetKpiSummaryResponse = zod.object({
+  "complianceHealth": zod.number(),
+  "completionRate": zod.number(),
+  "competencyRate": zod.number(),
+  "expiringCredentials": zod.number().int(),
+  "dropOffRate": zod.number(),
+  "timeToCompetency": zod.number(),
+  "trainerUtilization": zod.number(),
+  "weeklyActivity": zod.array(zod.object({
+  "label": zod.string(),
+  "active": zod.number().int(),
+  "completed": zod.number().int()
+})),
+  "dropOffHeatmap": zod.array(zod.object({
+  "label": zod.string(),
+  "value": zod.number()
+})),
+  "expiringItems": zod.array(zod.object({
+  "name": zod.string(),
+  "course": zod.string(),
+  "expires": zod.string(),
+  "status": zod.string()
+}))
+})
+
+
+/**
+ * @summary Query audit trail (admin only)
+ */
+export const ListAuditLogsResponseItem = zod.object({
+  "id": zod.string(),
+  "action": zod.string(),
+  "entity": zod.string(),
+  "timestamp": zod.string()
+})
+export const ListAuditLogsResponse = zod.array(ListAuditLogsResponseItem)
+
+
+/**
+ * @summary Trigger calendar-gap nudge pass (internal)
+ */
+export const RunNudgeResponse = zod.object({
+  "sent": zod.number().int()
+})
+
+
+/**
+ * @summary In-context AI help stub for stuck learners
+ */
+export const AiHelpBody = zod.object({
+  "question": zod.string(),
+  "courseId": zod.string().optional()
+})
+
+export const AiHelpResponse = zod.object({
+  "answer": zod.string()
+})
+
+
+/**
+ * @summary REST export of review-credit aggregates for HRIS
+ */
+export const GetReviewCreditsParams = zod.object({
+  "orgId": zod.coerce.string()
+})
+
+export const GetReviewCreditsResponseItem = zod.object({
+  "learnerId": zod.string(),
+  "raw": zod.number(),
+  "final": zod.number()
+})
+export const GetReviewCreditsResponse = zod.array(GetReviewCreditsResponseItem)
+
+
+/**
+ * @summary Invite learners (validates org and course/programme enrolment)
+ */
+export const InviteSessionParticipantsParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const InviteSessionParticipantsBody = zod.object({
+  "learnerIds": zod.array(zod.string())
+})
+
+export const InviteSessionParticipantsResponse = zod.object({
+  "invited": zod.number().int().optional(),
+  "skipped": zod.number().int().optional()
+})
+
+
+/**
+ * @summary RSVP to a session (waitlist promotion and reminders)
+ */
+export const RsvpSessionParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const RsvpSessionBody = zod.object({
+  "status": zod.enum(['confirmed', 'declined'])
+})
+
+export const RsvpSessionResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Get or create the caller's personal calendar feed token
+ */
+export const GetMyIcalTokenResponse = zod.object({
+  "token": zod.string().optional(),
+  "url": zod.string().optional()
+})
+
+
+/**
+ * @summary Regenerate a user's calendar feed token (self or org admin)
+ */
+export const RegenerateUserIcalTokenParams = zod.object({
+  "userId": zod.coerce.string()
+})
+
+export const RegenerateUserIcalTokenResponse = zod.object({
+  "token": zod.string().optional(),
+  "url": zod.string().optional()
+})
+
+
+/**
+ * @summary Personal iCalendar feed authenticated by opaque token
+ */
+export const GetCalendarFeedQueryParams = zod.object({
+  "token": zod.coerce.string()
+})
+
+export const GetCalendarFeedResponse = zod.unknown()
+
+
+/**
+ * Adds role grants; it never removes another grant, so a person can hold several roles in one programme (a Trainer who is also Programme Admin). Idempotent through the unique grant. A learner grant creates the enrolment.
+ * @summary Add a member with one or more roles
+ */
+export const AssignProgrammeMemberParams = zod.object({
+  "programmeId": zod.coerce.string()
+})
+
+export const AssignProgrammeMemberBody = zod.object({
+  "userId": zod.string(),
+  "roles": zod.array(zod.enum(['admin', 'trainer', 'learner', 'stakeholder'])).optional(),
+  "role": zod.enum(['admin', 'trainer', 'learner', 'stakeholder']).optional(),
+  "enrol": zod.boolean().optional()
+})
+
+export const AssignProgrammeMemberResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * `{ fromRole, toRole }` changes one named grant; `roles` replaces the whole set. No route may remove or change an admin grant without assertNotLastProgrammeAdmin, which returns 409, and every multi-step change runs in one transaction.
+ * @summary Update member name and/or replace their full programme role set
+ */
+export const UpdateProgrammeMemberParams = zod.object({
+  "programmeId": zod.coerce.string(),
+  "userId": zod.coerce.string()
+})
+
+export const UpdateProgrammeMemberBody = zod.object({
+  "name": zod.string().optional(),
+  "roles": zod.array(zod.enum(['admin', 'trainer', 'learner', 'stakeholder'])).optional(),
+  "fromRole": zod.string().optional(),
+  "toRole": zod.string().optional()
+})
+
+export const UpdateProgrammeMemberResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary List ordered content for a module
+ */
+export const ListModuleContentParams = zod.object({
+  "moduleId": zod.coerce.string()
+})
+
+export const ListModuleContentResponseItem = zod.object({
+
+}).passthrough()
+export const ListModuleContentResponse = zod.array(ListModuleContentResponseItem)
+
+
+/**
+ * @summary Add content to a module
+ */
+export const CreateContentParams = zod.object({
+  "moduleId": zod.coerce.string()
+})
+
+export const CreateContentBody = zod.object({
+  "type": zod.enum(['native', 'file', 'external_link']),
+  "title": zod.string(),
+  "body": zod.string().optional(),
+  "url": zod.string().optional(),
+  "completionMode": zod.enum(['trainer_verified', 'self_report']).optional(),
+  "required": zod.boolean().optional(),
+  "storageKey": zod.string().optional(),
+  "fileName": zod.string().optional(),
+  "mimeType": zod.string().optional(),
+  "sizeBytes": zod.number().int().optional(),
+  "checksum": zod.string().optional()
+})
+
+export const CreateContentResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Update content metadata or tutorial
+ */
+export const UpdateContentParams = zod.object({
+  "contentId": zod.coerce.string()
+})
+
+export const UpdateContentBody = zod.object({
+
+}).passthrough()
+
+export const UpdateContentResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Archive content (soft delete)
+ */
+export const ArchiveContentParams = zod.object({
+  "contentId": zod.coerce.string()
+})
+
+export const ArchiveContentResponse = zod.void()
+
+
+/**
+ * @summary Set content ordering
+ */
+export const ReorderContentParams = zod.object({
+  "moduleId": zod.coerce.string()
+})
+
+export const ReorderContentBody = zod.object({
+  "contentIds": zod.array(zod.string())
+})
+
+export const ReorderContentResponse = zod.unknown()
+
+
+/**
+ * @summary Upload a file as base64 JSON (50MB limit, MIME/extension allowlist)
+ */
+export const UploadContentParams = zod.object({
+  "moduleId": zod.coerce.string()
+})
+
+export const UploadContentBody = zod.object({
+  "fileName": zod.string(),
+  "mimeType": zod.string(),
+  "dataBase64": zod.string()
+})
+
+export const UploadContentResponse = zod.object({
+  "storageKey": zod.string().optional(),
+  "fileName": zod.string().optional(),
+  "mimeType": zod.string().optional(),
+  "sizeBytes": zod.number().int().optional(),
+  "checksum": zod.string().optional()
+})
+
+
+/**
+ * @summary Learner view of course content with per-user progress
+ */
+export const GetCourseContentParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const GetCourseContentResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Mark content complete (trainer_verified items become pending_verification)
+ */
+export const MarkContentProgressParams = zod.object({
+  "contentId": zod.coerce.string()
+})
+
+export const MarkContentProgressBody = zod.object({
+  "status": zod.enum(['in_progress', 'completed']).optional(),
+  "evidenceNote": zod.string().optional()
+})
+
+export const MarkContentProgressResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Trainer verifies or rejects submitted evidence
+ */
+export const VerifyContentProgressParams = zod.object({
+  "progressId": zod.coerce.string()
+})
+
+export const verifyContentProgressBodyVerifiedDefault = true;
+
+export const VerifyContentProgressBody = zod.object({
+  "verified": zod.boolean().default(verifyContentProgressBodyVerifiedDefault),
+  "note": zod.string().optional()
+})
+
+export const VerifyContentProgressResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * @summary Download a stored file (attachment, nosniff)
+ */
+export const DownloadContentParams = zod.object({
+  "contentId": zod.coerce.string()
+})
+
+export const DownloadContentResponse = zod.unknown()
+
+
+/**
+ * Org staff (owner/admin) get the full directory: department, job function, activation state, and every grant. A programme admin gets identity plus their own programmes' grants only - other programmes' grants and department/job function are never sent. Anyone else gets 403.
+ * @summary Directory
+ */
+export const listUsersQueryLimitDefault = 50;
+export const listUsersQueryLimitMax = 100;
+
+
+
+export const ListUsersQueryParams = zod.object({
+  "search": zod.coerce.string().optional().describe('Matches name or email'),
+  "limit": zod.coerce.number().int().min(1).max(listUsersQueryLimitMax).default(listUsersQueryLimitDefault)
+})
+
+export const ListUsersResponseItem = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string().email(),
+  "isActive": zod.boolean(),
+  "department": zod.string().nullish().describe('Org staff only'),
+  "jobFunction": zod.string().nullish().describe('Org staff only'),
+  "activatedAt": zod.coerce.date().nullish().describe('Org staff only'),
+  "roles": zod.array(zod.object({
+  "role": zod.string().optional(),
+  "programmeId": zod.string().nullish(),
+  "programmeName": zod.string().nullish()
+})).describe('Org staff see every grant; a programme admin sees only their own programmes\'')
+})
+export const ListUsersResponse = zod.array(ListUsersResponseItem)
+
+
+/**
+ * Org staff only. The account is created with a random, unguessable password, so nobody can log in until the activation link is used. The activation token is never returned outside NODE_ENV=test.
+ * @summary Create a user and send an activation link
+ */
+export const CreateUserBody = zod.object({
+  "email": zod.string().email(),
+  "name": zod.string(),
+  "department": zod.string().optional(),
+  "jobFunction": zod.string().optional()
+})
+
+export const CreateUserResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string().email(),
+  "isActive": zod.boolean(),
+  "department": zod.string().nullish().describe('Org staff only'),
+  "jobFunction": zod.string().nullish().describe('Org staff only'),
+  "activatedAt": zod.coerce.date().nullish().describe('Org staff only'),
+  "roles": zod.array(zod.object({
+  "role": zod.string().optional(),
+  "programmeId": zod.string().nullish(),
+  "programmeName": zod.string().nullish()
+})).describe('Org staff see every grant; a programme admin sees only their own programmes\'')
+})
+
+
+/**
+ * Changing an owner's own grants or active state is owner-only; an org admin attempting it gets 403. Deactivating the last active owner, or removing your own last org-staff role, is a 409. A rename only touches courses in the caller's organization, and only rows whose trainerId is null.
+ * @summary Rename, change details or deactivate
+ */
+export const UpdateUserParams = zod.object({
+  "userId": zod.coerce.string()
+})
+
+export const UpdateUserBody = zod.object({
+  "name": zod.string().optional(),
+  "department": zod.string().nullish(),
+  "jobFunction": zod.string().nullish(),
+  "isActive": zod.boolean().optional()
+})
+
+export const UpdateUserResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string().email(),
+  "isActive": zod.boolean(),
+  "department": zod.string().nullish().describe('Org staff only'),
+  "jobFunction": zod.string().nullish().describe('Org staff only'),
+  "activatedAt": zod.coerce.date().nullish().describe('Org staff only'),
+  "roles": zod.array(zod.object({
+  "role": zod.string().optional(),
+  "programmeId": zod.string().nullish(),
+  "programmeName": zod.string().nullish()
+})).describe('Org staff see every grant; a programme admin sees only their own programmes\'')
+})
+
+
+/**
+ * `role: ""` removes the org-wide grant. Removing or changing an owner's role is owner-only (403 for an admin); removing the last owner's role is 409.
+ * @summary Grant or remove an organization-wide role
+ */
+export const SetOrgRoleParams = zod.object({
+  "userId": zod.coerce.string()
+})
+
+export const SetOrgRoleBody = zod.object({
+  "role": zod.string().describe('owner, admin, trainer, learner, stakeholder, or \"\" to remove')
+})
+
+export const SetOrgRoleResponse = zod.unknown()
+
+
+/**
+ * @summary Send a fresh activation link to a user who has not activated
+ */
+export const ResendActivationParams = zod.object({
+  "userId": zod.coerce.string()
+})
+
+export const ResendActivationResponse = zod.unknown()
+
+
+/**
+ * At or above the organization's bulkRemovalThreshold this creates a member_bulk delete request instead of removing anyone; the request needs a different approver than its requester.
+ * @summary Remove several people at once
+ */
+export const BulkRemoveProgrammeMembersParams = zod.object({
+  "programmeId": zod.coerce.string()
+})
+
+export const BulkRemoveProgrammeMembersBody = zod.object({
+  "userIds": zod.array(zod.string()),
+  "reason": zod.string().optional()
+})
+
+export const BulkRemoveProgrammeMembersResponse = zod.object({
+  "removed": zod.number().int().optional(),
+  "pendingRequestId": zod.string().nullish()
+})
+
+
+/**
+ * @summary Pending destructive requests
+ */
+export const ListDeleteRequestsResponse = zod.unknown()
+
+
+/**
+ * The approver must be an admin of the target's own programme, or an org admin/owner, and never the requester.
+ * @summary Approve a destructive request
+ */
+export const ApproveDeleteRequestParams = zod.object({
+  "requestId": zod.coerce.string()
+})
+
+export const ApproveDeleteRequestResponse = zod.unknown()
+
+
+/**
+ * @summary Reject a destructive request
+ */
+export const RejectDeleteRequestParams = zod.object({
+  "requestId": zod.coerce.string()
+})
+
+export const RejectDeleteRequestResponse = zod.unknown()
+
+
+/**
+ * Single use, 7-day expiry, same password policy as reset. The token is rejected after use or expiry.
+ * @summary Set a password with an activation token
+ */
+export const activateAccountBodyPasswordMin = 12;
+
+
+
+export const ActivateAccountBody = zod.object({
+  "token": zod.string(),
+  "password": zod.string().min(activateAccountBodyPasswordMin)
+})
+
+export const ActivateAccountResponse = zod.unknown()
+
+
+/**
+ * Always 200, so the endpoint does not reveal which addresses exist.
+ * @summary Request a reset link
+ */
+export const RequestPasswordResetBody = zod.object({
+  "email": zod.string().email()
+})
+
+export const RequestPasswordResetResponse = zod.unknown()
+
+
+/**
+ * Bumps tokenVersion, so every existing session for that user is invalid.
+ * @summary Reset a password with a token
+ */
+export const resetPasswordBodyPasswordMin = 12;
+
+
+
+export const ResetPasswordBody = zod.object({
+  "token": zod.string(),
+  "password": zod.string().min(resetPasswordBodyPasswordMin)
+})
+
+export const ResetPasswordResponse = zod.unknown()
+
+
+/**
+ * @summary Readiness (database reachable)
+ */
+export const ReadinessResponse = zod.unknown()
+
+
+/**
+ * @summary Push the session to connected calendars
+ */
+export const SyncSessionCalendarParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const SyncSessionCalendarResponse = zod.unknown()
+
+
+/**
+ * @summary Dispatch nudges for a learner (org staff)
+ */
+export const DispatchNudgesResponse = zod.unknown()
+
+
+/**
+ * @summary Run the messaging SLA escalation now (org staff)
+ */
+export const RunSlaJobResponse = zod.unknown()
+
+
+/**
+ * @summary Archive expired content and notify owners (org staff)
+ */
+export const RunContentLifecycleResponse = zod.unknown()
+
+
+/**
+ * @summary Notify learners whose certificates are expiring (org staff)
+ */
+export const CheckCertificateExpiryResponse = zod.unknown()
+
+
+/**
+ * @summary Lock a review-credit period
+ */
+export const LockReviewCreditsResponse = zod.unknown()
+
+
+/**
+ * @summary Create an organization (platform administration)
+ */
+export const CreateOrganizationResponse = zod.void()
+
+
+/**
+ * @summary Update organization settings (org staff)
+ */
+export const UpdateOrganizationParams = zod.object({
+  "orgId": zod.coerce.string()
+})
+
+export const UpdateOrganizationResponse = zod.unknown()
+
+
+/**
+ * @summary Verify an email domain for the organization (org staff)
+ */
+export const VerifyOrganizationDomainParams = zod.object({
+  "orgId": zod.coerce.string()
+})
+
+export const VerifyOrganizationDomainResponse = zod.unknown()
+
+
+/**
+ * Each created account gets a random password and its own activation token.
+ * @summary Bulk-import learners (org staff)
+ */
+export const ImportLearnersParams = zod.object({
+  "orgId": zod.coerce.string()
+})
+
+export const ImportLearnersResponse = zod.unknown()
+
+
+/**
+ * @summary Connected external calendars
+ */
+export const ListCalendarConnectionsResponse = zod.unknown()
+
+
+/**
+ * @summary Connect an external calendar (free/busy reading)
+ */
+export const CreateCalendarConnectionResponse = zod.void()
+
+
+/**
+ * @summary Disconnect an external calendar
+ */
+export const DeleteCalendarConnectionParams = zod.object({
+  "connectionId": zod.coerce.string()
+})
+
+export const DeleteCalendarConnectionResponse = zod.unknown()
+
+
+/**
+ * @summary Certificates the caller may see
+ */
+export const ListCertificatesResponse = zod.unknown()
+
+
+/**
+ * @summary Recognitions the caller may see
+ */
+export const ListRecognitionsResponse = zod.unknown()
+
+
+/**
+ * @summary Cohorts
+ */
+export const ListCohortsResponse = zod.unknown()
+
+
+/**
+ * Requires a staff role on the cohort's programme.
+ * @summary Create a cohort
+ */
+export const CreateCohortBody = zod.object({
+  "name": zod.string(),
+  "programmeId": zod.string()
+})
+
+export const CreateCohortResponse = zod.void()
+
+
+/**
+ * @summary Enrol a cohort's learners on a course
+ */
+export const EnrolCohortParams = zod.object({
+  "cohortId": zod.coerce.string()
+})
+
+export const EnrolCohortResponse = zod.unknown()
+
+
+/**
+ * @summary Add learners to a cohort
+ */
+export const AddCohortMembersParams = zod.object({
+  "cohortId": zod.coerce.string()
+})
+
+export const AddCohortMembersResponse = zod.unknown()
+
+
+/**
+ * Any organization member. Only an upload made here can be attached as evidence; a staff content upload is rejected as proof.
+ * @summary Upload a learner's evidence for an external-link completion
+ */
+export const UploadEvidenceBody = zod.object({
+  "file": zod.instanceof(File)
+})
+
+export const UploadEvidenceResponse = zod.object({
+  "storedFileId": zod.string(),
+  "fileName": zod.string(),
+  "mimeType": zod.string(),
+  "sizeBytes": zod.number().int(),
+  "checksum": zod.string().describe('SHA-256 of the stored bytes'),
+  "purpose": zod.enum(['content', 'evidence'])
+})
+
+
+/**
+ * The uploader, or programme staff of the item's programme.
+ * @summary Download the evidence a learner attached
+ */
+export const GetEvidenceFileParams = zod.object({
+  "progressId": zod.coerce.string()
+})
+
+export const GetEvidenceFileResponse = zod.unknown()
+
+
+/**
+ * Needs approval by an admin of the assessment's programme who is not the requester.
+ * @summary Request deletion of an assessment
+ */
+export const RequestAssessmentDeletionParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const RequestAssessmentDeletionResponse = zod.void()
+
+
+/**
+ * @summary Request deletion of a course
+ */
+export const RequestCourseDeletionParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const RequestCourseDeletionResponse = zod.void()
+
+
+/**
+ * @summary Request deletion of a programme
+ */
+export const RequestProgrammeDeletionParams = zod.object({
+  "programmeId": zod.coerce.string()
+})
+
+export const RequestProgrammeDeletionResponse = zod.void()
+
+
+/**
+ * @summary Request deletion of a module
+ */
+export const RequestModuleDeletionParams = zod.object({
+  "moduleId": zod.coerce.string()
+})
+
+export const RequestModuleDeletionResponse = zod.void()
+
+
+/**
+ * @summary Leave course feedback (enrolled learners)
+ */
+export const SubmitCourseFeedbackParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const submitCourseFeedbackBodyRatingMax = 5;
+
+
+
+export const SubmitCourseFeedbackBody = zod.object({
+  "rating": zod.number().int().min(1).max(submitCourseFeedbackBodyRatingMax),
+  "comment": zod.string().optional()
+})
+
+export const SubmitCourseFeedbackResponse = zod.void()
+
+
+/**
+ * @summary Explain a concept in the context of the module (AI help)
+ */
+export const ExplainConceptParams = zod.object({
+  "courseId": zod.coerce.string(),
+  "moduleId": zod.coerce.string()
+})
+
+export const ExplainConceptResponse = zod.unknown()
+
+
+/**
+ * trainerId takes precedence over the legacy trainer display name.
+ * @summary Edit a course
+ */
+export const UpdateCourseParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const UpdateCourseResponse = zod.unknown()
+
+
+/**
+ * @summary Edit a programme
+ */
+export const UpdateProgrammeParams = zod.object({
+  "programmeId": zod.coerce.string()
+})
+
+export const UpdateProgrammeResponse = zod.unknown()
+
+
+/**
+ * @summary Edit a module
+ */
+export const UpdateModuleParams = zod.object({
+  "moduleId": zod.coerce.string()
+})
+
+export const UpdateModuleResponse = zod.unknown()
 
 
