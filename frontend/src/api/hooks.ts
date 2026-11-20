@@ -381,6 +381,8 @@ export interface DirectoryUser {
   department?: string | null;
   jobFunction?: string | null;
   isActive: boolean;
+  /** Round 7 gap 5: null until the person has opened their activation link (org staff only). */
+  activatedAt?: string | null;
   roles: Array<{ role: string; programmeId: string | null; programmeName: string | null }>;
 }
 
@@ -415,6 +417,19 @@ export function useUpdateOrgUser() {
       qc.invalidateQueries({ queryKey: ['users'] });
       qc.invalidateQueries({ queryKey: qk.programmes });
     },
+  });
+}
+
+/**
+ * Round 7 gap 5: the resend-activation route existed but nothing called it, and nothing
+ * showed who had not activated yet. Both live here now.
+ */
+export function useResendActivation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      api<{ ok: boolean; emailSent?: boolean }>(`/users/${id}/resend-activation`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
   });
 }
 
@@ -713,32 +728,43 @@ export function useArchiveContent(moduleId: string, courseId?: string) {
   });
 }
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
+/** An upload the API has stored and bound to this organization (A.3). */
+export type UploadedFile = {
+  storedFileId: string;
+  storageKey?: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  checksum: string;
+  purpose?: string;
+};
+
+// A.3: multipart, not base64 in JSON. The JSON body parser caps a body at 100 KB, so anything
+// larger than a small image used to fail with 413 before the request reached the route.
+async function postFile(path: string, file: File, extraFields?: Record<string, string>): Promise<UploadedFile> {
+  const body = new FormData();
+  body.append('file', file, file.name);
+  for (const [key, value] of Object.entries(extraFields ?? {})) body.append(key, value);
+  return api<UploadedFile>(path, { method: 'POST', body, headers: {} });
 }
 
 export function useUploadContent(moduleId: string) {
   return useMutation({
-    mutationFn: async (file: File) => {
-      const dataBase64 = await fileToBase64(file);
-      return api<{ storageKey: string; fileName: string; mimeType: string; sizeBytes: number; checksum: string }>(`/modules/${moduleId}/content/upload`, {
-        method: 'POST',
-        body: JSON.stringify({ fileName: file.name, mimeType: file.type || 'application/octet-stream', dataBase64 }),
-      });
-    },
+    mutationFn: (file: File) => postFile(`/modules/${moduleId}/content/upload`, file),
+  });
+}
+
+export function useUploadEvidence() {
+  return useMutation({
+    mutationFn: (file: File) => postFile('/uploads/evidence', file),
   });
 }
 
 export function useContentProgress(courseId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, status, evidenceNote, evidenceFileKey }: { id: string; status: 'in_progress' | 'completed'; evidenceNote?: string; evidenceFileKey?: string }) =>
-      api(`/content/${id}/progress`, { method: 'POST', body: JSON.stringify({ status, evidenceNote, evidenceFileKey }) }),
+    mutationFn: ({ id, status, evidenceNote, evidenceFileId }: { id: string; status: 'in_progress' | 'completed'; evidenceNote?: string; evidenceFileId?: string }) =>
+      api(`/content/${id}/progress`, { method: 'POST', body: JSON.stringify({ status, evidenceNote, evidenceFileId }) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['course-content', courseId] });
       qc.invalidateQueries({ queryKey: ['courses'] });
@@ -943,4 +969,56 @@ export function useCreateAssessment(moduleId: string, courseId?: string) {
 
 export function useModuleAssessments(moduleId: string, enabled = true) {
   return useQuery(queryOpts(['module-assessments', moduleId] as const, () => api<CourseAssessment[]>(`/modules/${moduleId}/assessments`), enabled && !!moduleId));
+}
+
+export interface Notification {
+  id: string;
+  userId: string;
+  orgId: string | null;
+  type: string;
+  title: string;
+  body: string | null;
+  link: string | null;
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface NotificationList {
+  items: Notification[];
+  unread: number;
+}
+
+/**
+ * Round 7 gap 6: the badge needs the unread count on load, not only once the panel opens.
+ * This is the cheap request — `unread=true&limit=1` returns one row plus the count — and it
+ * refreshes on a slow interval, so a notification that arrives later appears without a page
+ * reload. The full list is still fetched only when the panel is opened.
+ */
+export function useUnreadNotificationCount(enabled = true) {
+  return useQuery({
+    ...queryOpts(['notifications', 'unread-count'] as const, () => api<NotificationList>('/notifications?unread=true&limit=1'), enabled),
+    refetchInterval: 60_000,
+  });
+}
+
+export function useNotifications(enabled = true) {
+  return useQuery(
+    queryOpts(['notifications'] as const, () => api<NotificationList>('/notifications?limit=20'), enabled),
+  );
+}
+
+export function useMarkNotificationRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<{ ok: boolean }>(`/notifications/${id}/read`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+  });
+}
+
+export function useMarkAllNotificationsRead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<{ ok: boolean; updated: number }>('/notifications/read-all', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['notifications'] }),
+  });
 }

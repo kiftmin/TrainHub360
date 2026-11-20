@@ -67,6 +67,14 @@ async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
       const a = await db.assessment.findUnique({ where: { id: params.id }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);
       if (a) return a.module.course.programmeId;
     }
+    // An attempt has no programmeId of its own: it is reached through its assessment, which is
+    // the only description of who may act on it.
+    if (req.path.includes("/attempts/")) {
+      const attempt = await db.assessmentAttempt
+        .findUnique({ where: { id: params.id }, select: { assessment: { select: { module: { select: { course: { select: { programmeId: true } } } } } } } })
+        .catch(() => null);
+      if (attempt) return attempt.assessment.module.course.programmeId;
+    }
     if (req.path.includes("/enrolments/")) {
       const e = await db.enrolment.findUnique({ where: { id: params.id }, select: { programmeId: true } }).catch(() => null);
       if (e?.programmeId) return e.programmeId;
@@ -163,7 +171,12 @@ export async function canModifyOwner(actorId: string): Promise<boolean> {
   return isOrgOwner(actorId);
 }
 
+// Round 6 / M1: a programme admin grant is not the only way to administer a programme — an
+// org-wide owner/admin grant covers every programme (the same rule requireProgrammeRole uses).
+// Reading threads used the programme grant alone, so org staff saw only metadata for their own
+// programmes' threads while requireProgrammeRole let them manage them.
 export async function isProgrammeAdmin(userId: string, programmeId: string): Promise<boolean> {
+  if (await isOrgStaff(userId)) return true;
   const grant = await db.userRole
     .findFirst({ where: { userId, programmeId, role: { name: "admin" } } })
     .catch(() => null);

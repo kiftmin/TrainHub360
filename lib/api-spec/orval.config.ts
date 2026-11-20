@@ -55,6 +55,13 @@ export default defineConfig({
       mode: "split",
       clean: true,
       prettier: true,
+      // orval rewrites lib/api-zod/src/index.ts with `export *` of both generated folders on every
+      // run, and those two export the same name for every request body — an ambiguity that fails
+      // the build. The package's `prepare` script restores the hand-written index from
+      // src/index.template.ts, so codegen is idempotent again.
+      hooks: {
+        afterAllFilesWrite: "node ./restore-zod-index.cjs",
+      },
       override: {
         zod: {
           // Orval resolves `auto` from lib/api-spec/package.json, which has no

@@ -18,6 +18,7 @@ import { scheduleKpiJob } from "./jobs/kpiJob.js";
 import { scheduleContentLifecycleJob } from "./jobs/contentLifecycleJob.js";
 import { scheduleCertificateExpiryJob } from "./jobs/certificateExpiryJob.js";
 import { scheduleSessionReminderJob } from "./jobs/sessionReminderJob.js";
+import { assertEmailConfiguration } from "./services/email.js";
 
 type StatusError = Error & { status?: unknown };
 
@@ -91,6 +92,11 @@ process.on("uncaughtException", (e) => console.error("[api] uncaught exception:"
 
 const port = Number(process.env.PORT ?? 4000);
 if (process.env.NODE_ENV !== "test") {
+  // Round 7 gap 2: a production deployment that would log its mail, or point its links at
+  // localhost, must not start. In development this only warns, so the console sender stays
+  // usable. EMAIL_STRICT=false is the deliberate opt-out for a production box that really
+  // does not send mail.
+  assertEmailConfiguration();
   app.listen(port, () => console.log(`TrainHub360 API on :${port}`));
   scheduleKpiJob();
   scheduleContentLifecycleJob();

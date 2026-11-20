@@ -19,6 +19,8 @@ tags:
   - name: engagement
     description: Messaging, bookings, and calendar
   - name: auth
+  - name: notifications
+    description: In-app notification bell (scoped to the calling user)
   - name: enrolments
   - name: analytics
   - name: governance
@@ -118,6 +120,9 @@ paths:
       operationId: submitAssessmentAttempt
       tags: [learning]
       summary: Legacy course-level attempt (removed; use assessments/{assessmentId}/attempts)
+      description: >
+        Returns 410. Client-submitted scores are never accepted: competence comes from the
+        applied assessment, graded on the server.
       deprecated: true
       parameters:
         - name: courseId
@@ -326,6 +331,11 @@ paths:
       operationId: submitAttemptAnswers
       tags: [learning]
       summary: Submit answers (graded server-side)
+      description: >
+        Objective questions are graded here, on the server. A submitted score in the body is
+        ignored; there is no field for one. An applied assessment whose questions include a
+        scenario or a short answer goes to status "grading" instead of being marked, and a
+        trainer finishes it with POST /attempts/{attemptId}/grade.
       parameters:
         - name: attemptId
           in: path
@@ -362,6 +372,11 @@ paths:
       operationId: listSessions
       tags: [engagement]
       summary: List upcoming training sessions
+      description: >
+        Every session in the organization is listed, but joinUrl and location are only sent to
+        someone who could attend: org staff, programme staff, the session's trainer, an invited
+        learner, or a learner enrolled on the session's course. Everyone else gets nulls and
+        canJoin=false.
       responses:
         "200":
           description: Sessions
@@ -454,6 +469,10 @@ paths:
       operationId: listThreadMessages
       tags: [engagement]
       summary: List messages in a thread
+      description: >
+        Participants, and programme admins of the thread's programme, only. Anyone else gets
+        404 rather than 403, so a thread's existence is not leaked. Stakeholders are denied.
+        Access is re-checked on every read, so a removed member loses it immediately.
       parameters:
         - name: threadId
           in: path
@@ -473,6 +492,9 @@ paths:
       operationId: sendThreadMessage
       tags: [engagement]
       summary: Send a message in a thread
+      description: >
+        The author is taken from the token; any author or authorRole in the body is ignored.
+        Escalation is cleared only when the poster holds a trainer role on that thread.
       parameters:
         - name: threadId
           in: path
@@ -615,6 +637,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List the caller's notifications
+      description: Always scoped to the authenticated user. Newest first.
+      parameters:
+        - name: unread
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: Only notifications that have not been read
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Notifications plus the unread count for the bell badge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationList"
+  /notifications/{notificationId}/read:
+    post:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark one of the caller's notifications as read
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Marked read (or already read)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationReadResult"
+        "404":
+          description: No notification with that id belongs to the caller
+  /notifications/read-all:
+    post:
+      operationId: markAllNotificationsRead
+      tags: [notifications]
+      summary: Mark every unread notification of the caller as read
+      responses:
+        "200":
+          description: Number of notifications updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationReadAllResult"
+
   /enrolments:
     get:
       operationId: listEnrolments
@@ -672,7 +749,12 @@ paths:
     delete:
       operationId: deleteEnrolment
       tags: [enrolments]
-      summary: Delete enrolment (requires second-admin approval per governance)
+      summary: Withdraw an enrolment (requires second-admin approval per governance)
+      description: >
+        Removing a learner's last grant in a programme withdraws their enrolments: the row is
+        kept with status "withdrawn", withdrawnAt and withdrawnBy, so scores and history survive
+        and the learner's thread access is revoked. A withdrawal is excluded from active KPIs
+        and from review-credit eligibility unless an admin overrides it.
       parameters:
         - name: enrolmentId
           in: path
@@ -968,9 +1050,13 @@ paths:
           description: Invalid token
   /programmes/{programmeId}/members:
     post:
-      operationId: addProgrammeMember
+      operationId: assignProgrammeMember
       tags: [programmes]
       summary: Add a member with one or more roles
+      description: >
+        Adds role grants; it never removes another grant, so a person can hold several roles in
+        one programme (a Trainer who is also Programme Admin). Idempotent through the unique
+        grant. A learner grant creates the enrolment.
       parameters:
         - name: programmeId
           in: path
@@ -1004,6 +1090,10 @@ paths:
       operationId: updateProgrammeMember
       tags: [programmes]
       summary: Update member name and/or replace their full programme role set
+      description: >
+        `{ fromRole, toRole }` changes one named grant; `roles` replaces the whole set. No route
+        may remove or change an admin grant without assertNotLastProgrammeAdmin, which returns
+        409, and every multi-step change runs in one transaction.
       parameters:
         - name: programmeId
           in: path
@@ -1275,8 +1365,756 @@ paths:
                 format: binary
         "403":
           description: Not permitted
+  # --- Phase 1.7: user management (documented 2026-11-20) -----------------------------------
+  /users:
+    get:
+      operationId: listUsers
+      tags: [governance]
+      summary: Directory
+      description: >
+        Org staff (owner/admin) get the full directory: department, job function, activation
+        state, and every grant. A programme admin gets identity plus their own programmes'
+        grants only - other programmes' grants and department/job function are never sent.
+        Anyone else gets 403.
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Matches name or email
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Directory entries, scoped to the caller's organization
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DirectoryUser"
+        "403":
+          description: Directory access required
+    post:
+      operationId: createUser
+      tags: [governance]
+      summary: Create a user and send an activation link
+      description: >
+        Org staff only. The account is created with a random, unguessable password, so nobody
+        can log in until the activation link is used. The activation token is never returned
+        outside NODE_ENV=test.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                department: { type: string }
+                jobFunction: { type: string }
+      responses:
+        "201":
+          description: Created user (activation email sent; emailSent=false when the send failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectoryUser"
+        "400":
+          description: Invalid email or missing name
+        "409":
+          description: Email already in use in this or another organization
+  /users/{userId}:
+    patch:
+      operationId: updateUser
+      tags: [governance]
+      summary: Rename, change details or deactivate
+      description: >
+        Changing an owner's own grants or active state is owner-only; an org admin attempting it
+        gets 403. Deactivating the last active owner, or removing your own last org-staff role,
+        is a 409. A rename only touches courses in the caller's organization, and only rows
+        whose trainerId is null.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                department: { type: [string, "null"] }
+                jobFunction: { type: [string, "null"] }
+                isActive: { type: boolean }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectoryUser"
+        "403":
+          description: Only an owner may change an owner
+        "409":
+          description: Would leave the organization without an active owner, or yourself without a staff role
+  /users/{userId}/org-role:
+    post:
+      operationId: setOrgRole
+      tags: [governance]
+      summary: Grant or remove an organization-wide role
+      description: >
+        `role: ""` removes the org-wide grant. Removing or changing an owner's role is
+        owner-only (403 for an admin); removing the last owner's role is 409.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  description: owner, admin, trainer, learner, stakeholder, or "" to remove
+      responses:
+        "200":
+          description: Updated grants
+        "403":
+          description: Only an owner may change an owner
+        "409":
+          description: Would remove the last owner, or your own last staff role
+  /users/{userId}/resend-activation:
+    post:
+      operationId: resendActivation
+      tags: [governance]
+      summary: Send a fresh activation link to a user who has not activated
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Link reissued (emailSent reports the send)
+        "409":
+          description: The user has already activated
+  # --- Phase 1: programme memberships ---------------------------------------------------------
+  /programmes/{programmeId}/members/bulk-remove:
+    post:
+      operationId: bulkRemoveProgrammeMembers
+      tags: [governance]
+      summary: Remove several people at once
+      description: >
+        At or above the organization's bulkRemovalThreshold this creates a member_bulk delete
+        request instead of removing anyone; the request needs a different approver than its
+        requester.
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userIds]
+              properties:
+                userIds:
+                  type: array
+                  items: { type: string }
+                reason: { type: string }
+      responses:
+        "200":
+          description: Removed, or a pending request was created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer }
+                  pendingRequestId: { type: [string, "null"] }
+  /delete-requests:
+    get:
+      operationId: listDeleteRequests
+      tags: [governance]
+      summary: Pending destructive requests
+      responses:
+        "200":
+          description: Requests the caller may act on
+  /delete-requests/{requestId}/approve:
+    post:
+      operationId: approveDeleteRequest
+      tags: [governance]
+      summary: Approve a destructive request
+      description: >
+        The approver must be an admin of the target's own programme, or an org admin/owner, and
+        never the requester.
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Approved and applied
+        "403":
+          description: Not an admin of the target's programme, or the requester
+  /delete-requests/{requestId}/reject:
+    post:
+      operationId: rejectDeleteRequest
+      tags: [governance]
+      summary: Reject a destructive request
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Rejected
+        "403":
+          description: Not an admin of the target's programme, or the requester
+  # --- Auth additions -------------------------------------------------------------------------
+  /auth/activate:
+    post:
+      operationId: activateAccount
+      tags: [auth]
+      summary: Set a password with an activation token
+      description: Single use, 7-day expiry, same password policy as reset. The token is rejected after use or expiry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 12 }
+      responses:
+        "200":
+          description: Activated
+        "400":
+          description: Invalid, used or expired token, or a password that fails the policy
+  /auth/forgot-password:
+    post:
+      operationId: requestPasswordReset
+      tags: [auth]
+      summary: Request a reset link
+      description: Always 200, so the endpoint does not reveal which addresses exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: Accepted
+  /auth/reset-password:
+    post:
+      operationId: resetPassword
+      tags: [auth]
+      summary: Reset a password with a token
+      description: Bumps tokenVersion, so every existing session for that user is invalid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 12 }
+      responses:
+        "200":
+          description: Reset
+        "400":
+          description: Invalid, used or expired token, or a password that fails the policy
+  /readyz:
+    get:
+      operationId: readiness
+      tags: [health]
+      summary: Readiness (database reachable)
+      responses:
+        "200":
+          description: Ready
+        "503":
+          description: Dependency unavailable
+  # --- Sessions, jobs and notifications -------------------------------------------------------
+  /sessions/{sessionId}/sync-calendar:
+    post:
+      operationId: syncSessionCalendar
+      tags: [engagement]
+      summary: Push the session to connected calendars
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Sync result
+  /nudge/dispatch:
+    post:
+      operationId: dispatchNudges
+      tags: [analytics]
+      summary: Dispatch nudges for a learner (org staff)
+      responses:
+        "200":
+          description: Dispatch result
+  /sla/run:
+    post:
+      operationId: runSlaJob
+      tags: [engagement]
+      summary: Run the messaging SLA escalation now (org staff)
+      responses:
+        "200":
+          description: Escalation result
+  /content-lifecycle/run:
+    post:
+      operationId: runContentLifecycle
+      tags: [learning]
+      summary: Archive expired content and notify owners (org staff)
+      responses:
+        "200":
+          description: Lifecycle result
+  /certificates/check-expiry:
+    post:
+      operationId: checkCertificateExpiry
+      tags: [learning]
+      summary: Notify learners whose certificates are expiring (org staff)
+      responses:
+        "200":
+          description: Expiry check result
+  /review-credits/lock:
+    post:
+      operationId: lockReviewCredits
+      tags: [review-credit]
+      summary: Lock a review-credit period
+      responses:
+        "200":
+          description: Locked
+  # --- Organizations --------------------------------------------------------------------------
+  /organizations:
+    post:
+      operationId: createOrganization
+      tags: [governance]
+      summary: Create an organization (platform administration)
+      responses:
+        "201":
+          description: Created organization
+  /organizations/{orgId}:
+    patch:
+      operationId: updateOrganization
+      tags: [governance]
+      summary: Update organization settings (org staff)
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated organization
+  /organizations/{orgId}/verify-domain:
+    post:
+      operationId: verifyOrganizationDomain
+      tags: [governance]
+      summary: Verify an email domain for the organization (org staff)
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Verification result
+  /organizations/{orgId}/learners/import:
+    post:
+      operationId: importLearners
+      tags: [governance]
+      summary: Bulk-import learners (org staff)
+      description: Each created account gets a random password and its own activation token.
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Import report
+  # --- Calendar, certificates, cohorts --------------------------------------------------------
+  /calendar/connections:
+    get:
+      operationId: listCalendarConnections
+      tags: [engagement]
+      summary: Connected external calendars
+      responses:
+        "200":
+          description: Connections
+    post:
+      operationId: createCalendarConnection
+      tags: [engagement]
+      summary: Connect an external calendar (free/busy reading)
+      responses:
+        "201":
+          description: Connection created
+  /calendar/connections/{connectionId}:
+    delete:
+      operationId: deleteCalendarConnection
+      tags: [engagement]
+      summary: Disconnect an external calendar
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Disconnected
+  /certificates:
+    get:
+      operationId: listCertificates
+      tags: [learning]
+      summary: Certificates the caller may see
+      responses:
+        "200":
+          description: Certificates
+  /recognitions:
+    get:
+      operationId: listRecognitions
+      tags: [learning]
+      summary: Recognitions the caller may see
+      responses:
+        "200":
+          description: Recognitions
+  /cohorts:
+    get:
+      operationId: listCohorts
+      tags: [learning]
+      summary: Cohorts
+      responses:
+        "200":
+          description: Cohorts
+    post:
+      operationId: createCohort
+      tags: [learning]
+      summary: Create a cohort
+      description: Requires a staff role on the cohort's programme.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, programmeId]
+              properties:
+                name: { type: string }
+                programmeId: { type: string }
+      responses:
+        "201":
+          description: Created cohort
+        "403":
+          description: Not programme staff
+  /cohorts/{cohortId}/enrol:
+    post:
+      operationId: enrolCohort
+      tags: [learning]
+      summary: Enrol a cohort's learners on a course
+      parameters:
+        - name: cohortId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Enrolment result
+  /cohorts/{cohortId}/members:
+    post:
+      operationId: addCohortMembers
+      tags: [learning]
+      summary: Add learners to a cohort
+      parameters:
+        - name: cohortId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated cohort
+  # --- Uploads --------------------------------------------------------------------------------
+  /uploads/evidence:
+    post:
+      operationId: uploadEvidence
+      tags: [learning]
+      summary: Upload a learner's evidence for an external-link completion
+      description: >
+        Any organization member. Only an upload made here can be attached as evidence; a staff
+        content upload is rejected as proof.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Stored file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoredFile"
+        "400":
+          description: Missing file, or a type outside the allowlist
+        "413":
+          description: Over the size limit
+  /content-progress/{progressId}/evidence:
+    get:
+      operationId: getEvidenceFile
+      tags: [learning]
+      summary: Download the evidence a learner attached
+      description: The uploader, or programme staff of the item's programme.
+      parameters:
+        - name: progressId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: File bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "403":
+          description: Not the uploader or programme staff
+  # --- Destructive requests, feedback and authoring -------------------------------------------
+  /assessments/{assessmentId}/delete-requests:
+    post:
+      operationId: requestAssessmentDeletion
+      tags: [governance]
+      summary: Request deletion of an assessment
+      description: Needs approval by an admin of the assessment's programme who is not the requester.
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Pending request
+  /courses/{courseId}/delete-requests:
+    post:
+      operationId: requestCourseDeletion
+      tags: [governance]
+      summary: Request deletion of a course
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Pending request
+  /programmes/{programmeId}/delete-requests:
+    post:
+      operationId: requestProgrammeDeletion
+      tags: [governance]
+      summary: Request deletion of a programme
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Pending request
+  /modules/{moduleId}/delete-requests:
+    post:
+      operationId: requestModuleDeletion
+      tags: [governance]
+      summary: Request deletion of a module
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Pending request
+  /courses/{courseId}/feedback:
+    post:
+      operationId: submitCourseFeedback
+      tags: [learning]
+      summary: Leave course feedback (enrolled learners)
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string }
+      responses:
+        "201":
+          description: Feedback recorded
+        "403":
+          description: Not enrolled
+  /courses/{courseId}/modules/{moduleId}/explain:
+    post:
+      operationId: explainConcept
+      tags: [learning]
+      summary: Explain a concept in the context of the module (AI help)
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Explanation
+  /courses/{courseId}:
+    patch:
+      operationId: updateCourse
+      tags: [learning]
+      summary: Edit a course
+      description: trainerId takes precedence over the legacy trainer display name.
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated course
+  /programmes/{programmeId}:
+    patch:
+      operationId: updateProgramme
+      tags: [learning]
+      summary: Edit a programme
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated programme
+  /modules/{moduleId}:
+    patch:
+      operationId: updateModule
+      tags: [learning]
+      summary: Edit a module
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated module
 components:
   schemas:
+    DirectoryUser:
+      type: object
+      required: [id, name, email, isActive, roles]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        isActive: { type: boolean }
+        department: { type: [string, "null"], description: Org staff only }
+        jobFunction: { type: [string, "null"], description: Org staff only }
+        activatedAt: { type: [string, "null"], format: date-time, description: Org staff only }
+        roles:
+          type: array
+          description: Org staff see every grant; a programme admin sees only their own programmes'
+          items:
+            type: object
+            properties:
+              role: { type: string }
+              programmeId: { type: [string, "null"] }
+              programmeName: { type: [string, "null"] }
+    StoredFile:
+      type: object
+      required: [storedFileId, fileName, mimeType, sizeBytes, checksum, purpose]
+      properties:
+        storedFileId: { type: string }
+        fileName: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer }
+        checksum: { type: string, description: SHA-256 of the stored bytes }
+        purpose: { type: string, enum: [content, evidence] }
+    Notification:
+      type: object
+      required: [id, type, title, createdAt, readAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        orgId: { type: [string, "null"] }
+        type: { type: string, description: e.g. session_invite, certificate_expiring }
+        title: { type: string }
+        body: { type: [string, "null"] }
+        link: { type: [string, "null"], description: App-relative path, e.g. /calendar }
+        readAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    NotificationList:
+      type: object
+      required: [items, unread]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
+        unread:
+          type: integer
+          description: Unread count for the bell badge
+    NotificationReadResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    NotificationReadAllResult:
+      type: object
+      required: [ok, updated]
+      properties:
+        ok: { type: boolean }
+        updated: { type: integer }
     HealthStatus:
       type: object
       properties:
