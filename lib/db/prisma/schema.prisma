@@ -115,10 +115,15 @@ model Module {
   @@map("modules")
 }
 
+// An assessment is edited in place while it is unpublished. Publishing freezes the current set of
+// questions: an edit to a published row moves `publishedAt` aside, bumps `version` and copies the
+// questions into a new row, so a past attempt stays attached to the questions it was graded
+// against. "The live copy" is therefore one predicate: isPublished and publishedAt not null.
 model Assessment {
   id       String @id @default(cuid())
   moduleId String @map("module_id")
   module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  // "recall" is objective only; "applied" must carry at least one scenario or short answer.
   type     String @default("recall")
   title    String @default("")
   maxScore Float  @default(100) @map("max_score")
@@ -126,13 +131,18 @@ model Assessment {
   maxAttempts Int? @map("max_attempts")
   timeLimitMinutes Int? @map("time_limit_minutes")
   isPublished Boolean @default(false) @map("is_published")
+  // When the current question set was frozen; null once this row is superseded.
+  publishedAt DateTime? @map("published_at")
   version   Int     @default(1)
+  // The row this version continues from, so a chain can be walked either way.
+  supersedesId String? @map("supersedes_id") @db.NVarChar(64)
   isArchived Boolean @default(false) @map("is_archived")
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
   questions Question[]
   attempts  AssessmentAttempt[]
 
+  @@index([moduleId])
   @@map("assessments")
 }
 
@@ -146,6 +156,9 @@ model Question {
   scenarioContext String? @map("scenario_context") @db.NVarChar(Max)
   points          Float  @default(1)
   rubric          String? @db.NVarChar(Max)
+  // Accepted forms for a short answer, as a JSON array, so an objective-enough answer can be
+  // marked without a person. Empty means a person must mark it.
+  acceptedAnswers String? @map("accepted_answers") @db.NVarChar(Max)
   options         QuestionOption[]
   answers         AttemptAnswer[]
 
@@ -174,6 +187,8 @@ model AssessmentAttempt {
   attemptNumber Int   @default(1) @map("attempt_number")
   startedAt    DateTime @default(now()) @map("started_at")
   submittedAt  DateTime? @map("submitted_at")
+  // in_progress -> submitted -> grading -> graded. A purely objective attempt goes straight to
+  // graded on submit; anything with a scenario or short answer waits in grading for a person.
   status       String @default("in_progress")
   score        Float?
   maxScore     Float? @map("max_score")
@@ -184,6 +199,8 @@ model AssessmentAttempt {
   gradedAt     DateTime? @map("graded_at")
   answers      AttemptAnswer[]
 
+  @@index([assessmentId, learnerId])
+  @@index([status])
   @@map("assessment_attempts")
 }
 
@@ -193,7 +210,10 @@ model AttemptAnswer {
   attempt        AssessmentAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
   questionId     String @map("question_id")
   question       Question @relation(fields: [questionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  answer         String @db.NVarChar(Max)
+  // `answer` holds the text of a scenario or short answer; choice kinds keep their selection in
+  // `optionIds`, so grading never parses JSON out of a string column.
+  answer         String? @db.NVarChar(Max)
+  optionIds      String? @map("option_ids") @db.NVarChar(Max)
   pointsAwarded  Float? @map("points_awarded")
   autoGraded     Boolean @default(false) @map("auto_graded")
   graderComment  String? @map("grader_comment") @db.NVarChar(Max)
@@ -495,11 +515,15 @@ model Certificate {
   courseId          String    @map("course_id")
   course            Course    @relation(fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   enrolmentId       String?   @map("enrolment_id")
+  // The applied attempt that made the learner competent, so a certificate points at its evidence
+  // and not only at the enrolment.
+  attemptId         String?   @map("attempt_id")
   issuedAt          DateTime  @default(now()) @map("issued_at")
   expiresAt         DateTime? @map("expires_at")
   status            String    @default("active")
   certificateNumber String    @unique @default(cuid()) @map("certificate_number") @db.NVarChar(64)
 
+  @@index([learnerId])
   @@map("certificates")
 }
 

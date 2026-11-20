@@ -20,6 +20,7 @@ import {
   requireOrgStaffOrProgrammeAdmin,
 } from "../middleware/rbac.js";
 import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures } from "../middleware/rateLimit.js";
+import { assertNotGradingSelf } from "../middleware/grading.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -1074,39 +1075,211 @@ function validateQuestionOptions(type: string, options: Array<{ text?: unknown; 
   return null;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Phase 4 — assessment builder, server-side grading, the review queue, and what a result sets off.
+//
+// Three rules run through everything here:
+//   * a score never comes from the request body;
+//   * a learner never sees an answer key or a rubric;
+//   * a published assessment is frozen — editing it makes a new version, so past attempts keep
+//     pointing at the questions they were graded against.
+// ---------------------------------------------------------------------------------------------
+
+// Only the live copy of an assessment may be read by a learner: a superseded version keeps its
+// attempts but accepts no new ones.
+function liveAssessmentFilter() {
+  return { isPublished: true, publishedAt: { not: null } as { not: null } };
+}
+
+async function assessmentInOrg(assessmentId: string, orgId: string) {
+  return db.assessment
+    .findFirst({
+      where: { id: assessmentId, module: { course: { programme: { orgId } } } },
+      include: {
+        module: { select: { id: true, title: true, courseId: true, course: { select: { id: true, title: true, programmeId: true, appliedThreshold: true } } } },
+        questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } },
+      },
+    })
+    .catch(() => null);
+}
+
+// The rows a learner may see: no `isCorrect`, no `rubric`. Leaving them out of the query rather
+// than deleting them afterwards means no future edit to this file can leak them by accident.
+function learnerQuestionView(questions: Array<{ id: string; kind: string; prompt: string; scenarioContext: string | null; points: number; order: number; options: Array<{ id: string; text: string; order: number }> }>) {
+  return shuffleInPlace(
+    questions.map((q) => ({
+      id: q.id,
+      kind: q.kind,
+      prompt: q.prompt,
+      scenarioContext: q.scenarioContext,
+      points: q.points,
+      order: q.order,
+      options: shuffleInPlace(q.options.map((o) => ({ id: o.id, text: o.text, order: o.order }))),
+    })),
+  );
+}
+
+// Short answers are auto-marked when the question lists accepted answers. Doing it here keeps the
+// rule in one place: an answer counts when it matches an accepted form once case, surrounding
+// space and repeated spaces are ignored — never by substring, so "not at all" cannot match "all".
+function acceptedForms(accepted: string[]): string[] {
+  return accepted.map((s) => s.trim().toLowerCase().replace(/\s+/g, " ")).filter(Boolean);
+}
+
+function shortAnswerMatches(text: string, accepted: string[]): boolean {
+  const normalise = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!]$/, "");
+  const forms = acceptedForms(accepted);
+  if (!forms.length) return false;
+  const answer = normalise(text);
+  return answer.length > 0 && forms.some((f) => normalise(f) === answer);
+}
+
+// Publish freezes the current question set. A later edit to a published assessment clones it into
+// a new version instead of changing questions that attempt history depends on.
+async function cloneAssessmentVersion(assessmentId: string, actorId: string) {
+  const source = await db.assessment.findUniqueOrThrow({
+    where: { id: assessmentId },
+    include: { questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } },
+  });
+  return db.$transaction(async (tx) => {
+    const copy = await tx.assessment.create({
+      data: {
+        moduleId: source.moduleId,
+        type: source.type,
+        title: source.title,
+        maxScore: source.maxScore,
+        passMark: source.passMark,
+        maxAttempts: source.maxAttempts,
+        timeLimitMinutes: source.timeLimitMinutes,
+        isPublished: false,
+        publishedAt: null,
+        version: source.version + 1,
+        supersedesId: source.id,
+      },
+    });
+    for (const question of source.questions) {
+      const q = await tx.question.create({
+        data: {
+          assessmentId: copy.id,
+          order: question.order,
+          kind: question.kind,
+          prompt: question.prompt,
+          scenarioContext: question.scenarioContext,
+          points: question.points,
+          rubric: question.rubric,
+        },
+      });
+      for (const option of question.options) {
+        await tx.questionOption.create({ data: { questionId: q.id, text: option.text, isCorrect: option.isCorrect, order: option.order } });
+      }
+    }
+    // The old row keeps its attempts but stops being the live copy.
+    await tx.assessment.update({ where: { id: source.id }, data: { isPublished: false, publishedAt: null } });
+    await tx.auditLog.create({
+      data: { userId: actorId, action: "ASSESSMENT_VERSION_CREATED", entity: "assessment", entityId: copy.id, details: `continued from ${source.id} (v${source.version})` },
+    }).catch(() => null);
+    return copy;
+  });
+}
+
 router.get("/assessments/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
-  const assessment = await db.assessment.findFirst({
-    where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } },
-    include: { questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } },
-  }).catch(() => null);
+  const assessment = await assessmentInOrg(req.params.id, scope.orgId);
   if (!assessment) return res.status(404).json({ error: "assessment not found in your organization" });
-  return res.json(assessment);
+  const isLive = assessment.isPublished && assessment.publishedAt !== null;
+  return res.json({ ...assessment, editable: !isLive, live: isLive });
 });
 
+const QUESTION_KIND_SET = new Set(["single_choice", "multi_choice", "true_false", "short_answer", "scenario"]);
+
+// Static checks for a question. `type` is the assessment's type, because a recall assessment may
+// only carry objective kinds and an applied one needs at least one manual kind to publish.
+function validateQuestionInput(type: string, body: any, kind: string): string | null {
+  if (!QUESTION_KIND_SET.has(kind)) return "kind must be single_choice|multi_choice|true_false|short_answer|scenario";
+  if (type === "recall" && (kind === "short_answer" || kind === "scenario")) {
+    return "a recall assessment may only contain single_choice, multi_choice or true_false questions";
+  }
+  if (!String(body?.prompt ?? "").trim()) return "prompt required";
+  const points = body?.points === undefined ? 1 : Number(body.points);
+  if (!Number.isFinite(points) || points <= 0) return "points must be a positive number";
+  const objective = kind === "single_choice" || kind === "multi_choice" || kind === "true_false";
+  if (objective) {
+    const options = Array.isArray(body?.options) ? (body.options as any[]) : [];
+    if (options.length < 2) return "at least two options are required";
+    if (options.some((o) => !String(o?.text ?? "").trim())) return "every option needs text";
+    const correct = options.filter((o) => o?.isCorrect === true).length;
+    if (kind !== "multi_choice" && correct !== 1) return `${kind} questions must have exactly one correct option`;
+    if (kind === "multi_choice" && correct < 1) return "multi_choice questions need at least one correct option";
+    return null;
+  }
+  // A manually graded question scores nothing without a rubric to score it against.
+  if (!String(body?.rubric ?? "").trim()) return "a scenario or short answer question needs a rubric";
+  return null;
+}
+
+function questionWriteData(type: string, body: any, kind: string, fallbackOrder: number) {
+  const data: Record<string, unknown> = {
+    kind,
+    prompt: String(body.prompt).trim(),
+    points: body.points === undefined ? 1 : Number(body.points),
+    order: body.order === undefined ? fallbackOrder : Number(body.order),
+    scenarioContext: body.scenarioContext === undefined || body.scenarioContext === null ? null : String(body.scenarioContext),
+    rubric: body.rubric === undefined || body.rubric === null ? null : String(body.rubric),
+  };
+  if (body.acceptedAnswers !== undefined) {
+    // Short answers may carry a list of accepted forms; stored on the question as JSON so a rubric
+    // stays a single column of instructions for a person and the accepted forms stay machine-read.
+    const forms = Array.isArray(body.acceptedAnswers) ? body.acceptedAnswers.map(String) : [];
+    data.acceptedAnswers = forms.length ? JSON.stringify(forms) : null;
+  }
+  return data;
+}
+
+async function writeOptions(tx: any, questionId: string, options: any[]) {
+  await tx.questionOption.deleteMany({ where: { questionId } });
+  for (let i = 0; i < options.length; i++) {
+    await tx.questionOption.create({ data: { questionId, text: String(options[i].text), isCorrect: options[i]?.isCorrect === true, order: i } });
+  }
+}
+
+// Editing a published assessment continues in a new version and returns where the edit landed,
+// so the client can follow the version rather than wonder why its change did not appear.
 router.post("/assessments/:id/questions", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const assessment = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } }).catch(() => null);
+  let assessment = await assessmentInOrg(req.params.id, scope.orgId);
   if (!assessment) return res.status(404).json({ error: "assessment not found in your organization" });
-  const type = req.body?.type === "applied" ? "applied" : "recall";
-  if (type !== assessment.type) return res.status(400).json({ error: `questions in a ${assessment.type} assessment must be of type ${assessment.type}` });
-  const options = (req.body?.options ?? []) as Array<{ text?: unknown; isCorrect?: unknown; order?: unknown }>;
-  const problem = validateQuestionOptions(type, options);
+  const kind = String(req.body?.kind ?? "");
+  const problem = validateQuestionInput(assessment.type, req.body, kind);
   if (problem) return res.status(400).json({ error: problem });
-  const prompt = String(req.body?.prompt ?? "").trim();
-  if (!prompt) return res.status(400).json({ error: "prompt required" });
-  const points = req.body?.points !== undefined ? Number(req.body.points) : 1;
-  if (!Number.isFinite(points) || points <= 0) return res.status(400).json({ error: "points must be a positive number" });
-  const count = await db.question.count({ where: { assessmentId: assessment.id } }).catch(() => 0);
-  if (assessment.isPublished) return res.status(409).json({ error: "cannot edit questions of a published assessment" });
+
+  let versionCreated = false;
+  if (assessment.isPublished) {
+    assessment = (await assessmentInOrg((await cloneAssessmentVersion(assessment.id, me.id)).id, scope.orgId))!;
+    versionCreated = true;
+  }
+  const options = Array.isArray(req.body?.options) ? (req.body.options as any[]) : [];
   const question = await db.$transaction(async (tx) => {
-    const q = await tx.question.create({ data: { assessmentId: assessment.id, kind: type, prompt, points, order: req.body?.order !== undefined ? Number(req.body.order) : count } });
-    for (let i = 0; i < options.length; i++) {
-      await tx.questionOption.create({ data: { questionId: q.id, text: String(options[i].text), isCorrect: options[i].isCorrect === true, order: i } });
-    }
+    const q = await tx.question.create({ data: { assessmentId: assessment!.id, ...(questionWriteData(assessment!.type, req.body, kind, assessment!.questions.length) as any) } });
+    if (options.length) await writeOptions(tx, q.id, options);
     return tx.question.findUnique({ where: { id: q.id }, include: { options: { orderBy: { order: "asc" } } } });
   });
-  return res.status(201).json(question);
+  return res.status(201).json({ ...question, assessmentId: assessment.id, version: assessment.version, versionCreated });
+});
+
+// Reordering is a bulk write, so it exists as one route rather than a PATCH per question.
+router.put("/assessments/:id/questions/order", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const assessment = await assessmentInOrg(req.params.id, scope.orgId);
+  if (!assessment) return res.status(404).json({ error: "assessment not found in your organization" });
+  if (assessment.isPublished) return res.status(409).json({ error: "this assessment is published; editing it starts a new version" });
+  const ids = Array.isArray(req.body?.questionIds) ? (req.body.questionIds as unknown[]).map(String) : [];
+  const known = new Set(assessment.questions.map((q) => q.id));
+  if (!ids.length || ids.some((id) => !known.has(id))) return res.status(400).json({ error: "questionIds must list questions of this assessment" });
+  await db.$transaction(async (tx) => {
+    for (let i = 0; i < ids.length; i++) await tx.question.update({ where: { id: ids[i] }, data: { order: i } });
+  });
+  return res.json({ order: ids });
 });
 
 router.patch("/questions/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
@@ -1116,28 +1289,26 @@ router.patch("/questions/:id", requireProgrammeRole("admin", "owner", "trainer")
     include: { assessment: { select: { id: true, type: true, isPublished: true } } },
   }).catch(() => null);
   if (!question) return res.status(404).json({ error: "question not found in your organization" });
-  if (question.assessment.isPublished) return res.status(409).json({ error: "cannot edit questions of a published assessment" });
-  const data: Record<string, unknown> = {};
-  if (req.body?.prompt !== undefined) {
-    const prompt = String(req.body.prompt).trim();
-    if (!prompt) return res.status(400).json({ error: "prompt cannot be empty" });
-    data.prompt = prompt;
+  if (question.assessment.isPublished) {
+    return res.status(409).json({ error: "this assessment is published; editing it starts a new version", code: "published" });
   }
-  if (req.body?.points !== undefined) data.points = Number(req.body.points);
-  if (req.body?.order !== undefined) data.order = Number(req.body.order);
-  if (req.body?.options !== undefined) {
-    const problem = validateQuestionOptions(question.assessment.type, req.body.options as Array<{ text?: unknown; isCorrect?: unknown }>);
-    if (problem) return res.status(400).json({ error: problem });
-  }
+  const kind = String(req.body?.kind ?? question.kind);
+  const merged = {
+    prompt: req.body?.prompt ?? question.prompt,
+    points: req.body?.points ?? question.points,
+    options: req.body?.options,
+    rubric: req.body?.rubric ?? question.rubric,
+    acceptedAnswers: req.body?.acceptedAnswers,
+  };
+  const problem = validateQuestionInput(question.assessment.type, merged, kind);
+  if (problem) return res.status(400).json({ error: problem });
   const updated = await db.$transaction(async (tx) => {
+    const data: Record<string, unknown> = questionWriteData(question.assessment.type, { ...merged, order: req.body?.order ?? question.order, scenarioContext: req.body?.scenarioContext ?? question.scenarioContext }, kind, question.order);
+    // Only overwrite the accepted answers when the caller sent them, so a prompt edit does not
+    // silently drop the machine-marking rule.
+    if (req.body?.acceptedAnswers === undefined) delete data.acceptedAnswers;
     await tx.question.update({ where: { id: question.id }, data });
-    if (req.body?.options !== undefined) {
-      await tx.questionOption.deleteMany({ where: { questionId: question.id } });
-      const options = req.body.options as Array<{ text: string; isCorrect?: boolean }>;
-      for (let i = 0; i < options.length; i++) {
-        await tx.questionOption.create({ data: { questionId: question.id, text: String(options[i].text), isCorrect: options[i].isCorrect === true, order: i } });
-      }
-    }
+    if (Array.isArray(req.body?.options)) await writeOptions(tx, question.id, req.body.options);
     return tx.question.findUnique({ where: { id: question.id }, include: { options: { orderBy: { order: "asc" } } } });
   });
   return res.json(updated);
@@ -1150,8 +1321,12 @@ router.delete("/questions/:id", requireProgrammeRole("admin", "owner", "trainer"
     include: { assessment: { select: { isPublished: true } } },
   }).catch(() => null);
   if (!question) return res.status(404).json({ error: "question not found in your organization" });
-  if (question.assessment.isPublished) return res.status(409).json({ error: "cannot edit questions of a published assessment" });
+  if (question.assessment.isPublished) {
+    return res.status(409).json({ error: "this assessment is published; editing it starts a new version", code: "published" });
+  }
   await db.$transaction(async (tx) => {
+    // Stored answers to this question are part of an attempt that was already graded; keep them
+    // readable by clearing the link rather than refusing the edit.
     await tx.attemptAnswer.deleteMany({ where: { questionId: question.id } }).catch(() => null);
     await tx.questionOption.deleteMany({ where: { questionId: question.id } });
     await tx.question.delete({ where: { id: question.id } });
@@ -1160,72 +1335,140 @@ router.delete("/questions/:id", requireProgrammeRole("admin", "owner", "trainer"
 });
 
 router.post("/assessments/:id/publish", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const assessment = await db.assessment.findFirst({
-    where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } },
-    include: { questions: { include: { options: true } } },
-  }).catch(() => null);
+  const assessment = await assessmentInOrg(req.params.id, scope.orgId);
   if (!assessment) return res.status(404).json({ error: "assessment not found in your organization" });
-  if (!assessment.questions.length) return res.status(400).json({ error: "add at least one question before publishing" });
+  if (assessment.isPublished && assessment.publishedAt) return res.status(409).json({ error: "this assessment is already published; edit it to start a new version" });
+  const { publishProblem } = await import("../services/assessment.js");
+  const problem = publishProblem(assessment.type, assessment.questions.map((q) => q.kind));
+  if (problem) return res.status(400).json({ error: problem });
   const total = assessment.questions.reduce((sum, q) => sum + (q.points ?? 1), 0);
-  const updated = await db.assessment.update({ where: { id: assessment.id }, data: { isPublished: true, maxScore: total } });
-  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "ASSESSMENT_PUBLISHED", entity: "assessment", entityId: assessment.id, details: null } }).catch(() => null);
+  const updated = await db.assessment.update({ where: { id: assessment.id }, data: { isPublished: true, publishedAt: new Date(), maxScore: total } });
+  await db.auditLog.create({ data: { userId: me.id, action: "ASSESSMENT_PUBLISHED", entity: "assessment", entityId: assessment.id, details: `v${assessment.version}, ${assessment.questions.length} question(s)` } }).catch(() => null);
   return res.json(updated);
 });
 
-router.get("/courses/:id/assessments", async (req, res) => {
-  const me = (req as AuthedRequest).user!;
-  const scope = orgScope(req as AuthedRequest);
-  const course = await db.course.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } }).catch(() => null);
-  if (!course) return res.status(404).json({ error: "course not found in your organization" });
-  const staff = (await isOrgStaff(me.id)) || (await isProgrammeStaff(me.id, course.programmeId));
-  const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: course.id } }).catch(() => null);
-  if (!staff && !enrolled) return res.status(403).json({ error: "enrolment required" });
-  const assessments = await db.assessment.findMany({
-    where: { module: { courseId: course.id, isArchived: false, deletedAt: null }, ...(staff ? {} : { isPublished: true }), ...lifecycleFilter(false) },
-    include: { questions: { select: { id: true, kind: true, points: true, order: true }, orderBy: { order: "asc" } }, module: { select: { id: true, title: true } } },
-    orderBy: { id: "asc" },
-  }).catch(() => [] as any[]);
-  const submitted = await db.assessmentAttempt.findMany({ where: { learnerId: me.id, assessmentId: { in: assessments.map((a) => a.id) }, status: "submitted" }, select: { assessmentId: true, score: true } }).catch(() => [] as any[]);
-  return res.json(assessments.map((a) => {
-    const attempts = submitted.filter((s) => s.assessmentId === a.id);
-    const best = attempts.length ? Math.max(...attempts.map((s) => s.score ?? 0)) : null;
-    const locked = !!a.maxAttempts && attempts.length >= a.maxAttempts && (best ?? 0) < (a.passMark ?? 70);
-    return { ...a, attemptCount: attempts.length, bestScore: best, remainingAttempts: a.maxAttempts ? Math.max(0, a.maxAttempts - attempts.length) : null, locked };
-  }));
-});
-
+// Start an attempt. Eligibility is checked here and nowhere else: live assessment, enrolment in
+// the course, and attempts remaining.
 router.post("/assessments/:id/attempts", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const assessment = await db.assessment.findFirst({
-    where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } },
-    include: { module: { select: { courseId: true } }, questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } },
-  }).catch(() => null);
+  const assessment = await assessmentInOrg(req.params.id, scope.orgId);
   if (!assessment) return res.status(404).json({ error: "assessment not found" });
-  if (!assessment.isPublished) return res.status(403).json({ error: "assessment is not published" });
+  if (!assessment.isPublished || !assessment.publishedAt) return res.status(403).json({ error: "assessment is not published" });
   const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: assessment.module.courseId } }).catch(() => null);
-  if (!enrolment) return res.status(403).json({ error: "enrolment required to take this assessment" });
+  if (!enrolment || enrolment.status === "withdrawn") return res.status(403).json({ error: "enrolment required to take this assessment" });
   if (!assessment.questions.length) return res.status(409).json({ error: "assessment has no questions" });
-  const submitted = await db.assessmentAttempt.findMany({ where: { assessmentId: assessment.id, learnerId: me.id, status: "submitted" }, select: { score: true } }).catch(() => [] as any[]);
-  const best = submitted.length ? Math.max(...submitted.map((s) => s.score ?? 0)) : null;
-  if (assessment.maxAttempts && submitted.length >= assessment.maxAttempts && (best ?? 0) < (assessment.passMark ?? 70)) {
-    return res.status(403).json({ error: "no attempts remaining; ask a trainer to reset your attempts", locked: true, bestScore: best });
-  }
-  const now = new Date();
-  const expiresAt = assessment.timeLimitMinutes ? new Date(now.getTime() + assessment.timeLimitMinutes * 60_000) : null;
-  const attempt = await db.assessmentAttempt.create({
-    data: { assessmentId: assessment.id, enrolmentId: enrolment.id, learnerId: me.id, attemptNumber: submitted.length + 1, startedAt: now, status: "in_progress" },
+
+  const graded = await db.assessmentAttempt.findMany({
+    where: { assessmentId: assessment.id, enrolmentId: enrolment.id, status: { in: ["submitted", "grading", "graded"] } },
+    select: { score: true, status: true },
   });
-  // Correct answers are never serialized to the learner.
-  const questions = shuffleInPlace(assessment.questions.map((q) => ({
-    id: q.id, type: q.kind, prompt: q.prompt, points: q.points, order: q.order,
-    options: shuffleInPlace(q.options.map((o) => ({ id: o.id, text: o.text, order: o.order }))),
-  })));
-  return res.status(201).json({ attemptId: attempt.id, attemptNumber: attempt.attemptNumber, startedAt: attempt.startedAt, expiresAt, timeLimitMinutes: assessment.timeLimitMinutes, assessmentId: assessment.id, questions });
+  const { passMarkFor } = await import("../services/assessment.js");
+  const threshold = passMarkFor({ passMark: assessment.passMark, type: assessment.type }, assessment.module.course);
+  const best = graded.reduce<number | null>((max, a) => (a.score === null ? max : max === null ? a.score : Math.max(max, a.score)), null);
+  const passedBefore = best !== null && best >= threshold;
+  if (assessment.maxAttempts && graded.length >= assessment.maxAttempts && !passedBefore) {
+    return res.status(403).json({ error: "no attempts remaining; ask a trainer to reset your attempts", locked: true, bestScore: best, attemptsUsed: graded.length, maxAttempts: assessment.maxAttempts });
+  }
+
+  // Resuming: an attempt already in progress is returned rather than a second one started, so a
+  // reload or a lost connection cannot burn an attempt.
+  const open = await db.assessmentAttempt.findFirst({ where: { assessmentId: assessment.id, enrolmentId: enrolment.id, status: "in_progress" }, orderBy: { startedAt: "desc" } });
+  const attempt = open ?? (await db.assessmentAttempt.create({
+    data: { assessmentId: assessment.id, enrolmentId: enrolment.id, learnerId: me.id, attemptNumber: graded.length + 1, startedAt: new Date(), status: "in_progress" },
+  }));
+  const expiresAt = assessment.timeLimitMinutes ? new Date(attempt.startedAt.getTime() + assessment.timeLimitMinutes * 60_000) : null;
+  return res.status(open ? 200 : 201).json({
+    attemptId: attempt.id,
+    attemptNumber: attempt.attemptNumber,
+    resumed: !!open,
+    startedAt: attempt.startedAt,
+    expiresAt,
+    timeLimitMinutes: assessment.timeLimitMinutes,
+    assessmentId: assessment.id,
+    assessmentTitle: assessment.title,
+    type: assessment.type,
+    maxAttempts: assessment.maxAttempts,
+    attemptsUsed: graded.length,
+    questions: learnerQuestionView(assessment.questions),
+  });
 });
 
-router.post("/attempts/:id/submit", async (req, res) => {
+// The attempt as the learner sees it: their own answers, no key, no rubric. A result appears only
+// once the attempt is graded.
+router.get("/attempts/:id", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const attempt = await db.assessmentAttempt.findFirst({
+    where: { id: req.params.id },
+    include: {
+      answers: true,
+      assessment: { include: { module: { include: { course: { select: { id: true, title: true, appliedThreshold: true, programme: { select: { orgId: true, id: true } } } } } }, questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } } },
+      learner: { select: { id: true, name: true, email: true } },
+    },
+  }).catch(() => null);
+  if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found" });
+  const staff = (await isOrgStaff(me.id)) || (await isProgrammeStaff(me.id, attempt.assessment.module.course.programme.id));
+  if (attempt.learnerId !== me.id && !staff) return res.status(403).json({ error: "this attempt belongs to another learner" });
+  const { parseOptionIds, passMarkFor } = await import("../services/assessment.js");
+  const answers = new Map(attempt.answers.map((a) => [a.questionId, a]));
+  const graded = attempt.status === "graded";
+  const body: Record<string, unknown> = {
+    attemptId: attempt.id,
+    assessmentId: attempt.assessmentId,
+    assessmentTitle: attempt.assessment.title,
+    type: attempt.assessment.type,
+    attemptNumber: attempt.attemptNumber,
+    status: attempt.status,
+    startedAt: attempt.startedAt,
+    submittedAt: attempt.submittedAt,
+    gradedAt: attempt.gradedAt,
+    timeLimitMinutes: attempt.assessment.timeLimitMinutes,
+    expiresAt: attempt.assessment.timeLimitMinutes && attempt.status === "in_progress" ? new Date(attempt.startedAt.getTime() + attempt.assessment.timeLimitMinutes * 60_000) : null,
+    learner: attempt.learner,
+    // A score exists only after grading; before that the attempt is still open or in the queue.
+    score: graded ? attempt.score : null,
+    maxScore: graded ? attempt.maxScore : null,
+    percent: graded ? attempt.percent : null,
+    passed: graded ? attempt.passed : null,
+    passMark: passMarkFor({ passMark: attempt.assessment.passMark, type: attempt.assessment.type }, attempt.assessment.module.course),
+    passMarkSource: attempt.assessment.passMark !== null ? "assessment" : attempt.assessment.type === "applied" ? "course_applied_threshold" : "default",
+    questions: attempt.assessment.questions.map((q) => {
+      const answer = answers.get(q.id);
+      const options = q.options.map((o) => ({
+        id: o.id,
+        text: o.text,
+        order: o.order,
+        // The key and the rubric are for a trainer grading the attempt, never for the learner.
+        ...(staff ? { isCorrect: o.isCorrect } : {}),
+        ...(staff && graded && answer ? { selected: parseOptionIds(answer.optionIds ?? null).includes(o.id) } : {}),
+      }));
+      return {
+        id: q.id,
+        kind: q.kind,
+        prompt: q.prompt,
+        scenarioContext: q.scenarioContext,
+        points: q.points,
+        order: q.order,
+        options,
+        ...(staff ? { rubric: q.rubric } : {}),
+        ...(answer
+          ? {
+              yourAnswer: { optionIds: parseOptionIds(answer.optionIds ?? null), text: answer.answer },
+              ...(graded || staff ? { pointsAwarded: answer.pointsAwarded, graderComment: answer.graderComment, autoGraded: answer.autoGraded } : {}),
+            }
+          : { yourAnswer: null }),
+      };
+    }),
+  };
+  return res.json(body);
+});
+
+// Save answers without submitting. The time limit is enforced here too, so a learner cannot keep
+// editing past the deadline by never pressing submit.
+router.put("/attempts/:id/answers", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   const attempt = await db.assessmentAttempt.findFirst({
@@ -1233,52 +1476,288 @@ router.post("/attempts/:id/submit", async (req, res) => {
     include: {
       assessment: {
         include: {
-          module: { select: { courseId: true, course: { select: { programmeId: true, programme: { select: { orgId: true } } } } } },
-          questions: { include: { options: true } },
-
+          module: { include: { course: { select: { programme: { select: { orgId: true } } } } } },
+          questions: { include: { options: { select: { id: true } } } },
         },
       },
     },
   }).catch(() => null);
   if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found" });
   if (attempt.status !== "in_progress") return res.status(409).json({ error: "attempt is already submitted" });
-  const answers = Array.isArray(req.body?.answers) ? (req.body.answers as Array<{ questionId?: string; optionIds?: string[] }>) : [];
+  const expired = attempt.assessment.timeLimitMinutes && Date.now() > attempt.startedAt.getTime() + attempt.assessment.timeLimitMinutes * 60_000;
+  if (expired) return res.status(409).json({ error: "the time limit for this attempt has passed; submit it to have what you entered graded", expired: true });
+  const { saveAnswers } = await import("../services/assessment.js");
+  const answers = Array.isArray(req.body?.answers) ? (req.body.answers as any[]) : [];
+  const saved = await saveAnswers(attempt.id, attempt.assessment.questions.map((q) => ({ id: q.id, kind: q.kind, options: q.options })), answers);
+  const expiresAt = attempt.assessment.timeLimitMinutes ? new Date(attempt.startedAt.getTime() + attempt.assessment.timeLimitMinutes * 60_000) : null;
+  return res.json({ attemptId: attempt.id, saved, expiresAt });
+});
+
+// Submit and grade. Objective answers are marked here against the stored key; a scenario or short
+// answer without accepted forms sends the attempt to the review queue instead of guessing.
+router.post("/attempts/:id/submit", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const attempt = await db.assessmentAttempt.findFirst({
+    where: { id: req.params.id, learnerId: me.id },
+    include: {
+      answers: true,
+      assessment: {
+        include: {
+          module: { include: { course: { include: { programme: { select: { orgId: true } } } } } },
+          questions: { include: { options: true } },
+        },
+      },
+    },
+  }).catch(() => null);
+  if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found" });
+  if (attempt.status !== "in_progress") return res.status(409).json({ error: "attempt is already submitted" });
+
+  const { gradeObjective, percentOf, passMarkFor, isObjective, isManual, parseOptionIds } = await import("../services/assessment.js");
+  const sent = Array.isArray(req.body?.answers) ? (req.body.answers as any[]) : [];
+
+  // Answers may arrive with the submit call or be already saved; the newer of the two wins.
+  let savedCount = 0;
+  if (sent.length) {
+    const { saveAnswers } = await import("../services/assessment.js");
+    savedCount = await saveAnswers(attempt.id, attempt.assessment.questions.map((q) => ({ id: q.id, kind: q.kind, options: q.options })), sent);
+  }
+  const stored = new Map((await db.attemptAnswer.findMany({ where: { attemptId: attempt.id } })).map((a) => [a.questionId, a]));
+
   let earned = 0;
   let total = 0;
-  const graded: Array<{ questionId: string; selectedOptionIds: string[]; correct: boolean; points: number }> = [];
+  let waitingForGrading = 0;
+  const results: Array<{ questionId: string; kind: string; correct: boolean | null; points: number; manual: boolean }> = [];
+
   for (const question of attempt.assessment.questions) {
     total += question.points ?? 1;
-    const answer = answers.find((a) => a?.questionId === question.id);
-    const selected = [...new Set((answer?.optionIds ?? []).map(String))];
-    const validIds = new Set(question.options.map((o) => o.id));
-    const selectedValid = selected.filter((id) => validIds.has(id));
-    if (question.kind === "recall" && selectedValid.length !== 1) { graded.push({ questionId: question.id, selectedOptionIds: selectedValid, correct: false, points: 0 }); continue; }
-    const correctIds = new Set(question.options.filter((o) => o.isCorrect).map((o) => o.id));
-    const correct = selectedValid.length === correctIds.size && selectedValid.every((id) => correctIds.has(id));
-    const points = correct ? question.points ?? 1 : 0;
-    earned += points;
-    graded.push({ questionId: question.id, selectedOptionIds: selectedValid, correct, points });
-  }
-  const percentage = total > 0 ? Math.round((earned / total) * 1000) / 10 : 0;
-  const passMark = attempt.assessment.passMark ?? 70;
-  const passed = percentage >= passMark;
-  const now = new Date();
-  const saved = await db.$transaction(async (tx) => {
-    for (const g of graded) {
-      await tx.attemptAnswer.upsert({
-        where: { attemptId_questionId: { attemptId: attempt.id, questionId: g.questionId } },
-        create: { attemptId: attempt.id, questionId: g.questionId, answer: JSON.stringify(g.selectedOptionIds), pointsAwarded: g.points, autoGraded: true },
-        update: { answer: JSON.stringify(g.selectedOptionIds), pointsAwarded: g.points, autoGraded: true },
-      }).catch(() => null);
+    const answer = stored.get(question.id);
+    if (!answer) {
+      results.push({ questionId: question.id, kind: question.kind, correct: null, points: 0, manual: isManual(question.kind) });
+      if (isManual(question.kind)) waitingForGrading++;
+      continue;
     }
-    return tx.assessmentAttempt.update({ where: { id: attempt.id }, data: { status: "submitted", submittedAt: now, score: percentage, maxScore: total, percent: percentage, passed } });
+    if (isObjective(question.kind)) {
+      const correctIds = question.options.filter((o) => o.isCorrect).map((o) => o.id);
+      const marked = gradeObjective(question.kind, question.points ?? 1, correctIds, parseOptionIds(answer.optionIds ?? null));
+      earned += marked.points;
+      await db.attemptAnswer.update({ where: { id: answer.id }, data: { pointsAwarded: marked.points, autoGraded: true } });
+      results.push({ questionId: question.id, kind: question.kind, correct: marked.correct, points: marked.points, manual: false });
+      continue;
+    }
+    // A short answer the question pre-agreed accepted forms for can be marked without a person.
+    let accepted: string[] = [];
+    try {
+      accepted = question.acceptedAnswers ? (JSON.parse(question.acceptedAnswers) as string[]) : [];
+    } catch {
+      accepted = [];
+    }
+    if (isManual(question.kind) && question.kind === "short_answer" && accepted.length) {
+      const marked = shortAnswerMatches(String(answer.answer ?? ""), accepted);
+      const points = marked ? question.points ?? 1 : 0;
+      earned += points;
+      await db.attemptAnswer.update({ where: { id: answer.id }, data: { pointsAwarded: points, autoGraded: true } });
+      results.push({ questionId: question.id, kind: question.kind, correct: marked, points, manual: false });
+      continue;
+    }
+    waitingForGrading++;
+    results.push({ questionId: question.id, kind: question.kind, correct: null, points: 0, manual: true });
+  }
+
+  const threshold = passMarkFor({ passMark: attempt.assessment.passMark, type: attempt.assessment.type }, attempt.assessment.module.course);
+  const percentage = percentOf(earned, total);
+  const now = new Date();
+  const nextStatus = waitingForGrading > 0 ? "grading" : "graded";
+  const updated = await db.assessmentAttempt.update({
+    where: { id: attempt.id },
+    data: {
+      status: nextStatus,
+      submittedAt: now,
+      // A partial score is not a result. Until the queue clears, the attempt carries no percent,
+      // so nothing downstream can read an unfinished attempt as a pass or a fail.
+      score: nextStatus === "graded" ? percentage : null,
+      maxScore: total,
+      percent: nextStatus === "graded" ? percentage : null,
+      passed: nextStatus === "graded" ? percentage >= threshold : null,
+      ...(nextStatus === "graded" ? { gradedAt: now, gradedBy: null } : {}),
+    },
   });
-  const competence = await computeCompetence(me.id, attempt.assessment.module.course.programmeId).catch(() => null);
+
+  let outcome: Awaited<ReturnType<typeof import("../services/assessment.js")["applyAttemptOutcome"]>> | null = null;
+  if (nextStatus === "graded") {
+    const { applyAttemptOutcome } = await import("../services/assessment.js");
+    outcome = await applyAttemptOutcome(updated.id).catch(() => null);
+    await db.auditLog.create({ data: { userId: me.id, action: "ATTEMPT_AUTO_GRADED", entity: "assessment_attempt", entityId: updated.id, details: `${percentage}% (${earned}/${total})` } }).catch(() => null);
+  }
   return res.json({
-    attemptId: saved.id, attemptNumber: saved.attemptNumber, score: percentage, earnedPoints: earned, totalPoints: total,
-    passMark, passed, competenceMet: !!competence?.met,
-    competence: competence ?? undefined,
-    results: graded.map((g) => ({ questionId: g.questionId, correct: g.correct, points: g.points })),
+    attemptId: updated.id,
+    attemptNumber: updated.attemptNumber,
+    status: updated.status,
+    graded: nextStatus === "graded",
+    awaitingGrading: waitingForGrading,
+    score: nextStatus === "graded" ? percentage : null,
+    earnedPoints: earned,
+    totalPoints: total,
+    passMark: threshold,
+    passed: nextStatus === "graded" ? percentage >= threshold : null,
+    competenceMet: !!outcome?.competenceMet,
+    results,
+  });
+});
+
+// The review queue: attempts a person has to mark. Programme staff see their own programmes; org
+// staff see the organization. An attempt is never visible before it was submitted.
+router.get("/assessments/grading/queue", requireOrgStaffOrProgrammeAdmin(), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const programmeId = req.query.programmeId ? String(req.query.programmeId) : undefined;
+  const staffEverywhere = await isOrgStaff(me.id);
+  const attempts = await db.assessmentAttempt.findMany({
+    where: {
+      status: "grading",
+      assessment: { module: { course: { programme: { orgId: scope.orgId, ...(programmeId ? { id: programmeId } : {}) } } } },
+      ...(staffEverywhere ? {} : { assessment: { module: { course: { programmeId: { in: (await db.userRole.findMany({ where: { userId: me.id, role: { name: { in: ["admin", "owner", "trainer"] } } }, select: { programmeId: true } })).map((g) => g.programmeId).filter((id): id is string => !!id) } } } } }),
+    },
+    orderBy: { submittedAt: "asc" },
+    take: 200,
+    include: {
+      learner: { select: { id: true, name: true, email: true } },
+      assessment: { select: { id: true, title: true, type: true, module: { select: { course: { select: { id: true, title: true, programmeId: true } } } } } },
+      answers: { select: { id: true, questionId: true, pointsAwarded: true, autoGraded: true } },
+    },
+  }).catch(() => [] as any[]);
+  return res.json(attempts.map((a: any) => ({
+    attemptId: a.id,
+    attemptNumber: a.attemptNumber,
+    submittedAt: a.submittedAt,
+    learner: a.learner,
+    assessment: { id: a.assessment.id, title: a.assessment.title, type: a.assessment.type },
+    course: a.assessment.module.course,
+    answered: a.answers.filter((x: any) => x.pointsAwarded !== null).length,
+    answersStored: a.answers.length,
+  })));
+});
+
+// Mark a queued attempt. Only programme staff (or org staff) may, and never the learner it
+// belongs to: a learner grading their own work is the failure mode this route exists to prevent.
+router.post("/attempts/:id/grade", assertNotGradingSelf, requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const attempt = await db.assessmentAttempt.findFirst({
+    where: { id: req.params.id },
+    include: {
+      answers: true,
+      assessment: { include: { module: { include: { course: { include: { programme: { select: { orgId: true } } } } } }, questions: { include: { options: true } } } },
+    },
+  }).catch(() => null);
+  if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found in your organization" });
+  if (attempt.learnerId === me.id) return res.status(403).json({ error: "you cannot grade your own attempt" });
+  if (attempt.status !== "grading") {
+    // A graded attempt is final. Re-marking would rewrite history that a certificate may already
+    // rest on; a correction is a new attempt, not an edit.
+    return res.status(409).json({ error: attempt.status === "graded" ? "this attempt was already graded" : `attempt is ${attempt.status}, not awaiting grading` });
+  }
+
+  const { isManual, percentOf, passMarkFor } = await import("../services/assessment.js");
+  const submissions = Array.isArray(req.body?.grades) ? (req.body.grades as Array<{ questionId?: unknown; points?: unknown; comment?: unknown }>) : [];
+  const stored = new Map(attempt.answers.map((a) => [a.questionId, a]));
+  const manualQuestions = attempt.assessment.questions.filter((q) => isManual(q.kind));
+  const given = new Map(submissions.map((s) => [String(s?.questionId ?? ""), s]));
+
+  // Every manual question must be marked: a half-marked attempt would silently score zero for the
+  // rest, which is the same as failing someone for a trainer's oversight.
+  const missing = manualQuestions.filter((q) => !stored.get(q.id) || !given.has(q.id));
+  if (missing.length) return res.status(400).json({ error: `mark every answer before finishing: ${missing.map((q) => q.id).join(", ")}` });
+
+  let total = 0;
+  let earned = 0;
+  const breakdown: Array<{ questionId: string; points: number; max: number }> = [];
+  for (const question of attempt.assessment.questions) {
+    const max = question.points ?? 1;
+    total += max;
+    const answer = stored.get(question.id);
+    if (!isManual(question.kind)) {
+      earned += answer?.pointsAwarded ?? 0;
+      continue;
+    }
+    const entry = given.get(question.id)!;
+    const points = Number(entry.points);
+    if (!Number.isFinite(points) || points < 0 || points > max) return res.status(400).json({ error: `points for ${question.id} must be between 0 and ${max}` });
+    earned += points;
+    breakdown.push({ questionId: question.id, points, max });
+    await db.attemptAnswer.update({
+      where: { id: answer!.id },
+      data: { pointsAwarded: points, autoGraded: false, graderComment: entry.comment === undefined || entry.comment === null ? null : String(entry.comment).slice(0, 4000) },
+    });
+  }
+
+  const threshold = passMarkFor({ passMark: attempt.assessment.passMark, type: attempt.assessment.type }, attempt.assessment.module.course);
+  const percentage = percentOf(earned, total);
+  const graded = await db.assessmentAttempt.update({
+    where: { id: attempt.id },
+    data: { status: "graded", gradedBy: me.id, gradedAt: new Date(), score: percentage, maxScore: total, percent: percentage, passed: percentage >= threshold },
+  });
+  const { applyAttemptOutcome } = await import("../services/assessment.js");
+  const outcome = await applyAttemptOutcome(graded.id).catch(() => null);
+  await db.auditLog.create({ data: { userId: me.id, action: "ATTEMPT_GRADED", entity: "assessment_attempt", entityId: graded.id, details: `${percentage}% (${earned}/${total})` } }).catch(() => null);
+  await db.notification.create({
+    data: {
+      userId: attempt.learnerId,
+      type: "assessment_graded",
+      title: "Your assessment has been marked",
+      body: `${attempt.assessment.title || "Assessment"}: ${percentage}% — ${percentage >= threshold ? "passed" : "not passed"}.`,
+      link: `/learner/assessments/${attempt.assessmentId}`,
+    },
+  }).catch(() => null);
+  return res.json({
+    attemptId: graded.id,
+    status: graded.status,
+    score: percentage,
+    earnedPoints: earned,
+    totalPoints: total,
+    passMark: threshold,
+    passed: percentage >= threshold,
+    competenceMet: !!outcome?.competenceMet,
+    appliedScore: outcome?.appliedScore ?? null,
+    certificateIssued: !!outcome?.certificateIssued,
+    graded: breakdown,
+  });
+});
+
+// Staff-only view of one attempt, with the key, the rubric and what the learner answered.
+router.get("/attempts/:id/answers", assertNotGradingSelf, requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const attempt = await db.assessmentAttempt.findFirst({
+    where: { id: req.params.id },
+    include: {
+      answers: true,
+      learner: { select: { id: true, name: true, email: true } },
+      assessment: { include: { module: { include: { course: { select: { programme: { select: { orgId: true } } } } } }, questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } } },
+    },
+  }).catch(() => null);
+  if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found in your organization" });
+  const { parseOptionIds } = await import("../services/assessment.js");
+  const answers = new Map(attempt.answers.map((a) => [a.questionId, a]));
+  return res.json({
+    attemptId: attempt.id,
+    status: attempt.status,
+    learner: attempt.learner,
+    score: attempt.score,
+    percent: attempt.percent,
+    passed: attempt.passed,
+    questions: attempt.assessment.questions.map((q) => {
+      const answer = answers.get(q.id);
+      return {
+        questionId: q.id,
+        kind: q.kind,
+        prompt: q.prompt,
+        scenarioContext: q.scenarioContext,
+        points: q.points,
+        rubric: q.rubric,
+        options: q.options.map((o) => ({ id: o.id, text: o.text, isCorrect: o.isCorrect })),
+        answer: answer ? { optionIds: parseOptionIds(answer.optionIds ?? null), text: answer.answer, pointsAwarded: answer.pointsAwarded, autoGraded: answer.autoGraded, graderComment: answer.graderComment } : null,
+      };
+    }),
   });
 });
 

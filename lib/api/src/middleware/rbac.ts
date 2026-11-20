@@ -67,6 +67,14 @@ async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
       const a = await db.assessment.findUnique({ where: { id: params.id }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);
       if (a) return a.module.course.programmeId;
     }
+    // An attempt has no programmeId of its own: it is reached through its assessment, which is
+    // the only description of who may act on it.
+    if (req.path.includes("/attempts/")) {
+      const attempt = await db.assessmentAttempt
+        .findUnique({ where: { id: params.id }, select: { assessment: { select: { module: { select: { course: { select: { programmeId: true } } } } } } } })
+        .catch(() => null);
+      if (attempt) return attempt.assessment.module.course.programmeId;
+    }
     if (req.path.includes("/enrolments/")) {
       const e = await db.enrolment.findUnique({ where: { id: params.id }, select: { programmeId: true } }).catch(() => null);
       if (e?.programmeId) return e.programmeId;
