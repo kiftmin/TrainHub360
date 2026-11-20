@@ -40,6 +40,7 @@ import { getToken, clearSession, getSessionUser } from '@/api/client';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
 import { Activate } from '@/pages/Activate';
+import { ResetPassword } from '@/pages/ResetPassword';
 import { Register } from '@/pages/Register';
 import { AiConceptExplainer } from '@/components/AiConceptExplainer';
 import { BulkImportButton } from '@/components/BulkImport';
@@ -179,12 +180,22 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 export function App() {
   const [authed, setAuthed] = useState(() => !!getToken());
   const [registering, setRegistering] = useState(false);
-  // Activation links arrive from an email with ?token=…, so they must render before any
-  // session exists. wouter is not mounted on the signed-out screen, so read the path here.
+  // Activation and password-reset links arrive from an email with ?token=…, so they must
+  // render before any session exists. wouter is not mounted on the signed-out screen, so
+  // read the path here. Round 7 gap 4 added /reset-password: the email already linked to it,
+  // but there was no route, so the link landed on the login page and the token was dropped.
   if (window.location.pathname === '/activate') {
     return <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Activate onDone={() => { window.history.replaceState(null, '', '/'); window.location.reload(); }} />
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>;
+  }
+  if (window.location.pathname === '/reset-password') {
+    return <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <ResetPassword onDone={() => { window.history.replaceState(null, '', '/'); window.location.reload(); }} />
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>;

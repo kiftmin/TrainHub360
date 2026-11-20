@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils';
 import { initials } from '@/components/shared';
 import {
   useNotifications,
+  useUnreadNotificationCount,
   useMarkNotificationRead,
   useMarkAllNotificationsRead,
   type Notification,
@@ -46,16 +47,19 @@ function NotificationRow({ item, onOpen }: { item: Notification; onOpen: (item: 
 }
 
 /**
- * A.2 notification bell. The badge shows the unread count from the server; opening the
- * panel is what loads the list, so an idle workspace makes no polling requests.
+ * A.2 notification bell. Round 7 gap 6: the unread count is fetched on load (one cheap
+ * request, refreshed once a minute), so the badge is right before the panel is ever opened.
+ * Opening the panel is what loads the list itself.
  */
 export function NotificationBell({ onNavigate }: { onNavigate: (path: string) => void }) {
   const [open, setOpen] = useState(false);
   const notifications = useNotifications(open);
+  const count = useUnreadNotificationCount(!open);
   const markRead = useMarkNotificationRead();
   const markAll = useMarkAllNotificationsRead();
   const items = notifications.data?.items ?? [];
-  const unread = notifications.data?.unread ?? 0;
+  // While the panel is open its own response is authoritative; otherwise use the badge query.
+  const unread = open ? notifications.data?.unread ?? 0 : count.data?.unread ?? 0;
   const label = useMemo(() => (unread > 99 ? '99+' : String(unread)), [unread]);
 
   function openItem(item: Notification) {

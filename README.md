@@ -49,6 +49,23 @@ Backfills (run after `db push`, idempotent):
 - `pnpm --filter @workspace/db exec tsx scripts/backfill-session-booking-org.ts`
 - `pnpm --filter @workspace/db exec tsx scripts/backfill-course-trainer-id.ts`
 
+### Email (A.2)
+Outbound mail goes through `lib/api/src/services/email.ts`, selected by `EMAIL_PROVIDER`:
+`smtp` (real mail, from the `SMTP_*` values) or unset/`console` (development: the whole
+message, links included, is printed to the API log).
+
+- **Production refuses to start** when the console sender is selected, when `SMTP_HOST` is
+  empty under `smtp`, or when `APP_BASE_URL` is missing or points at localhost. Set
+  `EMAIL_STRICT=false` only on a deployment that accepts logging its mail.
+- **A failed send is never swallowed.** It is logged and written to `email_failures`
+  (recipient, subject, kind, error, org), pruned after 30 days. Check it with
+  `SELECT TOP 20 * FROM email_failures ORDER BY created_at DESC`.
+- Activation links land on `/activate?token=…`, reset links on `/reset-password?token=…`;
+  both pages render before login. **People** shows who has not activated yet and can resend
+  the invitation.
+- The login throttle is always live (`LOGIN_THROTTLE_*`), and a lockout answers with the same
+  generic 401 as a wrong password.
+
 ### Content storage and uploads
 Learning content files go through `lib/api/src/services/storage.ts` (`StorageProvider`). The default local-disk provider writes under `STORAGE_DIR` (default `.storage/` relative to the API process); mount a persistent volume in production. S3/Azure providers are reserved but not implemented. Uploads are JSON base64 (`POST /api/modules/:moduleId/content/upload`) capped by `UPLOAD_MAX_BYTES` (default 50 MB) with an extension/MIME allowlist; `scanUpload` is a no-op hook today.
 

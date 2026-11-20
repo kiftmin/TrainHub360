@@ -659,6 +659,24 @@ model Notification {
   @@map("notifications")
 }
 
+// Round 7 gap 3: a send that failed used to vanish (`.catch(() => false)`). One row per
+// failure, so an operator can see that mail is not going out without reading debug logs.
+model EmailFailure {
+  id          String   @id @default(cuid())
+  to          String   @db.NVarChar(320)
+  subject     String   @db.NVarChar(512)
+  kind        String   @db.NVarChar(64)
+  error       String   @db.NVarChar(1000)
+  userId      String?  @map("user_id")
+  orgId       String?  @map("org_id")
+  contextJson String?  @map("context_json") @db.NVarChar(2000)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([orgId, createdAt])
+  @@map("email_failures")
+}
+
 model ReminderLog {
   id        String   @id @default(cuid())
   sessionId String   @map("session_id")

@@ -44,7 +44,7 @@ pnpm --filter @workspace/api run build
 pnpm --filter @workspace/api run test
 ```
 
-**Expect:** `tests 106`, `pass 106`, `fail 0`, `skipped 0`, about 40 s.
+**Expect:** `tests 120`, `pass 120`, `fail 0`, `skipped 0`, about 45 s.
 
 - `skipped` **must be 0**. If you see skips, `DATABASE_URL` was not read — check the `.env`
   location (repo root, not `lib/api`).
@@ -56,7 +56,7 @@ pnpm --filter @workspace/api run test
 
 **`$env:DATABASE_URL=""` will not do it**, and it is worth knowing why: every database suite
 loads the repo-root `.env` with dotenv, and dotenv treats an empty variable as unset — so it
-puts the real URL back and all 106 tests run green. That looks like a broken guard; it isn't.
+puts the real URL back and all 120 tests run green. That looks like a broken guard; it isn't.
 
 Use the dedicated script, which deletes `DATABASE_URL` (so the `.env` cannot supply one
 either) before any suite loads:
@@ -97,16 +97,17 @@ pnpm run typecheck
 pnpm run test:ui
 ```
 
-**Expect:** typecheck silent, then `Test Files 3 passed`, `Tests 23 passed`.
+**Expect:** typecheck silent, then `Test Files 4 passed`, `Tests 30 passed`.
 
 Two gotchas:
 - Without `--ignore-workspace` pnpm walks up and installs the backend instead.
 - The tests need **Node 22+** (jsdom 30 needs it). On Node 20 you get
   `webidl.util.markAsUncloneable is not a function`. `node -v` to check.
 
-The 7 new cases are in `frontend/src/a2-notifications.test.tsx` — activation page (no token,
+The 7 A.2 cases are in `frontend/src/a2-notifications.test.tsx` — activation page (no token,
 success, mismatched passwords, expired token) and the bell (list, badge, click-through marks
-read, empty state).
+read, empty state). The 7 gap cases are in `frontend/src/a2-gaps.test.tsx` — the reset page,
+the badge on load, and People's activation state with resend.
 
 ---
 
@@ -143,32 +144,37 @@ The bell in the top-right now shows a real unread count instead of a permanent d
 3. Click a row that has a link — it should mark that one read and navigate you there.
 4. Reopen: the badge count drops. "Mark all read" clears it.
 
-The badge only appears **after the panel has been opened once** — the count comes from the
-same request as the list, and the panel only fetches when open. That is deliberate: an idle
-workspace makes no polling requests.
+The badge is right **before** the panel is opened: a single cheap request
+(`GET /api/notifications?unread=true&limit=1`) runs on load and once a minute after that, so
+a notification that arrives while you work shows up without a reload. Opening the panel is
+still what loads the list itself.
 
 ### 3b. The activation page
 
 This is the one the old code got wrong (links were sent as bare `/activate?token=…`).
 
 1. As an org admin, add a learner in **People** with an email you can read.
-2. Watch Terminal 1 — you will see
-   `[email] to=… subject="Activate your TrainHub360 account"`.
-3. The console sender does not print the body, so read the token from the database:
+2. Watch Terminal 1 — the console sender now prints the **whole message**, body and link
+   included, between `─── [email] ───` lines:
 
-```powershell
-# with sqlcmd, or any SQL client
-sqlcmd -S localhost -U trainhub_test -P <password> -d TrainHub360_Test -C -Q "SELECT TOP 1 tokenHash FROM password_reset_tokens ORDER BY created_at DESC"
+```
+─────────────────────────────── [email] ───────────────────────────────
+to:      learner@example.com
+subject: Activate your TrainHub360 account
+
+Hello Learner, activate your TrainHub360 account (valid 7 days):
+http://localhost:5173/activate?token=1f3c…
+───────────────────────────────────────────────────────────────────────
 ```
 
-The stored value is a **hash**, so it cannot be turned back into the link. The reliable way to
-see the real URL is to install a fake SMTP catcher and read the message:
+3. Copy that link and open it. (No SMTP catcher needed any more. The stored token is a
+   hash, so the database cannot give you the link back — the log is the way to see it.)
+
+If you would rather see real mail, run a throwaway SMTP catcher and point the API at it:
 
 ```powershell
-python -m smtpd -n -c DebuggingServer localhost:1025    # prints every message to the console
+python -m aiosmtpd -n -l localhost:1025    # prints every message it receives
 ```
-
-then run the API with:
 
 ```powershell
 $env:EMAIL_PROVIDER="smtp"; $env:SMTP_HOST="localhost"; $env:SMTP_PORT="1025"
@@ -176,8 +182,7 @@ $env:SMTP_FROM="no-reply@trainhub360.local"; $env:APP_BASE_URL="http://localhost
 pnpm --filter @workspace/api run dev
 ```
 
-Add a learner again — the full email now prints in Terminal 1, and the link in it is
-`http://localhost:5173/activate?token=…`. Open it:
+The link in the mail is `http://localhost:5173/activate?token=…`. Open it:
 
 - Password + confirm → "Account activated".
 - Mismatched passwords → inline error, no request sent.
@@ -193,9 +198,37 @@ logging. Check it:
 $env:EMAIL_PROVIDER="smtp"; Remove-Item Env:\SMTP_HOST -ErrorAction SilentlyContinue
 ```
 
-Trigger any email (add a learner). The request should **error** with
-`EMAIL_PROVIDER=smtp but SMTP_HOST is not set`, not quietly log. That is the intended
-behaviour — clear `$env:EMAIL_PROVIDER` to go back to the console sender.
+Add a learner. The account is still created (the API answers 201 with `emailSent: false`),
+the send is **not** quietly logged, and the failure is recorded — check it:
+
+```powershell
+sqlcmd -S localhost -U trainhub_test -P <password> -d TrainHub360_Test -C -Q "SELECT TOP 5 [to], kind, error, created_at FROM email_failures ORDER BY created_at DESC"
+```
+
+Terminal 1 also prints `[email] send failed to=… kind=activation: EMAIL_PROVIDER=smtp but
+SMTP_HOST is not set`, and **People** shows the person as *invited* with a **Resend invite**
+button. Clear `$env:EMAIL_PROVIDER` to go back to the console sender.
+
+### 3d. The password-reset link (gap 4)
+
+1. Sign out, click **Forgot password?**, enter an existing address, send.
+2. Copy the `…/reset-password?token=…` link out of Terminal 1 (same block as above) and open
+   it in a fresh tab — it must render the reset page, not the login screen.
+3. Choose a password twice → "Password updated", then sign in with it.
+4. Reuse the same link → `invalid or expired token`. Open `/reset-password` with no token →
+   "This link is incomplete".
+
+### 3e. The login throttle (gap 8)
+
+```powershell
+$env:LOGIN_THROTTLE_ACCOUNT_LIMIT="3"
+pnpm --filter @workspace/api run dev
+```
+
+Sign in with the wrong password three times, then with the right one: the right one is
+refused too, with the same `invalid credentials` message. Restart the API (or wait out
+`LOGIN_THROTTLE_WINDOW_MS`) and the correct password works again. Remove the variable
+afterwards.
 
 ---
 

@@ -60,15 +60,30 @@ export async function issueActivationToken(userId: string): Promise<{ token: str
   return { token, expiresAt };
 }
 
-export async function sendActivationEmail(email: string, name: string, token: string): Promise<void> {
-  const { getEmailSender } = await import("./email.js");
+export async function sendActivationEmail(email: string, name: string, token: string): Promise<boolean> {
+  const { getEmailSender, escapeHtml } = await import("./email.js");
   const { appUrl } = await import("./links.js");
-  await getEmailSender().send({
+  const { recordEmailFailure } = await import("./emailFailures.js");
+  // Round 7 gap 7: the name used to be interpolated raw into the HTML body, so an org admin
+  // could put markup — or a phishing link — into mail sent from the platform's own address.
+  const safeName = escapeHtml(name);
+  const link = appUrl(`/activate?token=${encodeURIComponent(token)}`);
+  const message = {
     to: email,
     subject: "Activate your TrainHub360 account",
-    text: `Hello ${name}, activate your TrainHub360 account (valid 7 days): ${appUrl(`/activate?token=${token}`)}`,
-    html: `<p>Hello ${name},</p><p>Activate your TrainHub360 account (valid 7 days):</p><p><a href="${appUrl(`/activate?token=${token}`)}">Activate your account</a></p>`,
-  }).catch(() => false);
+    kind: "activation",
+    text: `Hello ${name}, activate your TrainHub360 account (valid 7 days): ${link}`,
+    html: `<p>Hello ${safeName},</p><p>Activate your TrainHub360 account (valid 7 days):</p><p><a href="${escapeHtml(link)}">Activate your account</a></p>`,
+  };
+  try {
+    const ok = await getEmailSender().send(message);
+    if (!ok) await recordEmailFailure({ to: email, subject: message.subject, kind: message.kind, error: "sender rejected the message" });
+    return ok;
+  } catch (error) {
+    // Round 7 gap 3: a failed send is recorded and logged, never swallowed.
+    await recordEmailFailure({ to: email, subject: message.subject, kind: message.kind, error });
+    return false;
+  }
 }
 
 export async function requestPasswordReset(email: string): Promise<{ sent: boolean }> {
@@ -77,14 +92,25 @@ export async function requestPasswordReset(email: string): Promise<{ sent: boole
   const token = crypto.randomBytes(32).toString("hex");
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
   await db.passwordResetToken.create({ data: { userId: user.id, tokenHash: hashToken(token), purpose: "password_reset", expiresAt } });
-  const { getEmailSender } = await import("./email.js");
+  const { getEmailSender, escapeHtml } = await import("./email.js");
   const { appUrl } = await import("./links.js");
-  await getEmailSender().send({
+  const { recordEmailFailure } = await import("./emailFailures.js");
+  const link = appUrl(`/reset-password?token=${encodeURIComponent(token)}`);
+  const message = {
     to: email,
     subject: "Reset your TrainHub360 password",
-    text: `Reset your TrainHub360 password (valid 1 hour): ${appUrl(`/reset-password?token=${token}`)}`,
-    html: `<p>Reset your TrainHub360 password (valid 1 hour):</p><p><a href="${appUrl(`/reset-password?token=${token}`)}">Choose a new password</a></p>`,
-  }).catch(() => false);
+    kind: "password_reset",
+    text: `Reset your TrainHub360 password (valid 1 hour): ${link}`,
+    html: `<p>Reset your TrainHub360 password (valid 1 hour):</p><p><a href="${escapeHtml(link)}">Choose a new password</a></p>`,
+  };
+  try {
+    const ok = await getEmailSender().send(message);
+    if (!ok) await recordEmailFailure({ to: email, subject: message.subject, kind: message.kind, error: "sender rejected the message" });
+  } catch (error) {
+    // The response stays the same either way (no account enumeration), but the failure is
+    // visible to an operator instead of vanishing (round 7 gap 3).
+    await recordEmailFailure({ to: email, subject: message.subject, kind: message.kind, error, context: { userId: user.id } });
+  }
   return { sent: true };
 }
 

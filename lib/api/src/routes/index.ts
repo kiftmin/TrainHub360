@@ -19,7 +19,7 @@ import {
   hasAnyProgrammeStaffGrant,
   requireOrgStaffOrProgrammeAdmin,
 } from "../middleware/rbac.js";
-import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures, loginThrottleDisabledForTests } from "../middleware/rateLimit.js";
+import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures } from "../middleware/rateLimit.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -42,19 +42,18 @@ router.post("/auth/login", async (req, res) => {
   const { email, password } = req.body ?? {};
   if (!email || !password) return res.status(400).json({ error: "email and password required" });
   const keys = loginKeys(req.ip, email);
-  // Locked-out and wrong-password responses are deliberately identical. The lockout is off
-  // in tests only: every suite shares one loopback IP and runs in its own process, so the
-  // accumulated failures of unrelated files would otherwise lock out a correct password.
-  const throttleOff = loginThrottleDisabledForTests();
-  if (!throttleOff && isLoginLocked(keys)) return res.status(401).json({ error: "invalid credentials" });
+  // Locked-out and wrong-password responses are deliberately identical, so a caller cannot
+  // tell whether an account exists or is locked. Round 7 gap 8: the throttle is always live;
+  // a test that needs different limits configures them (configureLoginThrottle) for that case.
+  if (isLoginLocked(keys)) return res.status(401).json({ error: "invalid credentials" });
   const user = await db.user.findUnique({ where: { email } }).catch(() => null);
   const ok = await verifyLoginPassword(password, user?.passwordHash ?? null);
   if (!ok || !user) {
-    if (!throttleOff) recordLoginFailure(keys);
+    recordLoginFailure(keys);
     return res.status(401).json({ error: "invalid credentials" });
   }
   if (user.isActive === false) {
-    if (!throttleOff) recordLoginFailure(keys);
+    recordLoginFailure(keys);
     return res.status(401).json({ error: "invalid credentials" });
   }
   clearLoginFailures(keys);
@@ -132,7 +131,7 @@ router.get("/users", async (req, res) => {
   const users = (await db.user.findMany({
     where: { orgId: scope.orgId, ...searchFilter },
     select: {
-      id: true, name: true, email: true, department: true, jobFunction: true, isActive: true,
+      id: true, name: true, email: true, department: true, jobFunction: true, isActive: true, activatedAt: true,
       roles: {
         where: orgStaff ? undefined : { programmeId: { in: adminProgrammeIds } },
         select: { programmeId: true, role: { select: { name: true } } },
@@ -140,7 +139,7 @@ router.get("/users", async (req, res) => {
     },
     orderBy: { name: "asc" },
     take,
-  }).catch(() => [])) as Array<{ id: string; name: string; email: string; department: string | null; jobFunction: string | null; isActive: boolean; roles: Array<{ programmeId: string | null; role: { name: string } }> }>;
+  }).catch(() => [])) as Array<{ id: string; name: string; email: string; department: string | null; jobFunction: string | null; isActive: boolean; activatedAt: Date | null; roles: Array<{ programmeId: string | null; role: { name: string } }> }>;
   const programmeIds = [...new Set(users.flatMap((u) => u.roles.map((r) => r.programmeId).filter((v): v is string => !!v)))];
   const programmeRows = (programmeIds.length
     ? await db.programme.findMany({ where: { id: { in: programmeIds }, orgId: scope.orgId }, select: { id: true, name: true } }).catch(() => [])
@@ -154,6 +153,10 @@ router.get("/users", async (req, res) => {
     // grants; department/job function and other programmes' grants stay private.
     ...(orgStaff ? { department: u.department, jobFunction: u.jobFunction } : {}),
     isActive: u.isActive,
+    // Round 7 gap 5: org staff can see who has not opened their invitation yet, which is
+    // what makes the "resend invite" action next to it meaningful. Never sent to
+    // programme admins, who have no way to act on it.
+    ...(orgStaff ? { activatedAt: u.activatedAt } : {}),
     roles: u.roles.map((r) => ({ role: r.role.name, programmeId: r.programmeId, programmeName: r.programmeId ? programmeNames.get(r.programmeId) ?? null : null })),
   })));
 });
@@ -179,10 +182,13 @@ router.post("/users", requireOrgStaff(), async (req, res) => {
   }).catch(() => null);
   if (!user) return res.status(500).json({ error: "could not create user" });
   const activation = await issueActivationToken(user.id);
-  await sendActivationEmail(user.email, user.name, activation.token);
+  // Round 7 gap 3: a send that fails is recorded, not swallowed. The account still exists,
+  // so the response says so and the admin can resend (gap 5).
+  const emailSent = await sendActivationEmail(user.email, user.name, activation.token);
   await db.auditLog.create({ data: { userId: me.id, action: "USER_CREATED", entity: "user", entityId: user.id, details: email } }).catch(() => null);
   return res.status(201).json({
-    id: user.id, name: user.name, email: user.email, department: user.department, jobFunction: user.jobFunction, isActive: true,
+    id: user.id, name: user.name, email: user.email, department: user.department, jobFunction: user.jobFunction, isActive: true, activatedAt: user.activatedAt,
+    emailSent,
     // NEVER expose the token outside the test environment.
     ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}),
   });
@@ -198,9 +204,9 @@ router.post("/users/:id/resend-activation", requireOrgStaff(), async (req, res) 
   // Invalidate any outstanding activation links before issuing a new one.
   await db.passwordResetToken.updateMany({ where: { userId: target.id, purpose: "activation", usedAt: null }, data: { usedAt: new Date() } }).catch(() => null);
   const activation = await issueActivationToken(target.id);
-  await sendActivationEmail(target.email, target.name, activation.token);
+  const emailSent = await sendActivationEmail(target.email, target.name, activation.token);
   await db.auditLog.create({ data: { userId: me.id, action: "ACTIVATION_RESENT", entity: "user", entityId: target.id, details: target.email } }).catch(() => null);
-  return res.json({ ok: true, ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}) });
+  return res.json({ ok: true, emailSent, ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}) });
 });
 
 // Update an org user (name, department, jobFunction) or deactivate/reactivate.

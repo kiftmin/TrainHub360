@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Plus, Search, Users, UserCheck, ShieldCheck } from 'lucide-react';
-import { useUserDirectory, useCreateOrgUser, useUpdateOrgUser, useSetOrgRole, type DirectoryUser } from '@/api/hooks';
+import { useUserDirectory, useCreateOrgUser, useUpdateOrgUser, useSetOrgRole, useResendActivation, type DirectoryUser } from '@/api/hooks';
 import { getSessionUser } from '@/api/client';
 import { BulkImportButton } from '@/components/BulkImport';
 import { initials, Skeleton, EmptyState, Status, PageHeading, KpiCard } from '@/components/shared';
@@ -19,6 +19,7 @@ export function People() {
   const createUser = useCreateOrgUser();
   const updateUser = useUpdateOrgUser();
   const setOrgRole = useSetOrgRole();
+  const resendActivation = useResendActivation();
 
   const [addOpen, setAddOpen] = useState(false);
   const [addForm, setAddForm] = useState({ name: '', email: '', department: '', jobFunction: '' });
@@ -28,11 +29,22 @@ export function People() {
   const [toggling, setToggling] = useState<DirectoryUser | null>(null);
   const [toggleError, setToggleError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [resentFor, setResentFor] = useState<string | null>(null);
 
   const rows = directory.data || [];
   const orgRoleOf = (u: DirectoryUser) => u.roles.find((r) => r.programmeId === null)?.role ?? '';
   const activeCount = rows.filter((u) => u.isActive).length;
   const staffCount = rows.filter((u) => ['owner', 'admin'].includes(orgRoleOf(u))).length;
+  // Round 7 gap 5: who still has not opened their invitation.
+  const invitedCount = rows.filter((u) => u.isActive && !u.activatedAt).length;
+  const resend = (u: DirectoryUser) => {
+    setActionError(null);
+    setResentFor(null);
+    resendActivation.mutate(u.id, {
+      onSuccess: (r) => setResentFor(r?.emailSent === false ? `${u.email} — the email could not be sent; see the server log` : `Invitation resent to ${u.email}`),
+      onError: (e) => setActionError((e as Error).message),
+    });
+  };
 
   const submitAdd = () => {
     if (!addForm.name.trim() || !addForm.email.trim()) return;
@@ -93,6 +105,7 @@ export function People() {
     <div className="grid gap-3 md:grid-cols-3">
       <KpiCard label="People" value={`${rows.length}`} detail={search.trim() ? 'Matching your search' : 'In the organization directory'} icon={Users} />
       <KpiCard label="Active" value={`${activeCount}`} detail="Can sign in and learn" icon={UserCheck} tone="good" />
+      <KpiCard label="Invited" value={`${invitedCount}`} detail="Have not activated yet" icon={UserCheck} tone="warn" />
       <KpiCard label="Org staff" value={`${staffCount}`} detail="Owners and administrators" icon={ShieldCheck} tone="accent" />
     </div>
     <section className="mt-4 overflow-hidden rounded-lg border border-border/80 bg-card">
@@ -101,11 +114,12 @@ export function People() {
         <div className="relative"><Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="w-64 pl-8" placeholder="Search name, email, department…" value={search} onChange={(e) => setSearch(e.target.value)} data-testid="input-directory-search" /></div>
       </div>
       {actionError && <p className="border-b border-border/70 bg-destructive/5 px-4 py-2 text-xs text-destructive" data-testid="text-directory-error">{actionError}</p>}
+      {resentFor && <p className="border-b border-border/70 bg-emerald-50 px-4 py-2 text-xs text-emerald-800" data-testid="text-directory-notice">{resentFor}</p>}
       {directory.isLoading ? <div className="space-y-2 p-4"><Skeleton className="h-10" /><Skeleton className="h-10" /><Skeleton className="h-10" /></div>
       : directory.isError ? <div className="p-4"><EmptyState title="Directory unavailable" detail={(directory.error as Error)?.message ?? 'Could not load the directory.'} /></div>
       : !rows.length ? <div className="p-4"><EmptyState title={search.trim() ? 'No matching people' : 'No people yet'} detail={search.trim() ? 'Try a different name, email or department.' : 'Add users here, then programme managers can grant them roles.'} /></div>
       : <div className="overflow-x-auto"><table className="w-full text-sm">
-        <thead><tr className="text-left font-mono text-[10px] uppercase tracking-wider text-muted-foreground"><th className="px-4 py-2.5">Person</th><th className="px-4 py-2.5">Department</th><th className="px-4 py-2.5">Org role</th><th className="px-4 py-2.5">Programme roles</th><th className="px-4 py-2.5">Status</th>{isOrgStaff && <th className="px-4 py-2.5 text-right">Actions</th>}</tr></thead>
+        <thead><tr className="text-left font-mono text-[10px] uppercase tracking-wider text-muted-foreground"><th className="px-4 py-2.5">Person</th><th className="px-4 py-2.5">Department</th><th className="px-4 py-2.5">Org role</th><th className="px-4 py-2.5">Programme roles</th><th className="px-4 py-2.5">Status</th><th className="px-4 py-2.5">Activation</th>{isOrgStaff && <th className="px-4 py-2.5 text-right">Actions</th>}</tr></thead>
         <tbody className="divide-y divide-border/70">{rows.map((u) => {
           const isSelf = u.id === session?.id;
           const programmeRoles = u.roles.filter((r) => r.programmeId !== null);
@@ -123,7 +137,11 @@ export function People() {
               ? <div className="flex max-w-64 flex-wrap gap-1">{programmeRoles.map((r, i) => <span key={i} className="rounded-md bg-secondary/70 px-1.5 py-0.5 text-[11px] text-muted-foreground">{r.programmeName ?? 'Programme'} · {r.role}</span>)}</div>
               : <span className="text-xs text-muted-foreground">None</span>}</td>
             <td className="px-4 py-2.5"><Status tone={u.isActive ? 'good' : 'bad'}>{u.isActive ? 'active' : 'deactivated'}</Status></td>
+            <td className="px-4 py-2.5">{u.activatedAt
+              ? <Status tone="good">activated</Status>
+              : <Status tone="warn">invited</Status>}</td>
             {isOrgStaff && <td className="px-4 py-2.5"><div className="flex justify-end gap-2">
+              {!u.activatedAt && u.isActive && <Button size="sm" variant="outline" disabled={resendActivation.isPending} onClick={() => resend(u)} data-testid={`button-resend-activation-${u.id}`}>Resend invite</Button>}
               <Button size="sm" variant="outline" onClick={() => { setEditError(null); setEditing({ id: u.id, name: u.name, email: u.email, department: u.department ?? '', jobFunction: u.jobFunction ?? '' }); }} data-testid={`button-edit-user-${u.id}`}>Edit</Button>
               <Button size="sm" variant="outline" disabled={isSelf} title={isSelf ? 'You cannot deactivate your own account' : undefined} onClick={() => { setToggleError(null); setToggling(u); }} data-testid={`button-toggle-user-${u.id}`}>{u.isActive ? 'Deactivate' : 'Reactivate'}</Button>
             </div></td>}
