@@ -67,7 +67,14 @@ message, links included, is printed to the API log).
   generic 401 as a wrong password.
 
 ### Content storage and uploads
-Learning content files go through `lib/api/src/services/storage.ts` (`StorageProvider`). The default local-disk provider writes under `STORAGE_DIR` (default `.storage/` relative to the API process); mount a persistent volume in production. S3/Azure providers are reserved but not implemented. Uploads are JSON base64 (`POST /api/modules/:moduleId/content/upload`) capped by `UPLOAD_MAX_BYTES` (default 50 MB) with an extension/MIME allowlist; `scanUpload` is a no-op hook today.
+Learning content files go through `lib/api/src/services/storage.ts` (`StorageProvider`). The default local-disk provider writes under `STORAGE_DIR` (default `.storage/` relative to the API process); mount a persistent volume in production. S3/Azure providers are reserved but not implemented. `scanUpload` is a no-op hook today.
+
+Uploads (A.3) are **multipart**, not base64 in JSON — `express.json()` caps a JSON body at 100 KB, so a real PDF or video used to fail with 413:
+
+- `POST /api/modules/:moduleId/content/upload` — staff only; `multipart/form-data` with one part named `file`. The old `{fileName, mimeType, dataBase64}` JSON body is still accepted for small files.
+- `POST /api/uploads/evidence` — any member of the organization; a learner's proof for a trainer-verified item.
+- Both cap the file at `UPLOAD_MAX_BYTES` (default 50 MB) and check an extension/MIME allowlist (`lib/api/src/services/uploads.ts`).
+- Every upload writes a **`StoredFile`** row (organization, uploader, name, MIME, size, checksum, purpose) and returns `storedFileId`. A content item or a progress record may only reference a `StoredFile` of its own organization — a copied or invented `storageKey` is refused.
 
 Session reminders are scheduled when the API starts (`jobs/sessionReminderJob.ts`), deduplicated through `ReminderLog`. Personal calendar feeds live at `GET /api/calendar/feed.ics?token=...`; the token is issued by `GET /api/me/ical-token` and can be rotated by org admins.
 

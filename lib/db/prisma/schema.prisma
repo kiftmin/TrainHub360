@@ -34,6 +34,7 @@ model Organization {
   samlIdpIssuer String?  @map("saml_idp_issuer") @db.NVarChar(512)
   samlEntityId String?   @map("saml_entity_id") @db.NVarChar(512)
   programmes                           Programme[]
+  storedFiles                          StoredFile[]
   users                                User[]
   kpiSummaries                         KpiSummary[]
   cohorts                              Cohort[]
@@ -605,6 +606,9 @@ model ContentItem {
   estimatedMinutes Int?    @map("estimated_minutes")
   body             String? @db.NVarChar(Max)
   storageKey       String? @map("storage_key") @db.NVarChar(512)
+  // A.3: the org-bound upload this item points at. Null for rows created before A.3.
+  storedFileId     String? @map("stored_file_id")
+  storedFile       StoredFile? @relation(fields: [storedFileId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fileName         String? @map("file_name") @db.NVarChar(512)
   mimeType         String? @map("mime_type") @db.NVarChar(256)
   sizeBytes        Int?    @map("size_bytes")
@@ -620,6 +624,7 @@ model ContentItem {
 
   @@index([moduleId])
   @@index([orgId])
+  @@index([storedFileId])
   @@map("content_items")
 }
 
@@ -634,6 +639,9 @@ model ContentProgress {
   completedAt    DateTime? @map("completed_at")
   evidenceNote   String?   @map("evidence_note") @db.NVarChar(Max)
   evidenceFileKey String?  @map("evidence_file_key") @db.NVarChar(512)
+  // A.3: the org-bound upload a learner attached as proof. Null for older rows.
+  evidenceFileId  String?  @map("evidence_file_id")
+  evidenceFile    StoredFile? @relation("ProgressEvidence", fields: [evidenceFileId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   verifiedBy     String?   @map("verified_by")
   verifier       User?     @relation("ContentVerifier", fields: [verifiedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
   verifiedAt     DateTime? @map("verified_at")
@@ -675,6 +683,33 @@ model EmailFailure {
   @@index([createdAt])
   @@index([orgId, createdAt])
   @@map("email_failures")
+}
+
+// Round 6 / A.3: org-bound file ids.
+//
+// A file used to exist only as a `storageKey` string copied from an upload response into a
+// content item or a progress record. Nothing tied that string to the organization that
+// uploaded it, so an id from another tenant could be reused, and a made-up key was accepted
+// as if it had been uploaded. A StoredFile row is now the only thing a content item or a
+// progress record may point at, and it carries the org, the uploader and the checksum.
+model StoredFile {
+  id            String   @id @default(cuid())
+  orgId         String   @map("org_id")
+  organization  Organization @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  uploadedById  String?  @map("uploaded_by_id")
+  storageKey    String   @unique @map("storage_key") @db.NVarChar(512)
+  fileName      String   @map("file_name") @db.NVarChar(512)
+  mimeType      String   @map("mime_type") @db.NVarChar(256)
+  sizeBytes     Int      @map("size_bytes")
+  checksum      String   @db.NVarChar(128)
+  // Which upload path produced it: "content" (a module file) or "evidence" (progress proof).
+  purpose       String   @default("content") @db.NVarChar(32)
+  createdAt     DateTime @default(now()) @map("created_at")
+  contentItems  ContentItem[]
+  progressEvidence ContentProgress[] @relation("ProgressEvidence")
+
+  @@index([orgId, createdAt])
+  @@map("stored_files")
 }
 
 model ReminderLog {

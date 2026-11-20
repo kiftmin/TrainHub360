@@ -25,7 +25,19 @@ import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jo
 import { runNudgeJob } from "../jobs/nudgeJob.js";
 import { runContentLifecycleJob } from "../jobs/contentLifecycleJob.js";
 import { dispatchWebhook } from "../services/webhook.js";
-import { getStorageProvider, newStorageKey, scanUpload } from "../services/storage.js";
+import { getStorageProvider } from "../services/storage.js";
+import {
+  UPLOAD_EXT,
+  UPLOAD_MIME,
+  UploadRejected,
+  consumeTempFile,
+  extensionOf,
+  resolveUploadedFile,
+  safeFileName,
+  storeUpload,
+  uploadSingleFile,
+  uploadMaxBytes,
+} from "../services/uploads.js";
 import { recomputeEnrolmentProgress, providerForUrl, isSafeExternalUrl } from "../services/contentProgress.js";
 import { buildIcsCalendar, sessionsForUser } from "../services/ical.js";
 import crypto from "node:crypto";
@@ -1293,18 +1305,6 @@ async function computeCompetence(learnerId: string, programmeId: string) {
   };
 }
 const CONTENT_TYPES = new Set(["native", "file", "external_link"]);
-const UPLOAD_MIME = new Set([
-  "application/pdf",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-powerpoint",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "image/png", "image/jpeg", "image/gif", "image/webp",
-  "video/mp4", "video/webm", "application/zip",
-]);
-const UPLOAD_EXT = new Set(["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "png", "jpg", "jpeg", "gif", "webp", "mp4", "webm", "zip"]);
 
 function contentItemData(body: any) {
   const type = String(body?.type ?? "");
@@ -1323,13 +1323,17 @@ function contentItemData(body: any) {
     if (!body?.body) throw Object.assign(new Error("body required for native content"), { status: 400 });
     base.body = String(body.body);
   }
+  // A.3: a file item points at an upload that belongs to this organization (resolved by the
+  // caller, which has the org scope). The request body can no longer name an arbitrary key.
   if (type === "file") {
-    if (!body?.storageKey || !body?.fileName || !body?.mimeType) throw Object.assign(new Error("storageKey, fileName and mimeType required for file content"), { status: 400 });
-    base.storageKey = String(body.storageKey);
-    base.fileName = String(body.fileName);
-    base.mimeType = String(body.mimeType);
-    base.sizeBytes = body.sizeBytes !== undefined ? Number(body.sizeBytes) : null;
-    base.checksum = body.checksum ? String(body.checksum) : null;
+    const file = body?.__storedFile;
+    if (!file) throw Object.assign(new Error("upload the file first, then pass its storedFileId"), { status: 400 });
+    base.storedFileId = file.id;
+    base.storageKey = file.storageKey;
+    base.fileName = file.fileName;
+    base.mimeType = file.mimeType;
+    base.sizeBytes = file.sizeBytes;
+    base.checksum = file.checksum;
   }
   if (type === "external_link") {
     const url = String(body?.url ?? "");
@@ -1342,29 +1346,77 @@ function contentItemData(body: any) {
   return base;
 }
 
-router.post("/modules/:moduleId/content/upload", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
-  const fileName = String(req.body?.fileName ?? "").trim();
-  const mimeType = String(req.body?.mimeType ?? "").trim().toLowerCase();
-  const dataBase64 = String(req.body?.dataBase64 ?? "");
-  if (!fileName || !mimeType || !dataBase64) return res.status(400).json({ error: "fileName, mimeType and dataBase64 required" });
-  const ext = (fileName.split(".").pop() ?? "").toLowerCase();
-  if (!UPLOAD_EXT.has(ext)) return res.status(400).json({ error: `file extension .${ext} is not allowed` });
-  if (!UPLOAD_MIME.has(mimeType)) return res.status(400).json({ error: `mime type ${mimeType} is not allowed` });
-  let buffer: Buffer;
-  try { buffer = Buffer.from(dataBase64, "base64"); } catch { return res.status(400).json({ error: "invalid file data" }); }
-  const maxBytes = Number(process.env.UPLOAD_MAX_BYTES ?? 50 * 1024 * 1024);
-  if (buffer.length > maxBytes) return res.status(413).json({ error: `file exceeds the ${Math.round(maxBytes / (1024 * 1024))}MB limit` });
-  if (!buffer.length) return res.status(400).json({ error: "empty file" });
-  const key = newStorageKey(ext);
-  const stored = await getStorageProvider().put(key, buffer);
-  const scan = await scanUpload({ key, mimeType, sizeBytes: stored.sizeBytes });
-  if (!scan.ok) {
-    await getStorageProvider().delete(key).catch(() => null);
-    return res.status(422).json({ error: scan.reason ?? "upload rejected by scanner" });
+// A.3: multipart upload. `multipart/form-data` with one part named `file` streams to disk, so
+// the body is not base64 in JSON and the express.json() 100 KB limit no longer applies (H4).
+// `multipart/form-data` and the old JSON body are both accepted: the JSON path is kept for
+// existing clients, and both produce a StoredFile row bound to the caller's organization.
+router.post("/modules/:moduleId/content/upload", requireProgrammeRole("admin", "owner", "trainer"), uploadSingleFile, async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const mod = await db.module.findFirst({ where: { id: req.params.moduleId, course: { programme: { orgId: scope.orgId } } } }).catch(() => null);
+  if (!mod) return res.status(404).json({ error: "module not found in your organization" });
+  const purpose = req.body?.purpose === "evidence" ? "evidence" : "content";
+  try {
+    let file: { fileName: string; mimeType: string; data: Buffer };
+    if (req.file) {
+      file = { fileName: req.file.originalname, mimeType: req.file.mimetype, data: await consumeTempFile(req.file) };
+    } else {
+      const fileName = String(req.body?.fileName ?? "").trim();
+      const mimeType = String(req.body?.mimeType ?? "").trim().toLowerCase();
+      const dataBase64 = String(req.body?.dataBase64 ?? "");
+      if (!fileName || !mimeType || !dataBase64) {
+        return res.status(400).json({ error: "send the file as multipart/form-data with a part named \"file\", or as fileName, mimeType and dataBase64" });
+      }
+      file = { fileName, mimeType, data: Buffer.from(dataBase64, "base64") };
+    }
+    const stored = await storeUpload({ orgId: scope.orgId, userId: me.id, purpose, ...file });
+    await db.auditLog.create({ data: { userId: me.id, action: "FILE_UPLOADED", entity: "stored_file", entityId: stored.id, details: stored.fileName } }).catch(() => null);
+    return res.status(201).json({
+      storedFileId: stored.id,
+      storageKey: stored.storageKey,
+      fileName: stored.fileName,
+      mimeType: stored.mimeType,
+      sizeBytes: stored.sizeBytes,
+      checksum: stored.checksum,
+      purpose: stored.purpose,
+    });
+  } catch (e) {
+    if (e instanceof UploadRejected) return res.status(e.status).json({ error: e.message });
+    // multer's own errors (LIMIT_FILE_SIZE, …) arrive here with a `code`.
+    const code = (e as { code?: string }).code;
+    if (code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: `file exceeds the ${Math.round(uploadMaxBytes() / (1024 * 1024))}MB limit` });
+    if (code) return res.status(400).json({ error: `upload rejected (${code})` });
+    throw e;
   }
-  // Sanitized display name — never used as a filesystem path.
-  const safeName = fileName.replace(/[\\/:*?"<>|]/g, "_").slice(0, 200);
-  return res.status(201).json({ storageKey: stored.key, fileName: safeName, mimeType, sizeBytes: stored.sizeBytes, checksum: stored.checksum });
+});
+
+// A.3: learners attach proof for a trainer-verified item. This route is deliberately open to
+// any authenticated member of the organization (the content-upload route above is staff-only),
+// and the file it stores is still an org-bound StoredFile, so evidenceFileId cannot be faked.
+router.post("/uploads/evidence", uploadSingleFile, async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  try {
+    if (!req.file) return res.status(400).json({ error: "send the file as multipart/form-data with a part named \"file\"" });
+    const stored = await storeUpload({
+      orgId: scope.orgId,
+      userId: me.id,
+      purpose: "evidence",
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      data: await consumeTempFile(req.file),
+    });
+    return res.status(201).json({
+      storedFileId: stored.id, fileName: stored.fileName, mimeType: stored.mimeType,
+      sizeBytes: stored.sizeBytes, checksum: stored.checksum, purpose: stored.purpose,
+    });
+  } catch (e) {
+    if (e instanceof UploadRejected) return res.status(e.status).json({ error: e.message });
+    const code = (e as { code?: string }).code;
+    if (code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: `file exceeds the ${Math.round(uploadMaxBytes() / (1024 * 1024))}MB limit` });
+    if (code) return res.status(400).json({ error: `upload rejected (${code})` });
+    throw e;
+  }
 });
 
 router.get("/modules/:moduleId/content", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
@@ -1380,7 +1432,9 @@ router.post("/modules/:moduleId/content", requireProgrammeRole("admin", "owner",
   const mod = await db.module.findFirst({ where: { id: req.params.moduleId, course: { programme: { orgId: scope.orgId } } } }).catch(() => null);
   if (!mod) return res.status(404).json({ error: "module not found in your organization" });
   try {
-    const data = contentItemData(req.body);
+    // A.3: a file item must name an upload of this organization, not an arbitrary key.
+    const storedFile = req.body?.type === "file" ? await resolveUploadedFile(scope.orgId, req.body) : null;
+    const data = contentItemData({ ...req.body, __storedFile: storedFile });
     const item = await db.contentItem.create({ data: { ...data, orgId: scope.orgId, moduleId: mod.id } as any });
     await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "CONTENT_ITEM_CREATED", entity: "content_item", entityId: item.id, details: item.type } }).catch(() => null);
     return res.status(201).json(item);
@@ -1404,6 +1458,17 @@ router.patch("/content/:id", requireProgrammeRole("admin", "owner", "trainer"), 
     data.provider = providerForUrl(String(patch.url));
   }
   if (patch.completionMode !== undefined) data.completionMode = patch.completionMode === "self_report" ? "self_report" : "trainer_verified";
+  if (patch.storedFileId !== undefined || patch.storageKey !== undefined) {
+    const file = await resolveUploadedFile(scope.orgId, patch).catch((e) => e as UploadRejected);
+    if (file instanceof UploadRejected) return res.status(file.status).json({ error: file.message });
+    if (!file) return res.status(400).json({ error: "storedFileId required" });
+    data.storedFileId = file.id;
+    data.storageKey = file.storageKey;
+    data.fileName = file.fileName;
+    data.mimeType = file.mimeType;
+    data.sizeBytes = file.sizeBytes;
+    data.checksum = file.checksum;
+  }
   return res.json(await db.contentItem.update({ where: { id: item.id }, data }));
 });
 
@@ -1469,10 +1534,22 @@ router.post("/content/:id/progress", async (req, res) => {
   const requested = req.body?.status === "completed" ? "completed" : "in_progress";
   let status = requested;
   let completedAt: Date | null = requested === "completed" ? new Date() : null;
+  // A.3: an evidence attachment must be an upload of this organization. A bare key from the
+  // request body is no longer accepted on its own.
+  let evidenceFileId: string | null = null;
+  let evidenceFileKey: string | null = req.body?.evidenceFileKey ? String(req.body.evidenceFileKey) : null;
+  if (req.body?.evidenceFileId || req.body?.evidenceFileKey) {
+    const file = await resolveUploadedFile(scope.orgId, { storedFileId: req.body?.evidenceFileId, storageKey: req.body?.evidenceFileKey })
+      .catch((e) => e as UploadRejected);
+    if (file instanceof UploadRejected) return res.status(file.status).json({ error: file.message });
+    if (!file) return res.status(400).json({ error: "evidenceFileId not found in your organization" });
+    if (file.purpose !== "evidence") return res.status(400).json({ error: "attach a file uploaded through /uploads/evidence" });
+    evidenceFileId = file.id;
+    evidenceFileKey = file.storageKey;
+  }
   if (item.type === "external_link" && item.completionMode === "trainer_verified" && requested === "completed") {
     const note = req.body?.evidenceNote ? String(req.body.evidenceNote) : null;
-    const fileKey = req.body?.evidenceFileKey ? String(req.body.evidenceFileKey) : null;
-    if (!note && !fileKey) return res.status(400).json({ error: "evidence note or file is required for trainer verification" });
+    if (!note && !evidenceFileId) return res.status(400).json({ error: "evidence note or file is required for trainer verification" });
     status = "pending_verification";
     completedAt = null;
   }
@@ -1484,14 +1561,15 @@ router.post("/content/:id/progress", async (req, res) => {
       startedAt: now,
       completedAt,
       evidenceNote: req.body?.evidenceNote ? String(req.body.evidenceNote) : null,
-      evidenceFileKey: req.body?.evidenceFileKey ? String(req.body.evidenceFileKey) : null,
+      evidenceFileId,
+      evidenceFileKey,
     },
     update: {
       status,
       startedAt: undefined,
       completedAt,
       ...(req.body?.evidenceNote !== undefined ? { evidenceNote: String(req.body.evidenceNote) } : {}),
-      ...(req.body?.evidenceFileKey !== undefined ? { evidenceFileKey: String(req.body.evidenceFileKey) } : {}),
+      ...(evidenceFileId ? { evidenceFileId, evidenceFileKey } : {}),
     },
   });
   const progress = await recomputeEnrolmentProgress(enrolment.id);
@@ -1507,6 +1585,10 @@ router.post("/content-progress/:id/verify", requireProgrammeRole("admin", "owner
   }).catch(() => null);
   if (!row) return res.status(404).json({ error: "progress record not found in your organization" });
   const verified = req.body?.verified !== false;
+  // A.3: a trainer only sees the learner's evidence through the org-scoped download below.
+  const evidenceFile = row.evidenceFileId
+    ? await db.storedFile.findFirst({ where: { id: row.evidenceFileId, orgId: scope.orgId }, select: { id: true, fileName: true, mimeType: true, sizeBytes: true } }).catch(() => null)
+    : null;
   const updated = await db.contentProgress.update({
     where: { id: row.id },
     data: {
@@ -1519,7 +1601,34 @@ router.post("/content-progress/:id/verify", requireProgrammeRole("admin", "owner
   });
   const progress = await recomputeEnrolmentProgress(row.enrolmentId);
   await db.auditLog.create({ data: { userId: me.id, action: verified ? "CONTENT_VERIFIED" : "CONTENT_VERIFICATION_REJECTED", entity: "content_progress", entityId: row.id, details: null } }).catch(() => null);
-  return res.json({ ...updated, enrolmentProgress: progress });
+  return res.json({ ...updated, evidenceFile, enrolmentProgress: progress });
+});
+
+// A.3: a learner's evidence attachment. Programme staff of the item's programme, or the
+// learner who uploaded it, and only within the same organization.
+router.get("/content-progress/:id/evidence", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const row = await db.contentProgress.findFirst({
+    where: { id: req.params.id, contentItem: { orgId: scope.orgId } },
+    include: { contentItem: { select: { module: { select: { course: { select: { programmeId: true } } } } } } },
+  }).catch(() => null);
+  if (!row || !row.evidenceFileId) return res.status(404).json({ error: "evidence file not found" });
+  const isMine = (await db.enrolment.findFirst({ where: { id: row.enrolmentId, learnerId: me.id }, select: { id: true } }).catch(() => null)) !== null;
+  const programmeId = row.contentItem.module.course.programmeId;
+  const staff = (await isOrgStaff(me.id)) || (programmeId ? await isProgrammeStaff(me.id, programmeId) : false);
+  if (!isMine && !staff) return res.status(403).json({ error: "programme staff access required" });
+  const file = await db.storedFile.findFirst({ where: { id: row.evidenceFileId, orgId: scope.orgId } }).catch(() => null);
+  if (!file) return res.status(404).json({ error: "evidence file not found" });
+  try {
+    const buffer = await getStorageProvider().get(file.storageKey);
+    res.setHeader("Content-Type", file.mimeType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Disposition", `attachment; filename="${file.fileName.replace(/["\\]/g, "_")}"`);
+    return res.send(buffer);
+  } catch {
+    return res.status(404).json({ error: "stored file is unavailable" });
+  }
 });
 
 router.get("/content/:id/download", async (req, res) => {

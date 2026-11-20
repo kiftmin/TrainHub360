@@ -49,6 +49,7 @@ import {
   useUploadContent,
   downloadReviewCreditCsv,
   type Course,
+  type UploadedFile,
   type ProgrammeMemberRole,
   type ReviewCreditSettings,
 } from '@/api/hooks';
@@ -329,7 +330,7 @@ function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: s
   const [completionMode, setCompletionMode] = useState<'trainer_verified' | 'self_report'>('trainer_verified');
   const [required, setRequired] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [uploaded, setUploaded] = useState<{ storageKey: string; fileName: string; mimeType: string; sizeBytes: number; checksum: string } | null>(null);
+  const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
   const reset = () => { setTitle(''); setBody(''); setUrl(''); setUploaded(null); setError(null); };
   const submit = async () => {
     setError(null);
@@ -341,7 +342,8 @@ function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: s
       body: type === 'native' ? body : undefined,
       url: type === 'external_link' ? url : undefined,
       completionMode: type === 'external_link' ? completionMode : undefined,
-      ...(uploaded ? { storageKey: uploaded.storageKey, fileName: uploaded.fileName, mimeType: uploaded.mimeType, sizeBytes: uploaded.sizeBytes, checksum: uploaded.checksum } : {}),
+      // A.3: the item points at the org-bound upload, not at a key copied from the response.
+      ...(uploaded ? { storedFileId: uploaded.storedFileId } : {}),
     }, { onSuccess: reset, onError: (e) => setError((e as Error).message) });
   };
   return <div className="space-y-4 pt-2">
