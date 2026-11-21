@@ -416,19 +416,24 @@ async function runEvaluation(
 
       const status = completed ? "completed" : e.status === "completed" ? e.status : "enrolled";
       const completionSource = completed ? (e.completionSource ?? "assessment") : e.completionSource;
+      // A pending result does not change the applied score, so it cannot invalidate a manager's
+      // sign-off. The completion date, if any, is written below without touching score inputs.
+      const pendingHold = e.appliedScoreSource === "manual" && !scoreChanged;
       const scoreEffect = await applyScoreChange(tx, e, {
         appliedAssessmentScore: appliedScore,
         applicationScore: e.applicationScore,
         deadlineDate: e.deadlineDate,
-        completionDate,
-        timelinessScore,
-        enrolmentScore,
+        completionDate: pendingHold ? e.completionDate : completionDate,
+        timelinessScore: pendingHold ? e.timelinessScore : timelinessScore,
+        enrolmentScore: pendingHold ? e.enrolmentScore : enrolmentScore,
       });
+
       const newlyCompleted = completed && e.status !== "completed";
       await tx.enrolment.update({
         where: { id: e.id },
         data: {
           contentCompletedAt: nextContentCompletedAt,
+          completionDate,
           // Round 9 / 1.2: the automatic loop is the only writer of "assessment", and only for an
           // enrolment it actually completes. A manual override sets "manual" and this leaves it alone.
           completionSource,

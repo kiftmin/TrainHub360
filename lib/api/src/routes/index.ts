@@ -1781,8 +1781,8 @@ router.post("/assessments/:id/attempts", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const assessment = await assessmentInOrg(req.params.id, scope.orgId);
   if (!assessment) return res.status(404).json({ error: "assessment not found" });
-  if (!assessment.isPublished || !assessment.publishedAt) return res.status(403).json({ error: "assessment is not published" });
   if (assessment.supersededAt) return res.status(403).json({ error: "this paper has been superseded; start the current version instead", superseded: true });
+  if (!assessment.isPublished || !assessment.publishedAt) return res.status(403).json({ error: "assessment is not published" });
   const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: assessment.module.courseId } }).catch(() => null);
   if (!enrolment || enrolment.status === "withdrawn" || enrolment.withdrawnAt) return res.status(403).json({ error: "enrolment required to take this assessment" });
   if (!assessment.questions.length) return res.status(409).json({ error: "assessment has no questions" });
