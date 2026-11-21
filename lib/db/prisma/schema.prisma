@@ -136,6 +136,10 @@ model Assessment {
   version   Int     @default(1)
   // The row this version continues from, so a chain can be walked either way.
   supersedesId String? @map("supersedes_id") @db.NVarChar(64)
+  // Round 8 / 2.4: set when a later version goes live, so "live" = supersededAt null.
+  // Existing attempts keep pointing at the version they started on.
+  supersededAt DateTime? @map("superseded_at")
+  supersededById String? @map("superseded_by_id")
   isArchived Boolean @default(false) @map("is_archived")
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
@@ -233,6 +237,16 @@ model Enrolment {
   status                      String     @default("enrolled")
   reviewCreditEligible        Boolean    @default(true) @map("review_credit_eligible")
   appliedAssessmentScore      Float?     @map("applied_assessment_score")
+  // Round 8 / 1.3: where the applied score came from and how a manual override is tracked.
+  // [CONFIRM] default source is "assessment"; a manual PATCH needs a reason and is audited.
+  appliedScoreSource          String     @default("assessment") @map("applied_score_source")
+  appliedScoreOverrideReason  String?    @map("applied_score_override_reason") @db.NVarChar(Max)
+  appliedScoreOverriddenBy    String?    @map("applied_score_overridden_by")
+  appliedScoreOverriddenAt    DateTime?  @map("applied_score_overridden_at")
+  pendingAssessmentScore      Float?     @map("pending_assessment_score")
+  pendingAssessmentScoreAt    DateTime?  @map("pending_assessment_score_at")
+  // Round 8 / 1.1: content completion is tracked separately from competence.
+  contentCompletedAt          DateTime?  @map("content_completed_at")
   completionDate              DateTime?  @map("completion_date")
   deadlineDate                DateTime?  @map("deadline_date")
   timelinessScore             Float?     @map("timeliness_score")
@@ -391,6 +405,9 @@ model ThreadParticipant {
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   role     String   @default("learner")
   joinedAt DateTime @default(now()) @map("joined_at")
+  // Round 8 / E.5: revoking access keeps the row for audit and can be restored.
+  leftAt   DateTime? @map("left_at")
+  leftReason String? @map("left_reason") @db.NVarChar(512)
 
   @@unique([threadId, userId])
   @@index([userId])
@@ -603,6 +620,8 @@ model Session {
   attendees Int    @default(0)
   status    String @default("scheduled")
   capacity  Int?
+  // Round 8 / D.2: bumped whenever the event changes so calendar clients update.
+  sequence  Int    @default(0)
   rsvps     SessionRSVP[]
   reminders ReminderLog[]
 
@@ -617,6 +636,8 @@ model SessionRSVP {
   learner     User      @relation(fields: [learnerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   status      String    @default("invited")
   respondedAt DateTime? @map("responded_at")
+  // Round 8 / E.7: promotion must follow when the learner joined the waitlist.
+  waitlistedAt DateTime? @map("waitlisted_at")
   createdAt   DateTime  @default(now()) @map("created_at")
 
   @@unique([sessionId, learnerId])

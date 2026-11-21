@@ -72,12 +72,11 @@ export function passMarkFor(assessment: { passMark: number | null; type: string 
 }
 
 /**
- * Apply a graded attempt to everything downstream of it: the learner's best applied score, the
- * enrolment score, competence, the certificate and recognitions.
- *
- * Correct on purpose: the enrolment's applied score is the learner's **best** applied attempt,
- * never the latest, so a second attempt cannot take back a competence someone already showed.
- * Only a graded attempt counts; one still waiting in the queue changes nothing.
+ * Apply a graded attempt to everything downstream of it. The rules live in
+ * `evaluateEnrolment` (round 8 / phase 1): the standing applied score is the average of each
+ * live applied assessment's best graded result, a locked review-credit period never moves, and a
+ * manual override is never silently replaced. Only a graded attempt counts; one still waiting in
+ * the queue changes nothing.
  */
 export async function applyAttemptOutcome(attemptId: string): Promise<{
   competenceMet: boolean;
@@ -91,92 +90,20 @@ export async function applyAttemptOutcome(attemptId: string): Promise<{
     include: { assessment: { include: { module: { include: { course: true } } } } },
   });
   if (!attempt) throw Object.assign(new Error("attempt not found"), { status: 404 });
-  const assessment = attempt.assessment;
-  const course = assessment.module.course;
   const enrolmentId = attempt.enrolmentId;
-  const empty = { competenceMet: false, appliedScore: null, certificateIssued: false, enrolmentId, courseId: course.id };
-  if (attempt.status !== "graded") return empty;
-
-  // Best graded attempt per assessment, for every applied assessment of this course.
-  // Only live copies count: an archived or superseded version keeps its attempts but is no longer
-  // part of what a learner has to meet.
-  const appliedAssessments = await db.assessment.findMany({
-    where: { module: { courseId: course.id }, type: "applied", isPublished: true, isArchived: false, deletedAt: null },
-    select: { id: true, passMark: true },
-  });
-  let appliedScore: number | null = null;
-  let allAppliedPassed = appliedAssessments.length > 0;
-  const currentEnrolment = await db.enrolment.findUnique({ where: { id: enrolmentId }, select: { appliedAssessmentScore: true, completionDate: true, status: true } });
-  const previousStanding = currentEnrolment?.appliedAssessmentScore ?? null;
-  for (const applied of appliedAssessments) {
-
-    const graded = await db.assessmentAttempt.findMany({
-      where: { assessmentId: applied.id, enrolmentId, status: "graded" },
-      select: { score: true, passed: true },
-    });
-    const best = graded.reduce<number | null>((max, a) => (a.score === null ? max : max === null ? a.score : Math.max(max, a.score)), null);
-    if (applied.id === assessment.id) appliedScore = best;
-    const threshold = passMarkFor({ passMark: applied.passMark, type: "applied" }, course);
-    // For the assessment being graded, `best` is the attempts of *this enrolment*, while
-    // `previous` is the learner's best across the course. A learner whose first attempt failed and
-    // whose tutor allowed another is competent on the best of them, so compare the standing score
-    // rather than the latest attempt. Every other assessment is judged on its own best.
-    const standing = applied.id === assessment.id ? Math.max(best ?? -1, previousStanding ?? -1) : (best ?? -1);
-    if (standing < threshold) allAppliedPassed = false;
+  const courseId = attempt.assessment.module.courseId;
+  if (attempt.status !== "graded") {
+    return { competenceMet: false, appliedScore: null, certificateIssued: false, enrolmentId, courseId };
   }
-  if (assessment.type !== "applied") {
-    // A graded recall attempt changes no competence claim; report the current one.
-    const current = await db.enrolment.findUnique({ where: { id: enrolmentId }, select: { appliedAssessmentScore: true } });
-    return { ...empty, appliedScore: current?.appliedAssessmentScore ?? null };
-  }
-
-  const enrolment = await db.enrolment.findUnique({ where: { id: enrolmentId }, include: { course: true } });
-  if (!enrolment) throw Object.assign(new Error("enrolment not found"), { status: 404 });
-
-  const previous = enrolment.appliedAssessmentScore;
-  const bestApplied = previous === null ? appliedScore : appliedScore === null ? previous : Math.max(previous, appliedScore);
-  const { calculateEnrolmentScore } = await import("./reviewCredit.js");
-  const recalculated = calculateEnrolmentScore({
-    appliedAssessmentScore: bestApplied,
-    completionDate: enrolment.completionDate,
-    deadlineDate: enrolment.deadlineDate,
-    applicationScore: enrolment.applicationScore,
-  });
-
-  // Competence: every published applied assessment of the course met, and the content finished.
-  // The content is finished when there is a completion date or the enrolment is marked complete;
-  // staff set "completed", but a learner who finished the content has a completion date, and both
-  // mean the same thing here.
-  const contentComplete = !!enrolment.completionDate || enrolment.status === "completed";
-  const competenceMet = allAppliedPassed && contentComplete;
-  const updated = await db.enrolment.update({
-    where: { id: enrolmentId },
-    data: {
-      appliedAssessmentScore: bestApplied,
-      timelinessScore: recalculated.b,
-      enrolmentScore: recalculated.score,
-    },
-  });
-
-  let certificateIssued = false;
-  if (competenceMet) {
-    // A completed enrolment with a certificate requirement issues one; the certificate records
-    // the attempt that earned it.
-    const { issueCertificateForEnrolment } = await import("./certificates.js");
-    const issued: { issued: boolean; existing?: boolean; id?: string } = await issueCertificateForEnrolment(updated.id, attempt.id).catch(() => ({ issued: false }));
-    certificateIssued = !!issued.issued;
-    // A certificate issued earlier from a staff status change carries no attempt; now that the
-    // evidence exists, it is attached rather than left pointing at nothing.
-    if (issued.id) {
-      await db.certificate.updateMany({ where: { id: issued.id, attemptId: null }, data: { attemptId: attempt.id } }).catch(() => null);
-    }
-    const { checkStreakRecognition } = await import("./recognition.js").catch(() => ({ checkStreakRecognition: null }));
-    if (checkStreakRecognition) await checkStreakRecognition(updated.learnerId).catch(() => null);
-  }
-  const { checkAppliedScoreRecognition } = await import("./recognition.js").catch(() => ({ checkAppliedScoreRecognition: null }));
-  if (checkAppliedScoreRecognition) await checkAppliedScoreRecognition(updated.id).catch(() => null);
-
-  return { competenceMet, appliedScore: bestApplied, certificateIssued, enrolmentId, courseId: course.id };
+  const { evaluateEnrolment } = await import("./enrolmentOutcome.js");
+  const outcome = await evaluateEnrolment(enrolmentId, "attempt_graded", { attemptId });
+  return {
+    competenceMet: outcome.competent,
+    appliedScore: outcome.appliedScore,
+    certificateIssued: outcome.certificateIssued,
+    enrolmentId,
+    courseId,
+  };
 }
 
 // Does this attempt still need a person? True when any question is a scenario or short answer and

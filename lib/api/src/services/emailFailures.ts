@@ -48,13 +48,14 @@ export async function recordEmailFailure(input: EmailFailureInput): Promise<void
 }
 
 /** The most recent failures, newest first — what an operator looks at when mail is "quiet". */
-export async function listEmailFailures(orgId: string | null, take = 50): Promise<Array<{
-  id: string; to: string; subject: string; kind: string; error: string; createdAt: Date;
+export async function listEmailFailures(orgId: string | null, take = 50, skip = 0): Promise<Array<{
+  id: string; to: string; subject: string; kind: string; error: string; createdAt: Date; userId: string | null;
 }>> {
   return db.emailFailure.findMany({
     where: orgId ? { orgId } : {},
     orderBy: { createdAt: "desc" },
     take: Math.min(Math.max(take, 1), 200),
-    select: { id: true, to: true, subject: true, kind: true, error: true, createdAt: true },
+    skip: Math.max(skip, 0),
+    select: { id: true, to: true, subject: true, kind: true, error: true, createdAt: true, userId: true },
   }).catch(() => []);
 }

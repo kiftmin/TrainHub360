@@ -47,15 +47,20 @@ export async function confirmRsvp(sessionId: string, learnerId: string, orgId?: 
     }
     const existing = await tx.sessionRSVP.findUnique({ where: { sessionId_learnerId: { sessionId, learnerId } } });
     // Already confirmed: keep the seat. A decline is the only way out of it.
-    if (existing?.status === "confirmed") return existing;
+    if (existing?.status === "confirmed") return { ...existing, newlyConfirmed: false };
     const confirmed = await tx.sessionRSVP.count({ where: { sessionId, status: "confirmed" } });
     const full = locked.capacity != null && confirmed >= locked.capacity;
     const status = full ? "waitlisted" : "confirmed";
-    return tx.sessionRSVP.upsert({
+    const now = new Date();
+    // Round 8 / E.7: waitlistedAt records when the learner joined the queue. respondedAt is
+    // overwritten by any later change, so it cannot be the promotion order.
+    const waitlistedAt = full ? existing?.waitlistedAt ?? now : null;
+    const saved = await tx.sessionRSVP.upsert({
       where: { sessionId_learnerId: { sessionId, learnerId } },
-      create: { sessionId, learnerId, status, respondedAt: new Date() },
-      update: { status, respondedAt: new Date() },
+      create: { sessionId, learnerId, status, respondedAt: now, waitlistedAt: full ? now : null },
+      update: { status, respondedAt: now, waitlistedAt },
     });
+    return { ...saved, newlyConfirmed: status === "confirmed" && existing?.status !== "confirmed" };
   });
 }
 
@@ -70,9 +75,14 @@ export async function declineRsvp(sessionId: string, learnerId: string, orgId?: 
     // take the same freed seat.
     const promoted = await db.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM sessions WITH (UPDLOCK, HOLDLOCK) WHERE id = ${sessionId}`;
-      const next = await tx.sessionRSVP.findFirst({ where: { sessionId, status: "waitlisted" }, orderBy: { respondedAt: "asc" } });
+      const waiting = await tx.sessionRSVP.findMany({ where: { sessionId, status: "waitlisted" } });
+      // Round 8 / E.7: promote by waitlistedAt. Rows written before the column existed fall
+      // back to respondedAt/createdAt so they keep their original place.
+      const joinedAt = (r: { waitlistedAt: Date | null; respondedAt: Date | null; createdAt: Date }) =>
+        (r.waitlistedAt ?? r.respondedAt ?? r.createdAt).getTime();
+      const next = waiting.sort((a, b) => joinedAt(a) - joinedAt(b) || a.createdAt.getTime() - b.createdAt.getTime())[0];
       if (!next) return null;
-      return tx.sessionRSVP.update({ where: { id: next.id }, data: { status: "confirmed" } });
+      return tx.sessionRSVP.update({ where: { id: next.id }, data: { status: "confirmed", waitlistedAt: null } });
     }).catch(() => null);
     if (promoted) {
       const { notify } = await import("./notify.js");
@@ -86,17 +96,5 @@ export async function declineRsvp(sessionId: string, learnerId: string, orgId?: 
   return updated;
 }
 
-export async function runRsvpReminders(staleHours = 48, now: Date = new Date()): Promise<{ reminded: number }> {
-  const cutoff = new Date(now.getTime() - staleHours * 3600000);
-  const stale = await db.sessionRSVP.findMany({ where: { status: "invited", respondedAt: null, createdAt: { lt: cutoff } }, include: { learner: { select: { email: true } }, session: { select: { title: true } } }, take: 200 }).catch(() => []);
-  const { notify } = await import("./notify.js");
-  let reminded = 0;
-  for (const r of stale) {
-    const existing = await db.reminderLog.findUnique({ where: { sessionId_learnerId_kind: { sessionId: r.sessionId, learnerId: r.learnerId, kind: "rsvp_reminder" } } }).catch(() => null);
-    if (existing) continue;
-    await notify(r.learnerId, "rsvp_reminder", { title: "Please respond to your session invitation", body: `You have not yet RSVP'd to "${r.session.title}".`, link: "/calendar" });
-    await db.reminderLog.create({ data: { sessionId: r.sessionId, learnerId: r.learnerId, kind: "rsvp_reminder" } }).catch(() => null);
-    reminded += 1;
-  }
-  return { reminded };
-}
+// Round 8 / D.1: the 48-hour invitation nudge moved into services/reminderCadence.ts, where it
+// follows each organization's cadence and shares the scheduled job with session reminders.

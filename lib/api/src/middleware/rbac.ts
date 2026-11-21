@@ -83,6 +83,10 @@ async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
       const cp = await db.contentProgress.findUnique({ where: { id: params.id }, select: { contentItem: { select: { module: { select: { course: { select: { programmeId: true } } } } } } } }).catch(() => null);
       if (cp) return cp.contentItem.module.course.programmeId;
     }
+    if (req.path.includes("/attempts/")) {
+      const at = await db.assessmentAttempt.findUnique({ where: { id: params.id }, select: { assessment: { select: { module: { select: { course: { select: { programmeId: true } } } } } } } }).catch(() => null);
+      if (at) return at.assessment.module.course.programmeId;
+    }
     if (req.path.includes("/content/")) {
       const c = await db.contentItem.findUnique({ where: { id: params.id }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);
       if (c) return c.module.course.programmeId;

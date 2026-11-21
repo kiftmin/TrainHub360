@@ -17,8 +17,9 @@ import type { AuthedRequest } from "./middleware/auth.js";
 import { scheduleKpiJob } from "./jobs/kpiJob.js";
 import { scheduleContentLifecycleJob } from "./jobs/contentLifecycleJob.js";
 import { scheduleCertificateExpiryJob } from "./jobs/certificateExpiryJob.js";
-import { scheduleSessionReminderJob } from "./jobs/sessionReminderJob.js";
+import { scheduleReminderJob } from "./jobs/sessionReminderJob.js";
 import { assertEmailConfiguration } from "./services/email.js";
+import { parseTrustProxy } from "./config/proxy.js";
 
 type StatusError = Error & { status?: unknown };
 
@@ -71,6 +72,8 @@ export const errorMiddleware: express.ErrorRequestHandler = (err, _req, res, _ne
 };
 
 const app = express();
+// Round 8 / 3.2: off unless configured, so a spoofed X-Forwarded-For is ignored.
+app.set("trust proxy", parseTrustProxy(process.env.TRUST_PROXY));
 app.use(cors());
 app.use(express.json());
 app.use(authMiddleware);
@@ -97,10 +100,18 @@ if (process.env.NODE_ENV !== "test") {
   // usable. EMAIL_STRICT=false is the deliberate opt-out for a production box that really
   // does not send mail.
   assertEmailConfiguration();
+  // Round 8 / 3.2: a production box behind a proxy that never set TRUST_PROXY throttles the
+  // proxy's address, not the caller's. Warn loudly rather than pretend the limit is per client.
+  if (process.env.NODE_ENV === "production" && parseTrustProxy(process.env.TRUST_PROXY) === false) {
+    console.warn(
+      "[api] TRUST_PROXY is not set. Behind a reverse proxy, the login throttle will see the " +
+        "proxy's address for every request. Set TRUST_PROXY to the hop count, loopback, or the proxy CIDRs.",
+    );
+  }
   app.listen(port, () => console.log(`TrainHub360 API on :${port}`));
   scheduleKpiJob();
   scheduleContentLifecycleJob();
   scheduleCertificateExpiryJob();
-  scheduleSessionReminderJob();
+  scheduleReminderJob();
 }
 export default app;

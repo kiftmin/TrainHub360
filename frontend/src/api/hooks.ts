@@ -10,6 +10,14 @@ export interface Organization {
   samlEnabled?: boolean;
   samlIdpIssuer?: string;
   samlEntityId?: string;
+  /** Round 8 / D.1: `{"unansweredHours":[…],"confirmedBeforeStartHours":[…],"maxUnanswered":n}`. */
+  reminderCadenceJson?: string;
+}
+
+export interface ReminderCadence {
+  unansweredHours: number[];
+  confirmedBeforeStartHours: number[];
+  maxUnanswered: number;
 }
 
 export interface CurrentUser {
@@ -142,10 +150,20 @@ export interface Booking {
 }
 
 export interface BookingInput {
-  trainer: string;
-  course?: string;
+  trainerId: string;
+  courseId?: string;
   date: string;
   time: string;
+}
+
+export interface BookableTrainer {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export function useBookableTrainers() {
+  return useQuery(queryOpts(['bookings', 'trainers'] as const, () => api<BookableTrainer[]>('/bookings/trainers')));
 }
 
 export interface CalendarEvent {
@@ -170,21 +188,23 @@ export interface ReviewCreditSettings {
   eligibleProgrammeTypes: string[];
 }
 
-export interface AssessmentResult {
-  appliedScore: number;
-  recallScore: number;
-  passed: boolean;
-  competenceMet: boolean;
-  message: string;
-}
-
 export interface Enrolment {
   id: string;
   learnerId: string;
   courseId: string;
+  programmeId?: string;
   status: string;
   enrolmentScore?: number | null;
   managerSignOff?: boolean | null;
+  // Round 8 / 1.3: where the applied score came from, and a result held back by an override.
+  appliedAssessmentScore?: number | null;
+  appliedScoreSource?: string | null;
+  appliedScoreOverrideReason?: string | null;
+  pendingAssessmentScore?: number | null;
+  pendingAssessmentScoreAt?: string | null;
+  contentCompletedAt?: string | null;
+  completionDate?: string | null;
+  reviewCreditLockedAt?: string | null;
 }
 
 export interface AuditLog {
@@ -207,6 +227,7 @@ export const qk = {
   calendar: ['calendar'] as const,
   reviewCreditSettings: ['review-credit', 'settings'] as const,
   auditLogs: ['audit', 'logs'] as const,
+  emailFailures: ['email-failures'] as const,
   enrolments: ['enrolments'] as const,
   modules: (programmeId: string) => ['programmes', programmeId, 'modules'] as const,
 };
@@ -305,7 +326,7 @@ export function useRequestContentDeletion() {
 export function useUpdateOrganization() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: { name?: string; plan?: string; domain?: string; webhookUrls?: string[]; samlEnabled?: boolean; samlIdpCert?: string; samlIdpIssuer?: string; samlEntityId?: string } }) =>
+    mutationFn: ({ id, patch }: { id: string; patch: { name?: string; plan?: string; domain?: string; webhookUrls?: string[]; samlEnabled?: boolean; samlIdpCert?: string; samlIdpIssuer?: string; samlEntityId?: string; reminderCadence?: ReminderCadence } }) =>
       api<Organization>(`/organizations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workspace });
@@ -336,17 +357,6 @@ export function useCreateCourse() {
   return useMutation({
     mutationFn: (input: CourseInput) =>
       api<Course>('/courses', { method: 'POST', body: JSON.stringify(input) }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['courses'] });
-    },
-  });
-}
-
-export function useSubmitAttempt(courseId: string) {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (input: { appliedScore: number; recallScore: number }) =>
-      api<AssessmentResult>(`/courses/${courseId}/attempts`, { method: 'POST', body: JSON.stringify(input) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['courses'] });
     },
@@ -430,6 +440,38 @@ export function useResendActivation() {
     mutationFn: (id: string) =>
       api<{ ok: boolean; emailSent?: boolean }>(`/users/${id}/resend-activation`, { method: 'POST' }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+  });
+}
+
+/**
+ * Round 8 / 3.3: failed sends are written to `email_failures`, but until now nothing in the
+ * product ever read them — a broken SMTP relay looked like a quiet one. Org staff see the
+ * most recent failures and can dismiss one once it has been dealt with.
+ */
+export interface EmailFailure {
+  id: string;
+  to: string;
+  subject: string;
+  kind: string;
+  error: string;
+  createdAt: string;
+  userId: string | null;
+}
+
+export function useEmailFailures(limit = 20) {
+  return useQuery(
+    queryOpts(
+      [...qk.emailFailures, limit],
+      () => api<{ items: EmailFailure[]; limit: number; offset: number }>(`/email-failures?limit=${limit}`),
+    ),
+  );
+}
+
+export function useDismissEmailFailure() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<void>(`/email-failures/${id}/dismiss`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.emailFailures }),
   });
 }
 
@@ -558,6 +600,29 @@ export function useAuditLogs() {
 
 export function useEnrolments() {
   return useQuery(queryOpts(qk.enrolments, () => api<Enrolment[]>('/enrolments')));
+}
+
+// Round 8 / 1.3: a manual override holds a later automatic result until staff decide.
+export function useAcceptAssessmentScore() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enrolmentId: string) =>
+      api<{ enrolmentId: string }>(`/enrolments/${enrolmentId}/accept-assessment-score`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.enrolments });
+    },
+  });
+}
+
+export function useRejectAssessmentScore() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (enrolmentId: string) =>
+      api<{ ok: boolean }>(`/enrolments/${enrolmentId}/reject-assessment-score`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.enrolments });
+    },
+  });
 }
 
 export interface Certificate {
@@ -772,25 +837,49 @@ export function useContentProgress(courseId: string) {
   });
 }
 
-export function useVerifyContent(moduleId: string, courseId?: string) {
+export interface PendingVerification {
+  id: string;
+  evidenceNote?: string | null;
+  evidenceFileId?: string | null;
+  startedAt?: string | null;
+  contentItem: { id: string; title: string; type: string; module: { id: string; courseId: string; course: { title: string; programmeId: string } } };
+  enrolment: { id: string; learnerId: string; learner: { name: string; email: string } };
+}
+
+export function usePendingVerification(enabled = true) {
+  return useQuery(queryOpts(['content-progress', 'pending'] as const, () => api<PendingVerification[]>('/content-progress/pending'), enabled));
+}
+
+export function useVerifyContent() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ id, verified, note }: { id: string; verified: boolean; note?: string }) =>
       api(`/content-progress/${id}/verify`, { method: 'POST', body: JSON.stringify({ verified, note }) }),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['module-content', moduleId] });
-      if (courseId) qc.invalidateQueries({ queryKey: ['course-content', courseId] });
+      qc.invalidateQueries({ queryKey: ['content-progress', 'pending'] });
+      qc.invalidateQueries({ queryKey: ['module-content'] });
+      qc.invalidateQueries({ queryKey: ['course-content'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
     },
   });
 }
 
+export type QuestionKind = 'single_choice' | 'multi_choice' | 'true_false' | 'short_answer' | 'scenario';
+
 export interface AssessmentQuestion {
   id: string;
-  kind: string;
+  kind: QuestionKind | string;
   prompt: string;
   points: number;
   order: number;
+  scenarioContext?: string | null;
+  rubric?: string | null;
+  acceptedAnswers?: string | null;
   options?: Array<{ id: string; text: string; isCorrect?: boolean; order: number }>;
+  // Present on create: when a published assessment is edited the question lands on a new version.
+  assessmentId?: string;
+  version?: number;
+  versionCreated?: boolean;
 }
 
 export interface CourseAssessment {
@@ -802,6 +891,8 @@ export interface CourseAssessment {
   maxAttempts?: number | null;
   timeLimitMinutes?: number | null;
   isPublished: boolean;
+  version?: number;
+  supersededAt?: string | null;
   questions: AssessmentQuestion[];
   module?: { id: string; title: string };
   attemptCount: number;
@@ -818,12 +909,66 @@ export function useAssessment(id: string, enabled = true) {
   return useQuery(queryOpts(['assessment', id] as const, () => api<CourseAssessment & { questions: AssessmentQuestion[] }>(`/assessments/${id}`), enabled && !!id));
 }
 
+export interface QuestionInput {
+  kind: QuestionKind;
+  prompt: string;
+  points?: number;
+  order?: number;
+  scenarioContext?: string | null;
+  rubric?: string | null;
+  acceptedAnswers?: string[];
+  options?: Array<{ text: string; isCorrect: boolean }>;
+}
+
 export function useCreateQuestion(assessmentId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { prompt: string; type: 'recall' | 'applied'; points?: number; options: Array<{ text: string; isCorrect: boolean }> }) =>
+    mutationFn: (input: QuestionInput) =>
       api<AssessmentQuestion>(`/assessments/${assessmentId}/questions`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['assessment', assessmentId] });
+      qc.invalidateQueries({ queryKey: ['module-assessments'] });
+    },
+  });
+}
+
+export function useUpdateQuestion(assessmentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<QuestionInput> }) =>
+      api<AssessmentQuestion>(`/questions/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['assessment', assessmentId] }),
+  });
+}
+
+export function useDeleteQuestion(assessmentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<{ deleted: string }>(`/questions/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['assessment', assessmentId] }),
+  });
+}
+
+export function useReorderQuestions(assessmentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) =>
+      api<{ assessmentId: string; order: string[] }>(`/assessments/${assessmentId}/questions/order`, { method: 'PUT', body: JSON.stringify({ ids }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['assessment', assessmentId] }),
+  });
+}
+
+export function useUpdateAssessment(assessmentId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: { title?: string; type?: 'recall' | 'applied'; passMark?: number; maxAttempts?: number | null; timeLimitMinutes?: number | null; confirmNewVersion?: boolean }) =>
+      api<CourseAssessment & { supersededId?: string; redirectedTo?: string }>(`/assessments/${assessmentId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['assessment', assessmentId] });
+      qc.invalidateQueries({ queryKey: ['module-assessments'] });
+      qc.invalidateQueries({ queryKey: ['course-assessments'] });
+      if (data.redirectedTo) qc.invalidateQueries({ queryKey: ['assessment', data.redirectedTo] });
+    },
   });
 }
 
@@ -838,6 +983,17 @@ export function usePublishAssessment(assessmentId: string) {
   });
 }
 
+export interface LearnerQuestion {
+  id: string;
+  kind: string;
+  type: string;
+  prompt: string;
+  points: number;
+  order: number;
+  scenarioContext?: string | null;
+  options: Array<{ id: string; text: string; order: number }>;
+}
+
 export interface StartedAttempt {
   attemptId: string;
   attemptNumber: number;
@@ -845,7 +1001,12 @@ export interface StartedAttempt {
   expiresAt: string | null;
   timeLimitMinutes: number | null;
   assessmentId: string;
-  questions: Array<{ id: string; type: string; prompt: string; points: number; order: number; options: Array<{ id: string; text: string; order: number }> }>;
+  version?: number;
+  resumed?: boolean;
+  questions: LearnerQuestion[];
+  answers?: Array<{ questionId: string; optionIds: string[]; text: string | null }>;
+  maxAttempts?: number | null;
+  attemptsUsed?: number;
 }
 
 export function useStartAttempt(courseId?: string) {
@@ -859,27 +1020,103 @@ export function useStartAttempt(courseId?: string) {
   });
 }
 
+export function useAttempt(attemptId: string, enabled = true) {
+  return useQuery(queryOpts(['attempt', attemptId] as const, () => api<StartedAttempt & { status: string; percent: number | null }>(`/attempts/${attemptId}`), enabled && !!attemptId));
+}
+
+export function useSaveAttemptAnswers() {
+  return useMutation({
+    mutationFn: ({ attemptId, answers }: { attemptId: string; answers: Array<{ questionId: string; optionIds?: string[]; text?: string }> }) =>
+      api<{ attemptId: string; saved: number; expiresAt: string | null }>(`/attempts/${attemptId}/answers`, { method: 'PUT', body: JSON.stringify({ answers }) }),
+  });
+}
+
 export interface AttemptSubmission {
   attemptId: string;
   attemptNumber: number;
-  score: number;
-  earnedPoints: number;
-  totalPoints: number;
-  passMark: number;
-  passed: boolean;
-  competenceMet: boolean;
-  results: Array<{ questionId: string; correct: boolean; points: number }>;
+  status: 'graded' | 'grading';
+  score: number | null;
+  percent: number | null;
+  passed: boolean | null;
+  earnedPoints?: number;
+  totalPoints?: number;
+  passMark?: number;
+  competenceMet?: boolean;
+  message?: string;
+  awaitingGrading?: number;
+  graded?: boolean;
+  results?: Array<{ questionId: string; kind?: string; correct: boolean | null; points: number | null; manual?: boolean }>;
+  appliedScore?: number | null;
+  certificateIssued?: boolean;
 }
 
 export function useSubmitAttemptAnswers(courseId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ attemptId, answers }: { attemptId: string; answers: Array<{ questionId: string; optionIds: string[] }> }) =>
+    mutationFn: ({ attemptId, answers }: { attemptId: string; answers: Array<{ questionId: string; optionIds?: string[]; text?: string }> }) =>
       api<AttemptSubmission>(`/attempts/${attemptId}/submit`, { method: 'POST', body: JSON.stringify({ answers }) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['course-assessments', courseId] });
       qc.invalidateQueries({ queryKey: ['course-attempts', courseId] });
       qc.invalidateQueries({ queryKey: ['courses'] });
+      qc.invalidateQueries({ queryKey: ['grading-queue'] });
+      qc.invalidateQueries({ queryKey: ['notifications'] });
+    },
+  });
+}
+
+export interface GradingQueueItem {
+  id: string;
+  attemptId: string;
+  attemptNumber: number;
+  submittedAt: string | null;
+  learner: { id: string; name: string; email: string };
+  assessment: { id: string; title: string | null; type: string };
+  course: { id: string; title: string; programmeId: string };
+  answered: number;
+  answersStored: number;
+}
+
+export function useGradingQueue(enabled = true) {
+  return useQuery(queryOpts(['grading-queue'] as const, () => api<GradingQueueItem[]>('/assessments/grading/queue'), enabled));
+}
+
+export interface GradingAttempt {
+  attemptId: string;
+  status: string;
+  submittedAt: string | null;
+  learner: { id: string; name: string; email: string };
+  assessment: { id: string; title: string | null; type: string; version: number };
+  score: number | null;
+  percent: number | null;
+  passed: boolean | null;
+  questions: Array<{
+    id: string;
+    questionId: string;
+    kind: string;
+    prompt: string;
+    points: number;
+    scenarioContext: string | null;
+    rubric: string | null;
+    options: Array<{ id: string; text: string; isCorrect: boolean }>;
+    answer: { id: string; optionIds: string[]; text: string | null; pointsAwarded: number | null; autoGraded: boolean; graderComment: string | null } | null;
+  }>;
+}
+
+export function useGradingAttempt(attemptId: string, enabled = true) {
+  return useQuery(queryOpts(['grading-attempt', attemptId] as const, () => api<GradingAttempt>(`/attempts/${attemptId}/answers`), enabled && !!attemptId));
+}
+
+export function useGradeAttempt() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ attemptId, answers }: { attemptId: string; answers: Array<{ questionId: string; pointsAwarded: number; comment?: string }> }) =>
+      api<AttemptSubmission>(`/attempts/${attemptId}/grade`, { method: 'POST', body: JSON.stringify({ answers }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['grading-queue'] });
+      qc.invalidateQueries({ queryKey: ['grading-attempt'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+      qc.invalidateQueries({ queryKey: ['notifications'] });
     },
   });
 }
@@ -933,7 +1170,13 @@ export function useBulkRemoveProgrammeMembers(programmeId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (userIds: string[]) =>
-      api<{ removed: number; withdrawn: number; coursesUnassigned: number; requiresApproval?: boolean; deleteRequestId?: string }>(`/programmes/${programmeId}/members/bulk-remove`, { method: 'POST', body: JSON.stringify({ userIds }) }),
+      api<{
+        pendingApproval: boolean;
+        removed?: number;
+        withdrawn?: number;
+        coursesUnassigned?: number;
+        request?: { id: string };
+      }>(`/programmes/${programmeId}/members/bulk-remove`, { method: 'POST', body: JSON.stringify({ userIds }) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['programme-members', programmeId] });
       qc.invalidateQueries({ queryKey: ['delete-requests'] });
@@ -944,7 +1187,9 @@ export function useBulkRemoveProgrammeMembers(programmeId: string) {
 }
 
 export function useIcalToken() {
-  return useQuery(queryOpts(['ical-token'] as const, () => api<{ token: string | null; url: string | null }>('/me/ical-token')));
+  // Round 8 / D.2: only the hash is stored, so the API can no longer return the token. A usable
+  // URL comes from rotating it; this query only says whether a feed already exists.
+  return useQuery(queryOpts(['ical-token'] as const, () => api<{ configured: boolean }>('/me/ical-token')));
 }
 
 export function useGenerateIcalToken() {
