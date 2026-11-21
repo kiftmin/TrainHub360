@@ -113,20 +113,3 @@ export function parseEnrolmentPatch(
   }
   return out;
 }
-
-/** The fields whose change actually moves a score or a completion — the ones that clear a sign-off. */
-export function scoreInputsChanged(
-  before: { appliedAssessmentScore: number | null; completionDate: Date | null; deadlineDate: Date | null; applicationScore: number | null },
-  after: { appliedAssessmentScore: number | null; completionDate: Date | null; deadlineDate: Date | null; applicationScore: number | null },
-): boolean {
-  const same = (a: number | Date | null, b: number | Date | null) =>
-    a instanceof Date || b instanceof Date
-      ? (a instanceof Date ? a.getTime() : null) === (b instanceof Date ? b.getTime() : null)
-      : a === b;
-  return (
-    !same(before.appliedAssessmentScore, after.appliedAssessmentScore) ||
-    !same(before.completionDate, after.completionDate) ||
-    !same(before.deadlineDate, after.deadlineDate) ||
-    !same(before.applicationScore, after.applicationScore)
-  );
-}

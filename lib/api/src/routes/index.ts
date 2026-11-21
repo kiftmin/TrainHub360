@@ -22,6 +22,7 @@ import {
 import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures } from "../middleware/rateLimit.js";
 import { assertNotGradingSelf } from "../middleware/grading.js";
 import { parseEnrolmentPatch } from "../services/enrolmentPatch.js";
+import { applyScoreChange, lockEnrolmentRow, notifyManagerSignoffRequired } from "../services/scoreChange.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -424,53 +425,68 @@ router.patch("/enrolments/:id", async (req, res) => {
   // Round 6 / M1: the withdrawal hook below must see the row as it was.
   const wasWithdrawn = current.status === "withdrawn";
   const manualScore = patch.appliedAssessmentScore !== undefined;
-  const appliedForScore = manualScore ? (patch.appliedAssessmentScore as number) : current.appliedAssessmentScore ?? null;
-  const completionDateForScore = patch.completionDate !== undefined ? patch.completionDate : current.completionDate ?? null;
-  const deadlineForScore = patch.deadlineDate !== undefined ? patch.deadlineDate : current.deadlineDate ?? null;
-  const applicationForScore = patch.applicationScore !== undefined ? patch.applicationScore : current.applicationScore ?? null;
-  const { score, b } = calculateEnrolmentScore({
-    appliedAssessmentScore: appliedForScore,
-    completionDate: completionDateForScore,
-    deadlineDate: deadlineForScore,
-    applicationScore: applicationForScore,
-  });
-  // A staff status change is a manual completion; the automatic loop writes "assessment".
-  const completes = patch.status === "completed" && current.status !== "completed";
-  const e = await db.enrolment.update({
-    where: { id: req.params.id },
-    data: {
-      status: patch.status ?? undefined,
-      completionDate: patch.completionDate !== undefined ? patch.completionDate : completes ? current.completionDate ?? new Date() : undefined,
-      deadlineDate: patch.deadlineDate !== undefined ? patch.deadlineDate : undefined,
-      appliedAssessmentScore: manualScore ? appliedForScore : undefined,
-      ...(manualScore ? {
-        appliedScoreSource: "manual",
-        appliedScoreOverrideReason: reason,
-        appliedScoreOverriddenBy: me.id,
-        appliedScoreOverriddenAt: new Date(),
-        pendingAssessmentScore: null,
-        pendingAssessmentScoreAt: null,
-      } : {}),
-      applicationScore: patch.applicationScore !== undefined ? patch.applicationScore : undefined,
+  const result = await db.$transaction(async (tx) => {
+    // The decision and the score write hold the row lock, so an evaluation landing at the same
+    // time cannot overwrite this override (or silently clear the sign-off a second time).
+    const row = await lockEnrolmentRow(tx, req.params.id);
+    if (!row) return null;
+    const appliedForScore = manualScore ? (patch.appliedAssessmentScore as number) : row.appliedAssessmentScore ?? null;
+    const completionDateForScore = patch.completionDate !== undefined ? patch.completionDate : row.completionDate ?? null;
+    const deadlineForScore = patch.deadlineDate !== undefined ? patch.deadlineDate : row.deadlineDate ?? null;
+    const applicationForScore = patch.applicationScore !== undefined ? patch.applicationScore : row.applicationScore ?? null;
+    // A staff status change is a manual completion; the automatic loop writes "assessment".
+    const completes = patch.status === "completed" && row.status !== "completed";
+    const finalCompletionDate = patch.completionDate !== undefined
+      ? patch.completionDate
+      : completes ? row.completionDate ?? new Date() : completionDateForScore;
+    const { score, b } = calculateEnrolmentScore({
+      appliedAssessmentScore: appliedForScore,
+      completionDate: finalCompletionDate,
+      deadlineDate: deadlineForScore,
+      applicationScore: applicationForScore,
+    });
+    const scoreEffect = await applyScoreChange(tx, row, {
+      appliedAssessmentScore: appliedForScore,
+      applicationScore: applicationForScore,
+      deadlineDate: deadlineForScore,
+      completionDate: finalCompletionDate,
       timelinessScore: b,
       enrolmentScore: score,
-      ...(completes ? { completionSource: "manual" as const } : {}),
-      managerSignOff: manager.managerSignOff ?? undefined,
-      managerSignOffBy: signOffBy ?? undefined,
-      managerSignOffAt: signOffAt ?? undefined,
-    },
-  });
-  if (overridesOutcome) {
-    await db.auditLog.create({
+    });
+    await tx.enrolment.update({
+      where: { id: row.id },
       data: {
-        userId: me.id,
-        action: manualScore ? "ENROLMENT_SCORE_OVERRIDDEN" : "ENROLMENT_STATUS_OVERRIDDEN",
-        entity: "enrolment",
-        entityId: e.id,
-        details: JSON.stringify({ reason, status: patch.status ?? null, completionDate: patch.completionDate ?? null, deadlineDate: patch.deadlineDate ?? null, appliedAssessmentScore: manualScore ? appliedForScore : null, completionSource: completes ? "manual" : null }),
+        status: patch.status ?? undefined,
+        ...(manualScore ? {
+          appliedScoreSource: "manual",
+          appliedScoreOverrideReason: reason,
+          appliedScoreOverriddenBy: me.id,
+          appliedScoreOverriddenAt: new Date(),
+          pendingAssessmentScore: null,
+          pendingAssessmentScoreAt: null,
+        } : {}),
+        ...(completes ? { completionSource: "manual" as const } : {}),
+        managerSignOff: manager.managerSignOff ?? undefined,
+        managerSignOffBy: signOffBy ?? undefined,
+        managerSignOffAt: signOffAt ?? undefined,
       },
-    }).catch(() => null);
-  }
+    });
+    if (overridesOutcome) {
+      await tx.auditLog.create({
+        data: {
+          userId: me.id,
+          action: manualScore ? "ENROLMENT_SCORE_OVERRIDDEN" : "ENROLMENT_STATUS_OVERRIDDEN",
+          entity: "enrolment",
+          entityId: row.id,
+          details: JSON.stringify({ reason, status: patch.status ?? null, completionDate: patch.completionDate ?? null, deadlineDate: patch.deadlineDate ?? null, appliedAssessmentScore: manualScore ? appliedForScore : null, completionSource: completes ? "manual" : null }),
+        },
+      }).catch(() => null);
+    }
+    return { e: (await tx.enrolment.findUnique({ where: { id: row.id } }))!, signOffCleared: scoreEffect.signOffCleared, completes };
+  });
+  if (!result) return res.status(404).json({ error: "not found" });
+  const { e, signOffCleared, completes } = result;
+  if (signOffCleared) await notifyManagerSignoffRequired(e.learnerId);
   if (patch.status === "withdrawn" && !wasWithdrawn) {
     // Round 6 / M1: a withdrawn learner loses the threads of that programme.
     await revokeStaleThreadAccess(e.learnerId, scope.orgId);
@@ -508,32 +524,62 @@ async function loadEnrolmentForStaff(req: AuthedRequest, id: string) {
 router.post("/enrolments/:id/accept-assessment-score", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const e = await loadEnrolmentForStaff(req as AuthedRequest, req.params.id);
-  if (e.pendingAssessmentScore == null) return res.status(409).json({ error: "there is no pending assessment result" });
-  await db.enrolment.update({
-    where: { id: e.id },
-    data: {
-      appliedAssessmentScore: e.pendingAssessmentScore,
-      appliedScoreSource: "assessment",
-      appliedScoreOverrideReason: null,
-      appliedScoreOverriddenBy: null,
-      appliedScoreOverriddenAt: null,
-      pendingAssessmentScore: null,
-      pendingAssessmentScoreAt: null,
-    },
+  const result = await db.$transaction(async (tx) => {
+    const row = await lockEnrolmentRow(tx, e.id);
+    if (!row || row.pendingAssessmentScore == null) return null;
+    const applied = row.pendingAssessmentScore;
+    const { score, b } = calculateEnrolmentScore({
+      appliedAssessmentScore: applied,
+      completionDate: row.completionDate,
+      deadlineDate: row.deadlineDate,
+      applicationScore: row.applicationScore,
+    });
+    const scoreEffect = await applyScoreChange(tx, row, {
+      appliedAssessmentScore: applied,
+      applicationScore: row.applicationScore,
+      deadlineDate: row.deadlineDate,
+      completionDate: row.completionDate,
+      timelinessScore: b,
+      enrolmentScore: score,
+    });
+    await tx.enrolment.update({
+      where: { id: row.id },
+      data: {
+        appliedScoreSource: "assessment",
+        appliedScoreOverrideReason: null,
+        appliedScoreOverriddenBy: null,
+        appliedScoreOverriddenAt: null,
+        pendingAssessmentScore: null,
+        pendingAssessmentScoreAt: null,
+        pendingRejectedScore: null,
+      },
+    });
+    await tx.auditLog.create({
+      data: { userId: me.id, action: "ASSESSMENT_SCORE_ACCEPTED", entity: "enrolment", entityId: row.id, details: JSON.stringify({ acceptedScore: applied, appliedAssessmentScore: applied }) },
+    }).catch(() => null);
+    return { learnerId: row.learnerId, signOffCleared: scoreEffect.signOffCleared };
   });
-  await db.auditLog.create({ data: { userId: me.id, action: "ASSESSMENT_SCORE_ACCEPTED", entity: "enrolment", entityId: e.id, details: String(e.pendingAssessmentScore) } }).catch(() => null);
+  if (!result) return res.status(409).json({ error: "there is no pending assessment result" });
+  if (result.signOffCleared) await notifyManagerSignoffRequired(result.learnerId);
   return res.json(await evaluateEnrolment(e.id, "manual_status"));
 });
 
 router.post("/enrolments/:id/reject-assessment-score", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const e = await loadEnrolmentForStaff(req as AuthedRequest, req.params.id);
-  if (e.pendingAssessmentScore == null) return res.status(409).json({ error: "there is no pending assessment result" });
-  await db.enrolment.update({
-    where: { id: e.id },
-    data: { pendingAssessmentScore: null, pendingAssessmentScoreAt: null },
+  const rejected = await db.$transaction(async (tx) => {
+    const row = await lockEnrolmentRow(tx, e.id);
+    if (!row || row.pendingAssessmentScore == null) return null;
+    await tx.enrolment.update({
+      where: { id: row.id },
+      data: { pendingAssessmentScore: null, pendingAssessmentScoreAt: null, pendingRejectedScore: row.pendingAssessmentScore },
+    });
+    await tx.auditLog.create({
+      data: { userId: me.id, action: "ASSESSMENT_SCORE_REJECTED", entity: "enrolment", entityId: row.id, details: JSON.stringify({ rejectedScore: row.pendingAssessmentScore }) },
+    }).catch(() => null);
+    return row.pendingAssessmentScore;
   });
-  await db.auditLog.create({ data: { userId: me.id, action: "ASSESSMENT_SCORE_REJECTED", entity: "enrolment", entityId: e.id, details: String(e.pendingAssessmentScore) } }).catch(() => null);
+  if (rejected === null) return res.status(409).json({ error: "there is no pending assessment result" });
   return res.json({ ok: true, enrolmentId: e.id });
 });
 

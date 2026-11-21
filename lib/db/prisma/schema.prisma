@@ -269,6 +269,9 @@ model Enrolment {
   appliedScoreOverriddenAt    DateTime?  @map("applied_score_overridden_at")
   pendingAssessmentScore      Float?     @map("pending_assessment_score")
   pendingAssessmentScoreAt    DateTime?  @map("pending_assessment_score_at")
+  // Round 10 / 1.2: the last automatic score programme staff rejected. While the computed value
+  // still equals this, it is not stored as pending again; a different value is a new proposal.
+  pendingRejectedScore        Float?     @map("pending_rejected_score")
   // Round 8 / 1.1: content completion is tracked separately from competence.
   contentCompletedAt          DateTime?  @map("content_completed_at")
   // Round 9 / 1.2: why this enrolment is completed. "assessment" is written by evaluateEnrolment

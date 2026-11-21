@@ -1,6 +1,7 @@
 import { db, Prisma } from "../db.js";
 import { calculateEnrolmentScore } from "./reviewCredit.js";
 import { notify } from "./notify.js";
+import { applyScoreChange, notifyManagerSignoffRequired } from "./scoreChange.js";
 
 // Round 8 / Phase 1. One idempotent function owns the answer to "is this enrolment
 // complete?" so content progress, grading, publishing and manual edits cannot disagree.
@@ -49,6 +50,11 @@ interface OutcomeCore {
     appliedAssessmentScore: number | null;
     appliedScoreSource: string;
     applicationScore: number | null;
+    pendingAssessmentScore: number | null;
+    pendingAssessmentScoreAt: Date | null;
+    pendingRejectedScore: number | null;
+    timelinessScore: number | null;
+    enrolmentScore: number | null;
     contentCompletedAt: Date | null;
     reviewCreditLockedAt: Date | null;
     managerSignOff: boolean | null;
@@ -165,6 +171,11 @@ async function computeOutcome(
       appliedAssessmentScore: row.appliedAssessmentScore,
       appliedScoreSource: row.appliedScoreSource ?? "assessment",
       applicationScore: row.applicationScore,
+      pendingAssessmentScore: row.pendingAssessmentScore,
+      pendingAssessmentScoreAt: row.pendingAssessmentScoreAt,
+      pendingRejectedScore: row.pendingRejectedScore,
+      timelinessScore: row.timelinessScore,
+      enrolmentScore: row.enrolmentScore,
       contentCompletedAt: row.contentCompletedAt ?? null,
       reviewCreditLockedAt: row.reviewCreditLockedAt ?? null,
       managerSignOff: row.managerSignOff ?? null,
@@ -183,6 +194,17 @@ async function programmeAdminIds(programmeId: string, client: Prisma.Transaction
     where: {
       OR: [{ programmeId }, { programmeId: null }],
       role: { name: { in: ["admin", "owner"] } },
+    },
+    select: { userId: true },
+  }).catch(() => [] as Array<{ userId: string }>);
+  return [...new Set(rows.map((r) => r.userId))];
+}
+
+async function programmeStaffIds(programmeId: string, client: Prisma.TransactionClient | typeof db = db): Promise<string[]> {
+  const rows = await client.userRole.findMany({
+    where: {
+      OR: [{ programmeId }, { programmeId: null }],
+      role: { name: { in: ["admin", "owner", "trainer"] } },
     },
     select: { userId: true },
   }).catch(() => [] as Array<{ userId: string }>);
@@ -209,6 +231,7 @@ export async function evaluateEnrolment(
 type SideEffect =
   | { kind: "locked_notice"; programmeId: string; learnerId: string }
   | { kind: "signoff_reset"; learnerId: string }
+  | { kind: "pending_changed"; programmeId: string; learnerId: string; score: number }
   | { kind: "completed"; learnerId: string; attemptId?: string; newlyCompleted: boolean };
 
 /**
@@ -241,14 +264,19 @@ async function runSideEffects(outcome: EnrolmentOutcome, effects: SideEffect[]):
       continue;
     }
     if (effect.kind === "signoff_reset") {
-      const learner = await db.user.findUnique({ where: { id: effect.learnerId }, select: { name: true, managerId: true } }).catch(() => null);
-      if (learner?.managerId) {
-        await notify(learner.managerId, "manager_signoff_required", {
-          title: "Review-credit sign-off needs re-confirming",
-          body: `${learner.name}'s score changed after your sign-off, so it must be confirmed again.`,
+      await notifyManagerSignoffRequired(effect.learnerId);
+      continue;
+    }
+    if (effect.kind === "pending_changed") {
+      const staffIds = await programmeStaffIds(effect.programmeId);
+      const learner = await db.user.findUnique({ where: { id: effect.learnerId }, select: { name: true } }).catch(() => null);
+      await Promise.all(staffIds.map((userId) =>
+        notify(userId, "assessment_result_pending", {
+          title: "Assessment result waiting for review",
+          body: `${learner?.name ?? "A learner"}'s automatic assessment result is ${effect.score}% and is waiting for your review.`,
           link: "/review-credit",
-        });
-      }
+        }),
+      ));
       continue;
     }
     const [{ issueCertificateForEnrolment }, { checkStreakRecognition, checkAppliedScoreRecognition }] = await Promise.all([
@@ -336,15 +364,30 @@ async function runEvaluation(
       const computed = Math.max(core.appliedScore, floor);
       let appliedScore = e.appliedAssessmentScore ?? 0;
       let scoreChanged = false;
-      let pending: { score: number; at: Date } | null = null;
+      let pendingScore: number | null = e.pendingAssessmentScore;
+      let pendingAt: Date | null = e.pendingAssessmentScoreAt;
+      let pendingChanged = false;
       if (e.appliedScoreSource === "manual") {
-        // Automatic results never silently replace an override: keep them for review.
-        if (computed !== (e.appliedAssessmentScore ?? 0)) {
-          pending = { score: computed, at: now };
+        // Round 10 / 1.2: a manual override is never overwritten. The automatic result is held for
+        // review, but only a change of value creates a new notification. A rejected value is not
+        // offered again until the computed result is genuinely different.
+        if (computed === (e.appliedAssessmentScore ?? 0) || computed === e.pendingRejectedScore) {
+          pendingScore = null;
+          pendingAt = null;
+        } else if (computed !== e.pendingAssessmentScore) {
+          pendingScore = computed;
+          pendingAt = now;
+          pendingChanged = true;
+        } else {
+          pendingAt = e.pendingAssessmentScoreAt ?? now;
         }
-      } else if (computed !== (e.appliedAssessmentScore ?? 0)) {
-        appliedScore = computed;
-        scoreChanged = true;
+      } else {
+        pendingScore = null;
+        pendingAt = null;
+        if (computed !== (e.appliedAssessmentScore ?? 0)) {
+          appliedScore = computed;
+          scoreChanged = true;
+        }
       }
 
       const completed = core.competent || alreadyCompleted;
@@ -357,28 +400,35 @@ async function runEvaluation(
       });
 
       const status = completed ? "completed" : e.status === "completed" ? e.status : "enrolled";
-      const resetSignOff = !!e.managerSignOff && (scoreChanged || pending !== null);
-
       const completionSource = completed ? (e.completionSource ?? "assessment") : e.completionSource;
-      const data: Prisma.EnrolmentUpdateInput = {
-        contentCompletedAt: nextContentCompletedAt,
-        // Round 9 / 1.2: the automatic loop is the only writer of "assessment", and only for an
-        // enrolment it actually completes. A manual override sets "manual" and this leaves it alone.
-        completionSource,
+      const scoreEffect = await applyScoreChange(tx, e, {
         appliedAssessmentScore: appliedScore,
+        applicationScore: e.applicationScore,
+        deadlineDate: e.deadlineDate,
+        completionDate,
         timelinessScore,
         enrolmentScore,
-        status,
-        completionDate,
-        ...(pending ? { pendingAssessmentScore: pending.score, pendingAssessmentScoreAt: pending.at } : {}),
-        ...(resetSignOff ? { managerSignOff: false, managerSignOffBy: null, managerSignOffAt: null } : {}),
-      };
+      });
       const newlyCompleted = completed && e.status !== "completed";
-      await tx.enrolment.update({ where: { id: e.id }, data });
+      await tx.enrolment.update({
+        where: { id: e.id },
+        data: {
+          contentCompletedAt: nextContentCompletedAt,
+          // Round 9 / 1.2: the automatic loop is the only writer of "assessment", and only for an
+          // enrolment it actually completes. A manual override sets "manual" and this leaves it alone.
+          completionSource,
+          status,
+          pendingAssessmentScore: pendingScore,
+          pendingAssessmentScoreAt: pendingAt,
+          ...(pendingChanged ? { pendingRejectedScore: null } : {}),
+        },
+      });
 
-      // Round 9 / 3.1: a sign-off is cleared only when a score input really moved, and the manager
-      // is told once, after the commit, not on every evaluation.
-      if (resetSignOff) effects.push({ kind: "signoff_reset", learnerId: e.learnerId });
+      // Both effects are post-commit: a failed notification cannot roll back a valid score change.
+      if (scoreEffect.signOffCleared) effects.push({ kind: "signoff_reset", learnerId: e.learnerId });
+      if (pendingChanged && pendingScore !== null) {
+        effects.push({ kind: "pending_changed", programmeId: e.programmeId, learnerId: e.learnerId, score: pendingScore });
+      }
 
       // A completed (competent) enrolment with a certificate requirement holds a certificate,
       // issued once. It is issued after the commit, and only by the transaction that completed the
@@ -394,7 +444,7 @@ async function runEvaluation(
         competent: core.competent,
         appliedScore,
         appliedScoreSource: e.appliedScoreSource,
-        scoreChanged: scoreChanged || pending !== null,
+        scoreChanged: scoreChanged || pendingChanged,
         completed,
         newlyCompleted,
         certificateIssued: false,
