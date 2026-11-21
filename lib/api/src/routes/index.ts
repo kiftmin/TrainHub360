@@ -42,7 +42,9 @@ router.post("/auth/login", async (req, res) => {
   const { email, password } = req.body ?? {};
   if (!email || !password) return res.status(400).json({ error: "email and password required" });
   const keys = loginKeys(req.ip, email);
-  // Locked-out and wrong-password responses are deliberately identical.
+  // Locked-out and wrong-password responses are deliberately identical, so a caller cannot
+  // tell whether an account exists or is locked. Round 7 gap 8: the throttle is always live;
+  // a test that needs different limits configures them (configureLoginThrottle) for that case.
   if (isLoginLocked(keys)) return res.status(401).json({ error: "invalid credentials" });
   const user = await db.user.findUnique({ where: { email } }).catch(() => null);
   const ok = await verifyLoginPassword(password, user?.passwordHash ?? null);
@@ -129,7 +131,7 @@ router.get("/users", async (req, res) => {
   const users = (await db.user.findMany({
     where: { orgId: scope.orgId, ...searchFilter },
     select: {
-      id: true, name: true, email: true, department: true, jobFunction: true, isActive: true,
+      id: true, name: true, email: true, department: true, jobFunction: true, isActive: true, activatedAt: true,
       roles: {
         where: orgStaff ? undefined : { programmeId: { in: adminProgrammeIds } },
         select: { programmeId: true, role: { select: { name: true } } },
@@ -137,7 +139,7 @@ router.get("/users", async (req, res) => {
     },
     orderBy: { name: "asc" },
     take,
-  }).catch(() => [])) as Array<{ id: string; name: string; email: string; department: string | null; jobFunction: string | null; isActive: boolean; roles: Array<{ programmeId: string | null; role: { name: string } }> }>;
+  }).catch(() => [])) as Array<{ id: string; name: string; email: string; department: string | null; jobFunction: string | null; isActive: boolean; activatedAt: Date | null; roles: Array<{ programmeId: string | null; role: { name: string } }> }>;
   const programmeIds = [...new Set(users.flatMap((u) => u.roles.map((r) => r.programmeId).filter((v): v is string => !!v)))];
   const programmeRows = (programmeIds.length
     ? await db.programme.findMany({ where: { id: { in: programmeIds }, orgId: scope.orgId }, select: { id: true, name: true } }).catch(() => [])
@@ -151,6 +153,10 @@ router.get("/users", async (req, res) => {
     // grants; department/job function and other programmes' grants stay private.
     ...(orgStaff ? { department: u.department, jobFunction: u.jobFunction } : {}),
     isActive: u.isActive,
+    // Round 7 gap 5: org staff can see who has not opened their invitation yet, which is
+    // what makes the "resend invite" action next to it meaningful. Never sent to
+    // programme admins, who have no way to act on it.
+    ...(orgStaff ? { activatedAt: u.activatedAt } : {}),
     roles: u.roles.map((r) => ({ role: r.role.name, programmeId: r.programmeId, programmeName: r.programmeId ? programmeNames.get(r.programmeId) ?? null : null })),
   })));
 });
@@ -176,10 +182,13 @@ router.post("/users", requireOrgStaff(), async (req, res) => {
   }).catch(() => null);
   if (!user) return res.status(500).json({ error: "could not create user" });
   const activation = await issueActivationToken(user.id);
-  await sendActivationEmail(user.email, user.name, activation.token);
+  // Round 7 gap 3: a send that fails is recorded, not swallowed. The account still exists,
+  // so the response says so and the admin can resend (gap 5).
+  const emailSent = await sendActivationEmail(user.email, user.name, activation.token);
   await db.auditLog.create({ data: { userId: me.id, action: "USER_CREATED", entity: "user", entityId: user.id, details: email } }).catch(() => null);
   return res.status(201).json({
-    id: user.id, name: user.name, email: user.email, department: user.department, jobFunction: user.jobFunction, isActive: true,
+    id: user.id, name: user.name, email: user.email, department: user.department, jobFunction: user.jobFunction, isActive: true, activatedAt: user.activatedAt,
+    emailSent,
     // NEVER expose the token outside the test environment.
     ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}),
   });
@@ -195,9 +204,9 @@ router.post("/users/:id/resend-activation", requireOrgStaff(), async (req, res) 
   // Invalidate any outstanding activation links before issuing a new one.
   await db.passwordResetToken.updateMany({ where: { userId: target.id, purpose: "activation", usedAt: null }, data: { usedAt: new Date() } }).catch(() => null);
   const activation = await issueActivationToken(target.id);
-  await sendActivationEmail(target.email, target.name, activation.token);
+  const emailSent = await sendActivationEmail(target.email, target.name, activation.token);
   await db.auditLog.create({ data: { userId: me.id, action: "ACTIVATION_RESENT", entity: "user", entityId: target.id, details: target.email } }).catch(() => null);
-  return res.json({ ok: true, ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}) });
+  return res.json({ ok: true, emailSent, ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}) });
 });
 
 // Update an org user (name, department, jobFunction) or deactivate/reactivate.
@@ -714,7 +723,12 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
   const toRole = req.body?.toRole === undefined ? (req.body?.role === undefined ? undefined : String(req.body.role)) : String(req.body.toRole);
   const fromRole = req.body?.fromRole === undefined ? undefined : String(req.body.fromRole);
   const nameInput = req.body?.name === undefined ? undefined : String(req.body.name).trim();
-  if (toRole === undefined && nameInput === undefined && fromRole === undefined) return res.status(400).json({ error: "fromRole/toRole or name required" });
+  // Round 6: a `roles` array is a complete replacement of this programme's grants, so it
+  // needs no fromRole/toRole. The single-grant guard must therefore only apply when no
+  // roles array was sent — checking it first made the multi-role branch below unreachable
+  // (every roles-only PATCH returned 400 "fromRole/toRole or name required").
+  const replacesGrants = Array.isArray(req.body?.roles);
+  if (!replacesGrants && toRole === undefined && nameInput === undefined && fromRole === undefined) return res.status(400).json({ error: "fromRole/toRole or name required" });
   if (nameInput !== undefined && !nameInput) return res.status(400).json({ error: "name cannot be empty" });
   if (toRole !== undefined && !MEMBER_ROLES.has(toRole)) return res.status(400).json({ error: "role must be admin|trainer|learner|stakeholder" });
   if (fromRole !== undefined && !MEMBER_ROLES.has(fromRole)) return res.status(400).json({ error: "fromRole must be admin|trainer|learner|stakeholder" });
@@ -1947,6 +1961,42 @@ router.get("/recognitions", async (req, res) => {
   } else {
     res.json(await db.recognition.findMany({ where: { user: { orgId: scope.orgId } }, include: { user: { select: { name: true, email: true } } }, orderBy: { awardedAt: "desc" }, take: 200 }).catch(() => []));
   }
+});
+// A.2 notification bell. Scoped to the caller: there is no path to another user's
+// notifications, and orgId is not trusted from the client.
+router.get("/notifications", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const unreadOnly = String(req.query.unread ?? "") === "true";
+  const take = Math.min(Number(req.query.limit ?? 50) || 50, 100);
+  const rows = await db.notification.findMany({
+    where: { userId: me.id, ...(unreadOnly ? { readAt: null } : {}) },
+    orderBy: { createdAt: "desc" },
+    take,
+  }).catch(() => []);
+  const unread = await db.notification.count({ where: { userId: me.id, readAt: null } }).catch(() => 0);
+  res.json({ items: rows, unread });
+});
+router.post("/notifications/:id/read", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  // Scoped by userId in the same statement, so a guessed id from another user is a no-op
+  // rather than a cross-user write.
+  const result = await db.notification.updateMany({
+    where: { id: String(req.params.id), userId: me.id, readAt: null },
+    data: { readAt: new Date() },
+  }).catch(() => ({ count: 0 }));
+  if (!result.count) {
+    const mine = await db.notification.findFirst({ where: { id: String(req.params.id), userId: me.id }, select: { id: true } }).catch(() => null);
+    if (!mine) {
+      res.status(404).json({ error: "notification not found" });
+      return;
+    }
+  }
+  res.json({ ok: true });
+});
+router.post("/notifications/read-all", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const result = await db.notification.updateMany({ where: { userId: me.id, readAt: null }, data: { readAt: new Date() } }).catch(() => ({ count: 0 }));
+  res.json({ ok: true, updated: result.count });
 });
 router.get("/certificates", async (req, res) => {
   const me = (req as AuthedRequest).user!;

@@ -11,6 +11,11 @@
     "moduleResolution": "NodeNext",
     "target": "ES2022"
   },
-  "include": ["src"]
+  "include": ["src"],
+  // `@workspace/db` is consumed through its emitted declarations in lib/db/dist. Without
+  // this reference, `tsc -p lib/api` cannot resolve them on a clean checkout and every
+  // Prisma row degrades to `any` (TS7006 under strict). The `build` script must therefore
+  // be `tsc --build` so the dependency is emitted first.
+  "references": [{ "path": "../db" }]
 }
 
