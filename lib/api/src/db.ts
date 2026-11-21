@@ -1,7 +1,7 @@
-import { db } from "@workspace/db";
+import { db, Prisma } from "@workspace/db";
 import type { AuthedRequest } from "./middleware/auth.js";
 
-export { db };
+export { db, Prisma };
 
 export function orgIdOf(req: AuthedRequest): string {
   const orgId = req.user?.orgId;
