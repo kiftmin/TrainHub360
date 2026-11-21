@@ -160,6 +160,9 @@ own attempt, and a graded attempt is final (a correction is a new attempt, not a
   source, publishing a new paper or archiving content never resets its status, its completion date or
   its stored score: the computed score may raise it but never lower it. An edit is something the
   learner still has to do, not something they lose.
+- **Un-completing is a real reversal (round 10).** Staff moving `completed` → `enrolled` also clear
+  `completionDate` / `completionSource` and revoke every active certificate for that enrolment with a
+  `CERTIFICATE_REVOKED` audit entry. **[CONFIRM 2026-11-21]**
 
 It runs from every place that can change the answer — a progress change or verification, an attempt
 becoming graded, an assessment being published or superseded, a required item added or archived, and
@@ -172,7 +175,15 @@ a whole course (a paper published, content added or archived) writes one `Evalua
 returns: `POST /api/assessments/:id/publish` no longer waits for every learner. The worker takes 50
 enrolments per tick (`EVALUATION_WORKER_MS`, default 5000 ms), and a second trigger for a course that
 already has a job pending only refreshes that job. `GET /api/courses/:id/evaluation-status` tells
-programme staff whether a recalculation is still due.
+programme staff whether a recalculation is still due, including job status, attempts, heartbeat staleness
+and the last error.
+
+**The queue survives a worker restart (round 10).** A filtered unique index allows one `pending` job
+per course; a new trigger while a job is `running` queues one follow-up. The worker claims jobs
+atomically, records a heartbeat every 50 enrolments, and startup/tick reclaims a job whose heartbeat
+is older than `EVALUATION_STALE_MS` (default 10 minutes). A reclaimed job keeps its attempt count and
+is failed with an audit entry after `EVALUATION_MAX_ATTEMPTS` (5). Migrations
+`20261127_round10_evaluation_queue_resilience` adds the heartbeat, attempts and indexes.
 
 Each enrolment is read, scored and written inside one transaction that holds the row
 (`WITH (UPDLOCK, HOLDLOCK)`), so two triggers arriving together cannot both see "not completed" and
@@ -188,13 +199,30 @@ the score, the status or the completion date needs a `reason` of at least 10 cha
 and sets the source to `manual`; from then on an automatic result is stored in
 `pendingAssessmentScore` instead of overwriting it, and staff accept or reject it with
 `POST /api/enrolments/:id/accept-assessment-score` / `…/reject-assessment-score`.
+Accept/reject uses one locked transaction and a shared comparison of the six effective inputs
+(assessment score, application score, deadline, completion date, timeliness and enrolment score).
+Sign-off is cleared, and the manager notified, **only when an effective input really changes**;
+a rejected value is kept in `pendingRejectedScore` so the same result cannot re-pend forever.
 
 **Locks and sign-off.** A locked review-credit period (`reviewCreditLockedAt`) never moves: a late
 graded attempt is still recorded, but the score, timeliness, enrolment score, status and completion
 date stay put and an `ASSESSMENT_RESULT_NOT_APPLIED_LOCKED` audit entry plus a notification go to the
-programme admins and the line manager. Only an organisation owner may override a locked enrolment,
-and that needs a reason too. On an unlocked enrolment, any score change clears `managerSignOff` and
+programme admins and the line manager. The new result is held in `pendingAssessmentScore` for staff
+review; accepting it audits the decision without disturbing the locked score or sign-off, and rejecting
+it records the suppressed value. Only an organisation owner may override a locked enrolment, and that
+needs a reason too. On an unlocked enrolment, only a real score change clears `managerSignOff` and
 notifies the manager to confirm again.
+
+### Staff and learner UI (round 10)
+
+The assessment builder now has a version dropdown that labels live, draft, superseding draft and
+superseded papers. Editing a live paper asks for confirmation before opening a draft; the draft can be
+saved, published with a change kind, or discarded, and superseded versions cannot start new attempts.
+After publishing a paper or adding/archiving required course content, staff see a
+recalculation panel driven by `GET /api/courses/:id/evaluation-status`; it polls while pending, stops on
+completion, and surfaces stale jobs and the last error. Learners see a neutral note when a result is
+held for staff review and a retake note on a `new_paper` version; answer keys, rubrics and option
+correctness are never sent to learner views.
 
 ### Who may change an enrolment (round 9 / H1)
 
