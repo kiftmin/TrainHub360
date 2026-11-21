@@ -21,7 +21,12 @@ export function getSessionUser(): { id?: string; role?: string; name?: string; i
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { "content-type": "application/json", ...(init?.headers as Record<string, string> ?? {}) };
+  // A.3: a FormData body sets its own multipart boundary — forcing application/json on it
+  // makes the request unparseable, so the JSON content type is only added for string bodies.
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const headers: Record<string, string> = isFormData
+    ? { ...(init?.headers as Record<string, string> ?? {}) }
+    : { "content-type": "application/json", ...(init?.headers as Record<string, string> ?? {}) };
   const token = getToken();
   if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetch(`/api${path}`, { ...init, headers });

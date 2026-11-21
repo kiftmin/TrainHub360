@@ -19,7 +19,6 @@ import {
   SendThreadMessageBody,
   SendThreadMessageParams,
   SendThreadMessageResponse,
-  SubmitAssessmentAttemptBody,
   SubmitAssessmentAttemptParams,
   SubmitAssessmentAttemptResponse,
   UpdateReviewCreditSettingsBody,
@@ -187,34 +186,15 @@ router.post("/courses", async (req, res) => {
   }
 });
 
-router.post("/courses/:courseId/attempts", async (req, res) => {
-  try {
-    const path = SubmitAssessmentAttemptParams.parse(req.params);
-    const body = SubmitAssessmentAttemptBody.parse(req.body);
-    const pool = await getPool();
-    const result = await pool.request().input("id", sqlTypes.NVarChar, path.courseId).input("orgId", sqlTypes.NVarChar, orgIdFromRequest(req)).query(`
-      SELECT applied_threshold appliedThreshold FROM dbo.th_courses WHERE id = @id AND organization_id = @orgId
-    `);
-    const threshold = Number(result.recordset[0]?.appliedThreshold || 70);
-    const competenceMet = body.appliedScore >= threshold;
-    const passed = competenceMet && body.recallScore >= 60;
-    const parsed = SubmitAssessmentAttemptResponse.parse({
-      appliedScore: body.appliedScore,
-      recallScore: body.recallScore,
-      passed,
-      competenceMet,
-      message: competenceMet ? "Applied threshold met. This course can be marked competent." : `Applied assessment is below the ${threshold}% competence threshold.`,
-    });
-    if (passed) {
-      await pool.request().input("id", sqlTypes.NVarChar, path.courseId).input("orgId", sqlTypes.NVarChar, orgIdFromRequest(req)).input("score", sqlTypes.Decimal(5, 2), body.appliedScore).query(`
-        UPDATE dbo.th_courses SET applied_score = @score, progress = 100, status = 'Competent'
-        WHERE id = @id AND organization_id = @orgId
-      `);
-    }
-    res.json(parsed);
-  } catch (error) {
-    dbError(res, error);
-  }
+// Scores are only ever produced server-side from stored answers (openapi.yaml, and the round-6
+// review). The former body here carried `appliedScore` and `recallScore` straight from the
+// client, which let a caller mark their own course competent; the route is gone and this answers
+// the way the API does, so an old client gets a clear 410 rather than a 404.
+router.post("/courses/:courseId/attempts", (_req, res) => {
+  res.status(410).json({
+    error:
+      "client-submitted scores are no longer accepted; use POST /assessments/:assessmentId/attempts then POST /attempts/{attemptId}/submit",
+  });
 });
 
 router.get("/sessions", async (req, res) => {

@@ -1,6 +1,7 @@
 # A.2 — closing the eight gaps from the round 7 review
 
-Branch: `fix/a2-email-notifications` (continues from `fix/a1-async-errors`).
+Branch: `fix/a2-email-notifications` (continues from `fix/a1-async-errors`), commit
+`b0fc0dc`, pushed to origin; it updates the open PR #2.
 Source of the gaps: `trainhub360-review-round7.md` §2 and §4. This pass closes all eight and
 adds a test for each, so "closed" means "fails if it regresses".
 

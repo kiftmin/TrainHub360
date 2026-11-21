@@ -5,6 +5,91 @@
  * TrainHub360 corporate training management API
  * OpenAPI spec version: 0.1.0
  */
+export type DirectoryUserRolesItem = {
+  role?: string;
+  /** @nullable */
+  programmeId?: string | null;
+  /** @nullable */
+  programmeName?: string | null;
+};
+
+export interface DirectoryUser {
+  id: string;
+  name: string;
+  email: string;
+  isActive: boolean;
+  /**
+     * Org staff only
+     * @nullable
+     */
+  department?: string | null;
+  /**
+     * Org staff only
+     * @nullable
+     */
+  jobFunction?: string | null;
+  /**
+     * Org staff only
+     * @nullable
+     */
+  activatedAt?: string | null;
+  /** Org staff see every grant; a programme admin sees only their own programmes' */
+  roles: DirectoryUserRolesItem[];
+}
+
+export type StoredFilePurpose = typeof StoredFilePurpose[keyof typeof StoredFilePurpose];
+
+
+export const StoredFilePurpose = {
+  content: 'content',
+  evidence: 'evidence',
+} as const;
+
+export interface StoredFile {
+  storedFileId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  /** SHA-256 of the stored bytes */
+  checksum: string;
+  purpose: StoredFilePurpose;
+}
+
+export interface Notification {
+  id: string;
+  userId?: string;
+  /** @nullable */
+  orgId?: string | null;
+  /** e.g. session_invite */
+  type: string;
+  title: string;
+  /** @nullable */
+  body?: string | null;
+  /**
+     * App-relative path
+     * @nullable
+     */
+  link?: string | null;
+  /** @nullable */
+  readAt: string | null;
+  createdAt: string;
+}
+
+export interface NotificationList {
+  items: Notification[];
+  /** Unread count for the bell badge */
+  unread: number;
+}
+
+export interface NotificationReadResult {
+  ok: boolean;
+}
+
+export interface NotificationReadAllResult {
+  ok: boolean;
+  updated: number;
+}
+
 export interface HealthStatus {
   status: string;
 }
@@ -215,10 +300,479 @@ export interface ReviewCreditSettingsUpdate {
   eligibleProgrammeTypes?: string[];
 }
 
+export interface AuthRequest {
+  email: string;
+  password: string;
+}
+
+export interface AuthResponse {
+  accessToken: string;
+  user: CurrentUser;
+}
+
+export interface SsoRequest {
+  samlAssertion: string;
+}
+
+export interface Enrolment {
+  id: string;
+  learnerId: string;
+  courseId: string;
+  status: string;
+  /** @nullable */
+  enrolmentScore?: number | null;
+  /** @nullable */
+  managerSignOff?: boolean | null;
+}
+
+export interface EnrolmentInput {
+  learnerId: string;
+  courseId: string;
+  /** @nullable */
+  deadlineDate?: string | null;
+}
+
+export interface EnrolmentUpdate {
+  status?: string;
+  appliedAssessmentScore?: number;
+  applicationScore?: number;
+  managerSignOff?: boolean;
+}
+
+export type EnrolmentScoreBreakdown = { [key: string]: unknown };
+
+export interface EnrolmentScore {
+  enrolmentId: string;
+  score: number;
+  breakdown: EnrolmentScoreBreakdown;
+}
+
+export interface Module {
+  id: string;
+  courseId: string;
+  title: string;
+}
+
+export interface ModuleInput {
+  courseId: string;
+  title: string;
+}
+
+export type AssessmentType = typeof AssessmentType[keyof typeof AssessmentType];
+
+
+export const AssessmentType = {
+  recall: 'recall',
+  applied: 'applied',
+} as const;
+
+export interface Assessment {
+  id: string;
+  moduleId: string;
+  type: AssessmentType;
+}
+
+export type AssessmentInputType = typeof AssessmentInputType[keyof typeof AssessmentInputType];
+
+
+export const AssessmentInputType = {
+  recall: 'recall',
+  applied: 'applied',
+} as const;
+
+export interface AssessmentInput {
+  type: AssessmentInputType;
+  maxScore?: number;
+}
+
+export interface AuditLog {
+  id: string;
+  action: string;
+  entity: string;
+  timestamp: string;
+}
+
+export interface NudgeResult {
+  sent: number;
+}
+
+export interface HelpRequest {
+  question: string;
+  courseId?: string;
+}
+
+export interface HelpResponse {
+  answer: string;
+}
+
+export interface ReviewCreditRow {
+  learnerId: string;
+  raw: number;
+  final: number;
+}
+
 export type ListCoursesParams = {
 /**
  * @nullable
  */
 programmeId?: string | null;
+};
+
+export type ListCourseAttempts200Item = { [key: string]: unknown };
+
+export type ListCourseAssessments200Item = { [key: string]: unknown };
+
+export type GetAssessment200 = { [key: string]: unknown };
+
+export type UpdateAssessmentBody = {
+  title?: string;
+  /**
+     * @minimum 0
+     * @maximum 100
+     */
+  passMark?: number;
+  /** @minimum 1 */
+  maxAttempts?: number;
+  /** @minimum 1 */
+  timeLimitMinutes?: number | null;
+};
+
+export type UpdateAssessment200 = { [key: string]: unknown };
+
+export type CreateQuestionBodyKind = typeof CreateQuestionBodyKind[keyof typeof CreateQuestionBodyKind];
+
+
+export const CreateQuestionBodyKind = {
+  single_choice: 'single_choice',
+  multiple_choice: 'multiple_choice',
+  true_false: 'true_false',
+  short_text: 'short_text',
+} as const;
+
+export type CreateQuestionBodyOptionsItem = {
+  text: string;
+  correct?: boolean;
+};
+
+export type CreateQuestionBody = {
+  prompt: string;
+  kind: CreateQuestionBodyKind;
+  /** @minimum 1 */
+  points?: number;
+  options: CreateQuestionBodyOptionsItem[];
+};
+
+export type CreateQuestion201 = { [key: string]: unknown };
+
+export type UpdateQuestionBody = { [key: string]: unknown };
+
+export type UpdateQuestion200 = { [key: string]: unknown };
+
+export type PublishAssessment200 = { [key: string]: unknown };
+
+export type StartAssessmentAttempt201 = { [key: string]: unknown };
+
+export type SubmitAttemptAnswersBodyAnswersItem = {
+  questionId: string;
+  optionIds?: string[];
+  text?: string;
+};
+
+export type SubmitAttemptAnswersBody = {
+  answers: SubmitAttemptAnswersBodyAnswersItem[];
+};
+
+export type SubmitAttemptAnswers200 = { [key: string]: unknown };
+
+export type CreateSessionBodyMode = typeof CreateSessionBodyMode[keyof typeof CreateSessionBodyMode];
+
+
+export const CreateSessionBodyMode = {
+  online: 'online',
+  offline: 'offline',
+} as const;
+
+export type CreateSessionBody = {
+  title: string;
+  courseId?: string | null;
+  programmeId?: string | null;
+  startsAt: string;
+  endsAt: string;
+  /** Fallback when startsAt is omitted */
+  date?: string;
+  /** Fallback when startsAt is omitted */
+  time?: string;
+  mode?: CreateSessionBodyMode;
+  /** Required for online sessions */
+  joinUrl?: string;
+  /** Required for offline sessions */
+  location?: string;
+  /** @minimum 1 */
+  capacity?: number | null;
+  trainerId?: string | null;
+};
+
+export type CreateThreadBody = {
+  subject: string;
+  body: string;
+  programmeId?: string | null;
+  participantIds: string[];
+  urgent?: boolean;
+};
+
+export type ListNotificationsParams = {
+/**
+ * Only notifications that have not been read
+ */
+unread?: boolean;
+/**
+ * @minimum 1
+ * @maximum 100
+ */
+limit?: number;
+};
+
+export type InviteSessionParticipantsBody = {
+  learnerIds: string[];
+};
+
+export type InviteSessionParticipants200 = {
+  invited?: number;
+  skipped?: number;
+};
+
+export type RsvpSessionBodyStatus = typeof RsvpSessionBodyStatus[keyof typeof RsvpSessionBodyStatus];
+
+
+export const RsvpSessionBodyStatus = {
+  confirmed: 'confirmed',
+  declined: 'declined',
+} as const;
+
+export type RsvpSessionBody = {
+  status: RsvpSessionBodyStatus;
+};
+
+export type RsvpSession200 = { [key: string]: unknown };
+
+export type GetMyIcalToken200 = {
+  token?: string;
+  url?: string;
+};
+
+export type RegenerateUserIcalToken200 = {
+  token?: string;
+  url?: string;
+};
+
+export type GetCalendarFeedParams = {
+token: string;
+};
+
+export type AssignProgrammeMemberBodyRolesItem = typeof AssignProgrammeMemberBodyRolesItem[keyof typeof AssignProgrammeMemberBodyRolesItem];
+
+
+export const AssignProgrammeMemberBodyRolesItem = {
+  admin: 'admin',
+  trainer: 'trainer',
+  learner: 'learner',
+  stakeholder: 'stakeholder',
+} as const;
+
+export type AssignProgrammeMemberBodyRole = typeof AssignProgrammeMemberBodyRole[keyof typeof AssignProgrammeMemberBodyRole];
+
+
+export const AssignProgrammeMemberBodyRole = {
+  admin: 'admin',
+  trainer: 'trainer',
+  learner: 'learner',
+  stakeholder: 'stakeholder',
+} as const;
+
+export type AssignProgrammeMemberBody = {
+  userId: string;
+  roles?: AssignProgrammeMemberBodyRolesItem[];
+  role?: AssignProgrammeMemberBodyRole;
+  enrol?: boolean;
+};
+
+export type AssignProgrammeMember201 = { [key: string]: unknown };
+
+export type UpdateProgrammeMemberBodyRolesItem = typeof UpdateProgrammeMemberBodyRolesItem[keyof typeof UpdateProgrammeMemberBodyRolesItem];
+
+
+export const UpdateProgrammeMemberBodyRolesItem = {
+  admin: 'admin',
+  trainer: 'trainer',
+  learner: 'learner',
+  stakeholder: 'stakeholder',
+} as const;
+
+export type UpdateProgrammeMemberBody = {
+  name?: string;
+  roles?: UpdateProgrammeMemberBodyRolesItem[];
+  fromRole?: string;
+  toRole?: string;
+};
+
+export type UpdateProgrammeMember200 = { [key: string]: unknown };
+
+export type ListModuleContent200Item = { [key: string]: unknown };
+
+export type CreateContentBodyType = typeof CreateContentBodyType[keyof typeof CreateContentBodyType];
+
+
+export const CreateContentBodyType = {
+  native: 'native',
+  file: 'file',
+  external_link: 'external_link',
+} as const;
+
+export type CreateContentBodyCompletionMode = typeof CreateContentBodyCompletionMode[keyof typeof CreateContentBodyCompletionMode];
+
+
+export const CreateContentBodyCompletionMode = {
+  trainer_verified: 'trainer_verified',
+  self_report: 'self_report',
+} as const;
+
+export type CreateContentBody = {
+  type: CreateContentBodyType;
+  title: string;
+  body?: string;
+  url?: string;
+  completionMode?: CreateContentBodyCompletionMode;
+  required?: boolean;
+  storageKey?: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  checksum?: string;
+};
+
+export type CreateContent201 = { [key: string]: unknown };
+
+export type UpdateContentBody = { [key: string]: unknown };
+
+export type UpdateContent200 = { [key: string]: unknown };
+
+export type ReorderContentBody = {
+  contentIds: string[];
+};
+
+export type UploadContentBody = {
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+};
+
+export type UploadContent201 = {
+  storageKey?: string;
+  fileName?: string;
+  mimeType?: string;
+  sizeBytes?: number;
+  checksum?: string;
+};
+
+export type GetCourseContent200 = { [key: string]: unknown };
+
+export type MarkContentProgressBodyStatus = typeof MarkContentProgressBodyStatus[keyof typeof MarkContentProgressBodyStatus];
+
+
+export const MarkContentProgressBodyStatus = {
+  in_progress: 'in_progress',
+  completed: 'completed',
+} as const;
+
+export type MarkContentProgressBody = {
+  status?: MarkContentProgressBodyStatus;
+  evidenceNote?: string;
+};
+
+export type MarkContentProgress200 = { [key: string]: unknown };
+
+export type VerifyContentProgressBody = {
+  verified?: boolean;
+  note?: string;
+};
+
+export type VerifyContentProgress200 = { [key: string]: unknown };
+
+export type ListUsersParams = {
+/**
+ * Matches name or email
+ */
+search?: string;
+/**
+ * @minimum 1
+ * @maximum 100
+ */
+limit?: number;
+};
+
+export type CreateUserBody = {
+  email: string;
+  name: string;
+  department?: string;
+  jobFunction?: string;
+};
+
+export type UpdateUserBody = {
+  name?: string;
+  /** @nullable */
+  department?: string | null;
+  /** @nullable */
+  jobFunction?: string | null;
+  isActive?: boolean;
+};
+
+export type SetOrgRoleBody = {
+  /** owner, admin, trainer, learner, stakeholder, or "" to remove */
+  role: string;
+};
+
+export type BulkRemoveProgrammeMembersBody = {
+  userIds: string[];
+  reason?: string;
+};
+
+export type BulkRemoveProgrammeMembers200 = {
+  removed?: number;
+  /** @nullable */
+  pendingRequestId?: string | null;
+};
+
+export type ActivateAccountBody = {
+  token: string;
+  /** @minLength 12 */
+  password: string;
+};
+
+export type RequestPasswordResetBody = {
+  email: string;
+};
+
+export type ResetPasswordBody = {
+  token: string;
+  /** @minLength 12 */
+  password: string;
+};
+
+export type CreateCohortBody = {
+  name: string;
+  programmeId: string;
+};
+
+export type UploadEvidenceBody = {
+  file: Blob;
+};
+
+export type SubmitCourseFeedbackBody = {
+  /**
+     * @minimum 1
+     * @maximum 5
+     */
+  rating: number;
+  comment?: string;
 };
 

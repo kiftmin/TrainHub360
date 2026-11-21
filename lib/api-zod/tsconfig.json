@@ -5,7 +5,11 @@
     "declarationMap": true,
     "emitDeclarationOnly": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    // The generated schemas type multipart upload bodies as Blob and File, which live in the DOM
+    // lib. This package is types-only (emitDeclarationOnly), so adding the lib costs nothing at
+    // runtime.
+    "lib": ["es2022", "dom"]
   },
   "include": ["src"]
 }
