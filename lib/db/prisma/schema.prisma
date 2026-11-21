@@ -140,6 +140,10 @@ model Assessment {
   // Existing attempts keep pointing at the version they started on.
   supersededAt DateTime? @map("superseded_at")
   supersededById String? @map("superseded_by_id")
+  // Round 9 / 2.2: how the version that replaced the previous one was treated when it was
+  // published. "minor" carries earlier results forward, "new_paper" does not. Null on a first
+  // version and while a draft is still being edited.
+  changeKind String? @map("change_kind")
   isArchived Boolean @default(false) @map("is_archived")
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
@@ -226,6 +230,26 @@ model AttemptAnswer {
   @@map("attempt_answers")
 }
 
+// Round 9 / Phase 3.3. A course-wide re-evaluation is enqueued, not run inside the request that
+// triggered it: publishing a paper or adding content used to loop over every enrolment inline.
+// One row per course while a run is pending; the worker takes 50 enrolments per batch.
+model EvaluationJob {
+  id          String    @id @default(cuid())
+  courseId    String    @map("course_id")
+  trigger     String    @map("trigger_name")
+  status      String    @default("pending")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  startedAt   DateTime? @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+  processed   Int       @default(0)
+  total       Int       @default(0)
+  lastError   String?   @map("last_error") @db.NVarChar(Max)
+
+  @@index([courseId, status])
+  @@index([status, createdAt])
+  @@map("evaluation_jobs")
+}
+
 model Enrolment {
   id                          String     @id @default(cuid())
   learnerId                   String     @map("learner_id")
@@ -247,6 +271,11 @@ model Enrolment {
   pendingAssessmentScoreAt    DateTime?  @map("pending_assessment_score_at")
   // Round 8 / 1.1: content completion is tracked separately from competence.
   contentCompletedAt          DateTime?  @map("content_completed_at")
+  // Round 9 / 1.2: why this enrolment is completed. "assessment" is written by evaluateEnrolment
+  // (content complete and every live applied assessment passed); "manual" by a staff override with
+  // a reason. A certificate is never issued while this is null, so a status someone set by hand
+  // cannot stand in for evidence.
+  completionSource            String?    @map("completion_source")
   completionDate              DateTime?  @map("completion_date")
   deadlineDate                DateTime?  @map("deadline_date")
   timelinessScore             Float?     @map("timeliness_score")

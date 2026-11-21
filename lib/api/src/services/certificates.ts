@@ -7,9 +7,13 @@ export function needsCertificate(category: string | null, validityMonths: number
   return !!category && COMPLIANCE_CATEGORIES.includes(category.toLowerCase());
 }
 
-export async function issueCertificateForEnrolment(enrolmentId: string, attemptId?: string): Promise<{ issued: boolean; existing?: boolean; id?: string }> {
+export async function issueCertificateForEnrolment(enrolmentId: string, attemptId?: string): Promise<{ issued: boolean; existing?: boolean; id?: string; reason?: string }> {
   const e = await db.enrolment.findUnique({ where: { id: enrolmentId }, include: { course: true } }).catch(() => null);
   if (!e || e.status !== "completed") return { issued: false };
+  // Round 9 / 1.2: a status alone is not evidence. "assessment" is written by the evaluation loop
+  // when the content is complete and every live applied assessment is passed; "manual" by a staff
+  // override that carried a reason. Nothing else may produce a certificate.
+  if (!e.completionSource) return { issued: false, reason: "no completion source" };
   const existing = await db.certificate.findFirst({ where: { enrolmentId: e.id, status: "active" } }).catch(() => null);
   // The attempt is passed in by whoever knows it: a certificate issued from the assessment loop
   // points at the attempt that earned it, while one issued from a staff status change has none.

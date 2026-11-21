@@ -112,11 +112,33 @@ Uploads (A.3) are **multipart**, not base64 in JSON — `express.json()` caps a 
 
 ### The assessment lifecycle (round 8)
 
-**Versions.** Publishing an assessment freezes its questions and stamps `publishedAt`; any edit
-afterwards clones the row into a new version and marks the old one `supersededAt`, so `live` means
-exactly `isPublished && publishedAt !== null && supersededAt === null && !isArchived && deletedAt ===
-null`. An attempt that was already open keeps the version it started on: it can still be saved,
-submitted and graded inside its time limit, while new attempts only start on the live version.
+**Versions.** Publishing an assessment freezes its questions and stamps `publishedAt`, so `live`
+means exactly `isPublished && publishedAt !== null && supersededAt === null && !isArchived &&
+deletedAt === null`. An attempt that was already open keeps the version it started on: it can still
+be saved, submitted and graded inside its time limit, while new attempts only start on the live
+version.
+
+**Editing a live paper does not take it offline (round 9 / 2.1).** A `PATCH` on a published
+assessment answers `409` with `requiresNewVersion` unless it carries `confirmNewVersion: true`. With
+that flag the edit goes into **one draft** at `version + 1` that points back at the live row
+(`supersedesId`); further edits go into the same draft, and the live version keeps its questions and
+its attempts, so learners carry on taking it. `POST /api/assessments/:id/discard-draft` throws the
+draft away. Nothing is re-evaluated and nobody is notified while a draft exists — the assessment only
+changes when the draft is published.
+
+**Publishing a draft states the kind of change (round 9 / 2.2).** A draft that replaces a live version
+must send `changeKind`:
+
+- `minor` — a correction that does not change what is being assessed. Results already earned on the
+  previous version **carry forward**: the live paper is scored from the attempts made on it and on
+  the `minor` versions beneath it (the chain is walked back through `supersedesId`), and those
+  attempts also count against `maxAttempts`.
+- `new_paper` — a different paper. Earlier results do **not** count; an enrolled learner needs a
+  graded attempt on the new paper to become competent, and every not-yet-completed learner of the
+  course gets an `assessment_retake_required` notification.
+
+Publishing is one transaction that marks the draft published and retires the old row
+(`supersededAt`, `supersededById`), then queues the course-wide re-evaluation.
 
 **Grading.** Objective answers (`single_choice`, `true_false`, `multi_choice`, and a short answer
 with `acceptedAnswers`) are marked by the server on submit. Anything with a manual question goes to
@@ -130,13 +152,33 @@ own attempt, and a graded attempt is final (a correction is a new attempt, not a
 - *content complete* = every required, non-archived content item of the course has a completed
   progress row for this enrolment (a course with no required content counts as complete);
 - *competent* = content complete **and** every live applied assessment has met its own pass mark;
-- *completed* = competent. Only then are `status` and `completionDate` set, the certificate is
-  issued and recognitions are checked.
+- *completed* = competent, and it records how: `completionSource` is `assessment` when the learner
+  earned it, `manual` when staff set the status. Only then are `status` and `completionDate` set, the
+  certificate is issued and recognitions are checked — and a certificate is only ever issued for an
+  enrolment that has a `completionSource`, so a bare status change cannot produce one.
+- **Completion is not taken away by an edit (round 9 / 2.3).** Once an enrolment is completed with a
+  source, publishing a new paper or archiving content never resets its status, its completion date or
+  its stored score: the computed score may raise it but never lower it. An edit is something the
+  learner still has to do, not something they lose.
 
 It runs from every place that can change the answer — a progress change or verification, an attempt
 becoming graded, an assessment being published or superseded, a required item added or archived, and
 a staff status change — so finishing the content after passing (or the other way round) closes the
 loop the same way. Withdrawn enrolments are skipped.
+
+**One enrolment at a time, one course in the background (round 9 / 3).** A trigger that concerns a
+single enrolment (a progress change, an attempt graded) runs it synchronously. A trigger that concerns
+a whole course (a paper published, content added or archived) writes one `EvaluationJob` row and
+returns: `POST /api/assessments/:id/publish` no longer waits for every learner. The worker takes 50
+enrolments per tick (`EVALUATION_WORKER_MS`, default 5000 ms), and a second trigger for a course that
+already has a job pending only refreshes that job. `GET /api/courses/:id/evaluation-status` tells
+programme staff whether a recalculation is still due.
+
+Each enrolment is read, scored and written inside one transaction that holds the row
+(`WITH (UPDLOCK, HOLDLOCK)`), so two triggers arriving together cannot both see "not completed" and
+issue two certificates. The visible side effects — the certificate, the recognition, the manager
+notification, the locked-period notice — run **after** the commit and only for the transition the
+transaction reported, so a second run for the same enrolment does nothing.
 
 **Score sources and overrides.** `Enrolment.appliedScoreSource` is `assessment` or `manual`. In the
 `assessment` source the standing score is computed from the data, never from `max(previous, new)`:
@@ -153,6 +195,25 @@ date stay put and an `ASSESSMENT_RESULT_NOT_APPLIED_LOCKED` audit entry plus a n
 programme admins and the line manager. Only an organisation owner may override a locked enrolment,
 and that needs a reason too. On an unlocked enrolment, any score change clears `managerSignOff` and
 notifies the manager to confirm again.
+
+### Who may change an enrolment (round 9 / H1)
+
+`PATCH /api/enrolments/:id` is a strict whitelist, and the role is checked in the database against the
+enrolment's own programme and organisation — never taken from the request.
+
+- **Learners** may not change an outcome at all: no `status`, `completionDate`, `deadlineDate`, score
+  or any other outcome field. Progress comes only from content progress and assessment attempts, so
+  the "mark complete" button posts content progress and nothing else.
+- **Programme staff** (that enrolment's programme, or org staff) may set `status` (limited to
+  `enrolled`, `completed`, `withdrawn`), `completionDate`, `deadlineDate`, `appliedAssessmentScore`
+  and `applicationScore`. A change to the status, the completion date or a score needs a `reason` of
+  at least 10 characters, is audited, and records `completionSource: "manual"` when it completes
+  someone.
+- **The line manager** (the learner's `managerId`) may set `managerSignOff` only.
+
+A field that exists on the endpoint but not for your role is refused with `403`; a key the endpoint
+does not have at all is a `400`. The score is recomputed from the stored row plus the validated
+fields, so a `deadlineDate` in the body can no longer change a stored `timelinessScore`.
 
 ### Reminders and calendar
 

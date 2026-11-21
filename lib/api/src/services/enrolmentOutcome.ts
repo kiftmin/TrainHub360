@@ -52,22 +52,34 @@ interface OutcomeCore {
     contentCompletedAt: Date | null;
     reviewCreditLockedAt: Date | null;
     managerSignOff: boolean | null;
+    completionSource: string | null;
   };
   contentComplete: boolean;
   competent: boolean;
   appliedScore: number;
-  liveApplied: Array<{ id: string; title: string; passMark: number; best: number | null; passed: boolean }>;
+  liveApplied: Array<{ id: string; title: string; passMark: number; best: number | null; passed: boolean; attempts: number; carriedVersions: number }>;
 }
 
-async function computeOutcome(tx: Prisma.TransactionClient, enrolmentId: string): Promise<OutcomeCore | null> {
-  const enrolment = await tx.enrolment.findUnique({ where: { id: enrolmentId } }).catch(() => null);
+async function computeOutcome(
+  tx: Prisma.TransactionClient,
+  enrolmentId: string,
+  options: { lock?: boolean } = {},
+): Promise<OutcomeCore | null> {
+  // Round 9 / 3.2: the row is read under the same lock RSVP capacity uses, so two triggers (a
+  // grade landing while the last content item is marked complete) serialize instead of each
+  // computing "not completed yet" and both writing a certificate.
+  const enrolment = options.lock
+    ? ((await tx.$queryRaw<Array<{ id: string }>>`SELECT [id] FROM [dbo].[enrolments] WITH (UPDLOCK, HOLDLOCK) WHERE [id] = ${enrolmentId}`)[0] ?? null)
+    : await tx.enrolment.findUnique({ where: { id: enrolmentId } }).catch(() => null);
   if (!enrolment) return null;
+  const row = await tx.enrolment.findUnique({ where: { id: enrolmentId } });
+  if (!row) return null;
 
   const required = await tx.contentItem.findMany({
     where: {
       isArchived: false,
       required: true,
-      module: { courseId: enrolment.courseId, isArchived: false, deletedAt: null },
+      module: { courseId: row.courseId, isArchived: false, deletedAt: null },
     },
     select: { id: true },
   });
@@ -90,19 +102,34 @@ async function computeOutcome(tx: Prisma.TransactionClient, enrolmentId: string)
       isArchived: false,
       deletedAt: null,
       supersededAt: null,
-      module: { courseId: enrolment.courseId, isArchived: false, deletedAt: null },
+      module: { courseId: row.courseId, isArchived: false, deletedAt: null },
     },
-    select: { id: true, title: true, passMark: true },
+    select: { id: true, title: true, passMark: true, maxAttempts: true, supersedesId: true, changeKind: true },
   });
   // An applied assessment with no pass mark of its own uses the course threshold.
-  const course = await tx.course.findUnique({ where: { id: enrolment.courseId }, select: { appliedThreshold: true } }).catch(() => null);
+  const course = await tx.course.findUnique({ where: { id: row.courseId }, select: { appliedThreshold: true } }).catch(() => null);
   const fallbackPassMark = course?.appliedThreshold ?? 70;
 
   const liveApplied: OutcomeCore["liveApplied"] = [];
   for (const a of applied) {
+    // Round 9 / 2.2: a minor correction carries earlier results forward. The chain is walked back
+    // through `supersedesId` while every link was published as "minor"; a version that was a new
+    // paper starts the count again. Attempts on the earlier versions are attempts on this one, so
+    // they count for `maxAttempts` too.
+    const carried: string[] = [a.id];
+    let cursor: { id: string; supersedesId: string | null; changeKind: string | null } = a;
+    while (cursor.changeKind === "minor" && cursor.supersedesId) {
+      const previous = await tx.assessment.findUnique({
+        where: { id: cursor.supersedesId },
+        select: { id: true, supersededAt: true, version: true, supersedesId: true, changeKind: true },
+      });
+      if (!previous) break;
+      carried.push(previous.id);
+      cursor = { ...previous, supersedesId: previous.supersedesId };
+    }
     const attempts = await tx.assessmentAttempt.findMany({
       where: {
-        assessmentId: a.id,
+        assessmentId: { in: carried },
         enrolmentId,
         status: { in: ["submitted", "graded"] },
         percent: { not: null },
@@ -110,8 +137,10 @@ async function computeOutcome(tx: Prisma.TransactionClient, enrolmentId: string)
       select: { percent: true },
     });
     const best = attempts.length ? Math.max(...attempts.map((x) => x.percent ?? 0)) : null;
+    // An attempt in progress on an earlier version still counts against the limit.
+    const startedCount = await tx.assessmentAttempt.count({ where: { assessmentId: { in: carried }, enrolmentId } });
     const passMark = a.passMark ?? fallbackPassMark;
-    liveApplied.push({ id: a.id, title: a.title, passMark, best, passed: best !== null && best >= passMark });
+    liveApplied.push({ id: a.id, title: a.title, passMark, best, passed: best !== null && best >= passMark, attempts: startedCount, carriedVersions: carried.length - 1 });
   }
 
   const competent = contentComplete && applied.length > 0 && liveApplied.every((a) => a.passed);
@@ -125,20 +154,21 @@ async function computeOutcome(tx: Prisma.TransactionClient, enrolmentId: string)
 
   return {
     enrolment: {
-      id: enrolment.id,
-      learnerId: enrolment.learnerId,
-      courseId: enrolment.courseId,
-      programmeId: enrolment.programmeId,
-      status: enrolment.status,
-      withdrawnAt: enrolment.withdrawnAt,
-      completionDate: enrolment.completionDate,
-      deadlineDate: enrolment.deadlineDate,
-      appliedAssessmentScore: enrolment.appliedAssessmentScore,
-      appliedScoreSource: enrolment.appliedScoreSource ?? "assessment",
-      applicationScore: enrolment.applicationScore,
-      contentCompletedAt: enrolment.contentCompletedAt ?? null,
-      reviewCreditLockedAt: enrolment.reviewCreditLockedAt ?? null,
-      managerSignOff: enrolment.managerSignOff ?? null,
+      id: row.id,
+      learnerId: row.learnerId,
+      courseId: row.courseId,
+      programmeId: row.programmeId,
+      status: row.status,
+      withdrawnAt: row.withdrawnAt,
+      completionDate: row.completionDate,
+      deadlineDate: row.deadlineDate,
+      appliedAssessmentScore: row.appliedAssessmentScore,
+      appliedScoreSource: row.appliedScoreSource ?? "assessment",
+      applicationScore: row.applicationScore,
+      contentCompletedAt: row.contentCompletedAt ?? null,
+      reviewCreditLockedAt: row.reviewCreditLockedAt ?? null,
+      managerSignOff: row.managerSignOff ?? null,
+      completionSource: row.completionSource ?? null,
     },
     contentComplete,
     competent,
@@ -147,9 +177,9 @@ async function computeOutcome(tx: Prisma.TransactionClient, enrolmentId: string)
   };
 }
 
-async function programmeAdminIds(programmeId: string): Promise<string[]> {
+async function programmeAdminIds(programmeId: string, client: Prisma.TransactionClient | typeof db = db): Promise<string[]> {
   // Programme admins plus org-wide staff (programmeId null) who oversee every programme.
-  const rows = await db.userRole.findMany({
+  const rows = await client.userRole.findMany({
     where: {
       OR: [{ programmeId }, { programmeId: null }],
       role: { name: { in: ["admin", "owner"] } },
@@ -173,107 +203,45 @@ export async function evaluateEnrolment(
     competent: false, appliedScore: 0, appliedScoreSource: "assessment", scoreChanged: false,
     completed: false, newlyCompleted: false, certificateIssued: false,
   };
-  try {
-    const core = await computeOutcome(db, enrolmentId);
-    if (!core) return empty;
-    const e = core.enrolment;
-    if (e.status === "withdrawn" || e.withdrawnAt) return { ...empty, skipped: true };
+  return runEvaluation(enrolmentId, trigger, options, empty);
+}
 
-    const now = new Date();
-    const locked = !!e.reviewCreditLockedAt;
-    const nextContentCompletedAt = core.contentComplete ? (e.contentCompletedAt ?? now) : null;
-    const contentCompletedAtChanged = (nextContentCompletedAt?.getTime() ?? null) !== (e.contentCompletedAt?.getTime() ?? null);
+type SideEffect =
+  | { kind: "locked_notice"; programmeId: string; learnerId: string }
+  | { kind: "signoff_reset"; learnerId: string }
+  | { kind: "completed"; learnerId: string; attemptId?: string; newlyCompleted: boolean };
 
-    // A locked period must not move the applied/timeliness/enrolment scores, status or
-    // completion date. Content completion is not a score, so it can still be recorded.
-    if (locked) {
-      if (contentCompletedAtChanged) {
-        await db.enrolment.update({ where: { id: e.id }, data: { contentCompletedAt: nextContentCompletedAt } }).catch(() => null);
-      }
-      if (trigger === "attempt_graded") {
-        await db.auditLog.create({
-          data: {
-            userId: null,
-            action: "ASSESSMENT_RESULT_NOT_APPLIED_LOCKED",
-            entity: "enrolment",
-            entityId: e.id,
-            details: JSON.stringify({ trigger, appliedScore: core.appliedScore, liveApplied: core.liveApplied }),
-          },
-        }).catch(() => null);
-        const admins = await programmeAdminIds(e.programmeId);
-        const learner = await db.user.findUnique({ where: { id: e.learnerId }, select: { name: true, managerId: true } }).catch(() => null);
-        await Promise.all([
-          ...admins.map((userId) =>
-            notify(userId, "assessment_result_locked", {
+/**
+ * Everything a person can see, after the commit. It only does anything for the enrolments the
+ * transaction actually completed or whose score really moved, so a repeated evaluation (an
+ * unrelated content edit, a second trigger) cannot send the same notice twice.
+ */
+async function runSideEffects(outcome: EnrolmentOutcome, effects: SideEffect[]): Promise<boolean> {
+  let certificateIssued = false;
+  for (const effect of effects) {
+    if (effect.kind === "locked_notice") {
+      const admins = await programmeAdminIds(effect.programmeId);
+      const learner = await db.user.findUnique({ where: { id: effect.learnerId }, select: { name: true, managerId: true } }).catch(() => null);
+      await Promise.all([
+        ...admins.map((userId) =>
+          notify(userId, "assessment_result_locked", {
+            title: "Assessment result not applied (period locked)",
+            body: `${learner?.name ?? "A learner"}'s new result was recorded but the review-credit period is locked, so the score did not change.`,
+            link: "/review-credit",
+          }),
+        ),
+        learner?.managerId
+          ? notify(learner.managerId, "assessment_result_locked", {
               title: "Assessment result not applied (period locked)",
-              body: `${learner?.name ?? "A learner"}'s new result was recorded but the review-credit period is locked, so the score did not change.`,
+              body: `${learner.name}'s new assessment result was recorded but the locked review-credit period was not changed.`,
               link: "/review-credit",
-            }),
-          ),
-          learner?.managerId
-            ? notify(learner.managerId, "assessment_result_locked", {
-                title: "Assessment result not applied (period locked)",
-                body: `${learner.name}'s new assessment result was recorded but the locked review-credit period was not changed.`,
-                link: "/review-credit",
-              })
-            : Promise.resolve(),
-        ]);
-      }
-      return {
-        ...empty,
-        skipped: false,
-        locked: true,
-        contentComplete: core.contentComplete,
-        contentCompletedAt: nextContentCompletedAt,
-        competent: core.competent,
-        appliedScore: core.appliedScore,
-        appliedScoreSource: e.appliedScoreSource,
-        completed: e.status === "completed",
-        certificateIssued: false,
-      };
+            })
+          : Promise.resolve(),
+      ]);
+      continue;
     }
-
-    // Work out the applied score according to its source.
-    let appliedScore = e.appliedAssessmentScore ?? 0;
-    let scoreChanged = false;
-    let pending: { score: number; at: Date } | null = null;
-    if (e.appliedScoreSource === "manual") {
-      // Automatic results never silently replace an override: keep them for review.
-      if (core.appliedScore !== (e.appliedAssessmentScore ?? 0)) {
-        pending = { score: core.appliedScore, at: now };
-      }
-    } else if (core.appliedScore !== (e.appliedAssessmentScore ?? 0)) {
-      appliedScore = core.appliedScore;
-      scoreChanged = true;
-    }
-
-    const completed = core.competent;
-    const completionDate = completed ? (e.completionDate ?? now) : e.completionDate;
-    const { score: enrolmentScore, b: timelinessScore } = calculateEnrolmentScore({
-      appliedAssessmentScore: appliedScore,
-      completionDate,
-      deadlineDate: e.deadlineDate,
-      applicationScore: e.applicationScore,
-    });
-
-    const status = completed ? "completed" : e.status === "completed" ? e.status : "enrolled";
-    const resetSignOff = !!e.managerSignOff && (scoreChanged || pending !== null);
-
-    const data: Prisma.EnrolmentUpdateInput = {
-      contentCompletedAt: nextContentCompletedAt,
-      appliedAssessmentScore: appliedScore,
-      timelinessScore,
-      enrolmentScore,
-      status,
-      completionDate,
-      ...(pending ? { pendingAssessmentScore: pending.score, pendingAssessmentScoreAt: pending.at } : {}),
-      ...(resetSignOff ? { managerSignOff: false, managerSignOffBy: null, managerSignOffAt: null } : {}),
-    };
-    const newlyCompleted = completed && e.status !== "completed";
-    await db.enrolment.update({ where: { id: e.id }, data });
-
-    if (resetSignOff) {
-      const learner = await db.user.findUnique({ where: { id: e.learnerId }, select: { name: true, managerId: true } }).catch(() => null);
+    if (effect.kind === "signoff_reset") {
+      const learner = await db.user.findUnique({ where: { id: effect.learnerId }, select: { name: true, managerId: true } }).catch(() => null);
       if (learner?.managerId) {
         await notify(learner.managerId, "manager_signoff_required", {
           title: "Review-credit sign-off needs re-confirming",
@@ -281,40 +249,160 @@ export async function evaluateEnrolment(
           link: "/review-credit",
         });
       }
+      continue;
     }
+    const [{ issueCertificateForEnrolment }, { checkStreakRecognition, checkAppliedScoreRecognition }] = await Promise.all([
+      import("./certificates.js"),
+      import("./recognition.js"),
+    ]);
+    const issued: { issued: boolean; existing?: boolean; id?: string } = await issueCertificateForEnrolment(outcome.enrolmentId, effect.attemptId).catch(() => ({ issued: false }));
+    if (issued.issued) certificateIssued = true;
+    if (issued.id && effect.attemptId) {
+      await db.certificate.updateMany({ where: { id: issued.id, attemptId: null }, data: { attemptId: effect.attemptId } }).catch(() => null);
+    }
+    if (effect.newlyCompleted) {
+      await checkStreakRecognition(effect.learnerId).catch(() => null);
+      await checkAppliedScoreRecognition(outcome.enrolmentId).catch(() => null);
+    }
+  }
+  return certificateIssued;
+}
 
-    let certificateIssued = false;
-    // A completed (competent) enrolment with a certificate requirement holds a certificate,
-    // issued once. On the first pass it is created from the attempt that earned it; a certificate
-    // issued earlier from a staff status change is attached to that attempt instead of left empty.
-    if (completed) {
-      const [{ issueCertificateForEnrolment }, { checkStreakRecognition, checkAppliedScoreRecognition }] = await Promise.all([
-        import("./certificates.js"),
-        import("./recognition.js"),
-      ]);
-      const issued: { issued: boolean; existing?: boolean; id?: string } = await issueCertificateForEnrolment(e.id, options.attemptId).catch(() => ({ issued: false }));
-      certificateIssued = !!issued.issued;
-      if (issued.id && options.attemptId) {
-        await db.certificate.updateMany({ where: { id: issued.id, attemptId: null }, data: { attemptId: options.attemptId } }).catch(() => null);
+/**
+ * Round 9 / 3.2. The read, the decision and the write happen inside one transaction that holds
+ * the enrolment row, so two triggers at once serialize on it. Everything a person can see —
+ * certificate, recognition, notifications — runs after the commit, and only for the transition the
+ * transaction itself reported, so the same completion cannot be announced twice.
+ */
+async function runEvaluation(
+  enrolmentId: string,
+  trigger: EnrolmentTrigger,
+  options: { attemptId?: string },
+  empty: EnrolmentOutcome,
+): Promise<EnrolmentOutcome> {
+  try {
+    const effects: SideEffect[] = [];
+    const outcome = await db.$transaction(async (tx) => {
+      const core = await computeOutcome(tx, enrolmentId, { lock: true });
+      if (!core) return null;
+      const e = core.enrolment;
+      if (e.status === "withdrawn" || e.withdrawnAt) return { ...empty, skipped: true };
+
+      const now = new Date();
+      const locked = !!e.reviewCreditLockedAt;
+      const nextContentCompletedAt = core.contentComplete ? (e.contentCompletedAt ?? now) : null;
+      const contentCompletedAtChanged = (nextContentCompletedAt?.getTime() ?? null) !== (e.contentCompletedAt?.getTime() ?? null);
+
+      // A locked period must not move the applied/timeliness/enrolment scores, status or
+      // completion date. Content completion is not a score, so it can still be recorded.
+      if (locked) {
+        if (contentCompletedAtChanged) {
+          await tx.enrolment.update({ where: { id: e.id }, data: { contentCompletedAt: nextContentCompletedAt } }).catch(() => null);
+        }
+        if (trigger === "attempt_graded") {
+          await tx.auditLog.create({
+            data: {
+              userId: null,
+              action: "ASSESSMENT_RESULT_NOT_APPLIED_LOCKED",
+              entity: "enrolment",
+              entityId: e.id,
+              details: JSON.stringify({ trigger, appliedScore: core.appliedScore, liveApplied: core.liveApplied }),
+            },
+          }).catch(() => null);
+          effects.push({ kind: "locked_notice", programmeId: e.programmeId, learnerId: e.learnerId });
+        }
+        return {
+          ...empty,
+          skipped: false,
+          locked: true,
+          contentComplete: core.contentComplete,
+          contentCompletedAt: nextContentCompletedAt,
+          competent: core.competent,
+          appliedScore: core.appliedScore,
+          appliedScoreSource: e.appliedScoreSource,
+          completed: e.status === "completed",
+          certificateIssued: false,
+        };
       }
-      await checkStreakRecognition(e.learnerId).catch(() => null);
-      await checkAppliedScoreRecognition(e.id).catch(() => null);
-    }
 
-    return {
-      enrolmentId,
-      skipped: false,
-      locked: false,
-      contentComplete: core.contentComplete,
-      contentCompletedAt: nextContentCompletedAt,
-      competent: core.competent,
-      appliedScore,
-      appliedScoreSource: e.appliedScoreSource,
-      scoreChanged: scoreChanged || pending !== null,
-      completed,
-      newlyCompleted,
-      certificateIssued,
-    };
+      // Work out the applied score according to its source.
+      // Round 9 / 2.3: once an enrolment is completed with a source, an assessment edit never
+      // un-completes it. A minor correction carries the result forward so `competent` stays true
+      // anyway; a new paper would otherwise set this to false and take the completion away from
+      // someone who already earned it.
+      const alreadyCompleted = e.status === "completed" && !!e.completionSource;
+      // A completed learner's stored score may go up, never down (round 9 / 2.3).
+      const floor = alreadyCompleted ? e.appliedAssessmentScore ?? 0 : 0;
+      const computed = Math.max(core.appliedScore, floor);
+      let appliedScore = e.appliedAssessmentScore ?? 0;
+      let scoreChanged = false;
+      let pending: { score: number; at: Date } | null = null;
+      if (e.appliedScoreSource === "manual") {
+        // Automatic results never silently replace an override: keep them for review.
+        if (computed !== (e.appliedAssessmentScore ?? 0)) {
+          pending = { score: computed, at: now };
+        }
+      } else if (computed !== (e.appliedAssessmentScore ?? 0)) {
+        appliedScore = computed;
+        scoreChanged = true;
+      }
+
+      const completed = core.competent || alreadyCompleted;
+      const completionDate = completed ? (e.completionDate ?? now) : e.completionDate;
+      const { score: enrolmentScore, b: timelinessScore } = calculateEnrolmentScore({
+        appliedAssessmentScore: appliedScore,
+        completionDate,
+        deadlineDate: e.deadlineDate,
+        applicationScore: e.applicationScore,
+      });
+
+      const status = completed ? "completed" : e.status === "completed" ? e.status : "enrolled";
+      const resetSignOff = !!e.managerSignOff && (scoreChanged || pending !== null);
+
+      const completionSource = completed ? (e.completionSource ?? "assessment") : e.completionSource;
+      const data: Prisma.EnrolmentUpdateInput = {
+        contentCompletedAt: nextContentCompletedAt,
+        // Round 9 / 1.2: the automatic loop is the only writer of "assessment", and only for an
+        // enrolment it actually completes. A manual override sets "manual" and this leaves it alone.
+        completionSource,
+        appliedAssessmentScore: appliedScore,
+        timelinessScore,
+        enrolmentScore,
+        status,
+        completionDate,
+        ...(pending ? { pendingAssessmentScore: pending.score, pendingAssessmentScoreAt: pending.at } : {}),
+        ...(resetSignOff ? { managerSignOff: false, managerSignOffBy: null, managerSignOffAt: null } : {}),
+      };
+      const newlyCompleted = completed && e.status !== "completed";
+      await tx.enrolment.update({ where: { id: e.id }, data });
+
+      // Round 9 / 3.1: a sign-off is cleared only when a score input really moved, and the manager
+      // is told once, after the commit, not on every evaluation.
+      if (resetSignOff) effects.push({ kind: "signoff_reset", learnerId: e.learnerId });
+
+      // A completed (competent) enrolment with a certificate requirement holds a certificate,
+      // issued once. It is issued after the commit, and only by the transaction that completed the
+      // enrolment, so two concurrent triggers cannot both open one.
+      if (completed) effects.push({ kind: "completed", learnerId: e.learnerId, attemptId: options.attemptId, newlyCompleted });
+
+      return {
+        enrolmentId,
+        skipped: false,
+        locked: false,
+        contentComplete: core.contentComplete,
+        contentCompletedAt: nextContentCompletedAt,
+        competent: core.competent,
+        appliedScore,
+        appliedScoreSource: e.appliedScoreSource,
+        scoreChanged: scoreChanged || pending !== null,
+        completed,
+        newlyCompleted,
+        certificateIssued: false,
+      };
+    });
+    if (!outcome) return empty;
+    const certificateIssued = await runSideEffects(outcome, effects);
+    return { ...outcome, certificateIssued };
   } catch (err) {
     console.error("[enrolment-outcome] evaluate failed", enrolmentId, err);
     return empty;
@@ -323,10 +411,24 @@ export async function evaluateEnrolment(
 
 /** Re-evaluate every enrolment of a course (content changed, assessment published, etc.). */
 export async function evaluateCourseEnrolments(courseId: string, trigger: EnrolmentTrigger): Promise<number> {
-  const enrolments = await db.enrolment.findMany({
-    where: { courseId, status: { not: "withdrawn" }, withdrawnAt: null },
-    select: { id: true },
-  }).catch(() => [] as Array<{ id: string }>);
-  for (const e of enrolments) await evaluateEnrolment(e.id, trigger);
-  return enrolments.length;
+  const total = await db.enrolment.count({ where: { courseId, status: { not: "withdrawn" }, withdrawnAt: null } }).catch(() => 0);
+  let processed = 0;
+  let lastId: string | null = null;
+  // Keyset paging rather than one findMany: a course with thousands of enrolments must not load
+  // every id into memory, and the worker below reuses this so a run can report its progress.
+  for (;;) {
+    const batch: Array<{ id: string }> = await db.enrolment.findMany({
+      where: { courseId, status: { not: "withdrawn" }, withdrawnAt: null, ...(lastId ? { id: { gt: lastId } } : {}) },
+      select: { id: true },
+      orderBy: { id: "asc" },
+      take: 50,
+    }).catch(() => [] as Array<{ id: string }>);
+    if (!batch.length) break;
+    for (const e of batch) {
+      await evaluateEnrolment(e.id, trigger);
+      processed++;
+    }
+    lastId = batch[batch.length - 1].id;
+  }
+  return total || processed;
 }

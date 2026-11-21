@@ -18,6 +18,7 @@ import { scheduleKpiJob } from "./jobs/kpiJob.js";
 import { scheduleContentLifecycleJob } from "./jobs/contentLifecycleJob.js";
 import { scheduleCertificateExpiryJob } from "./jobs/certificateExpiryJob.js";
 import { scheduleReminderJob } from "./jobs/sessionReminderJob.js";
+import { startEvaluationWorker } from "./services/evaluationQueue.js";
 import { assertEmailConfiguration } from "./services/email.js";
 import { parseTrustProxy } from "./config/proxy.js";
 
@@ -113,5 +114,8 @@ if (process.env.NODE_ENV !== "test") {
   scheduleContentLifecycleJob();
   scheduleCertificateExpiryJob();
   scheduleReminderJob();
+  // Round 9 / 3.3: the course re-evaluation queue. In-process and database-backed, so a run
+  // survives a restart; NODE_ENV=test drives it from the tests instead.
+  startEvaluationWorker();
 }
 export default app;

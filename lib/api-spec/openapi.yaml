@@ -176,6 +176,25 @@ paths:
                 type: array
                 items:
                   type: object
+  /courses/{courseId}/evaluation-status:
+    get:
+      operationId: getCourseEvaluationStatus
+      tags: [learning]
+      summary: Whether a course-wide re-evaluation is still running (staff only)
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: "pending: true while a recalculation is due or running, plus the last job"
+          content:
+            application/json:
+              schema:
+                type: object
+        "403":
+          description: Programme staff access required
   /courses/{courseId}/assessments:
     get:
       operationId: listCourseAssessments
@@ -331,6 +350,25 @@ paths:
             application/json:
               schema:
                 type: object
+  /assessments/{assessmentId}/discard-draft:
+    post:
+      operationId: discardAssessmentDraft
+      tags: [learning]
+      summary: Discard a draft of a live assessment (the live version is unaffected)
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Draft discarded; the id of the live version it pointed at
+          content:
+            application/json:
+              schema:
+                type: object
+        "409":
+          description: Not a draft of a live version, or it already has attempts
   /assessments/{assessmentId}/attempts:
     post:
       operationId: startAssessmentAttempt

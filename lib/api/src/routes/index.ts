@@ -21,6 +21,7 @@ import {
 } from "../middleware/rbac.js";
 import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures } from "../middleware/rateLimit.js";
 import { assertNotGradingSelf } from "../middleware/grading.js";
+import { parseEnrolmentPatch } from "../services/enrolmentPatch.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -40,7 +41,8 @@ import {
   uploadMaxBytes,
 } from "../services/uploads.js";
 import { recomputeEnrolmentProgress, providerForUrl, isSafeExternalUrl } from "../services/contentProgress.js";
-import { evaluateEnrolment, evaluateCourseEnrolments } from "../services/enrolmentOutcome.js";
+import { evaluateEnrolment } from "../services/enrolmentOutcome.js";
+import { enqueueCourseEvaluation, drainEvaluationQueue } from "../services/evaluationQueue.js";
 import { buildIcsCalendar, sessionsForUser } from "../services/ical.js";
 import crypto from "node:crypto";
 import { db, orgScope, orgIdOf } from "../db.js";
@@ -375,18 +377,31 @@ router.post("/enrolments", requireProgrammeRole("admin", "owner", "trainer"), as
   if (e.programmeId) await assertProgrammeInOrg(e.programmeId, scope.orgId);
   return res.status(201).json(e);
 });
+// Round 9 / Phase 1.1. A strict whitelist, one role per field, and scores computed from the
+// stored row plus only the validated fields the caller was allowed to change. A learner cannot
+// touch status, dates or scores at all: progress comes from content progress and attempts.
 router.patch("/enrolments/:id", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   const current = await db.enrolment.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } });
   if (!current) return res.status(404).json({ error: "not found" });
-  const isSelf = me.id === current.learnerId;
+
+  // Both checks read the database, never the token or the body.
   const staff = (await isOrgStaff(me.id)) || (await isProgrammeStaff(me.id, current.programmeId));
-  const patch = req.body ?? {};
-  if (patch.status !== undefined && !(isSelf || staff)) return res.status(403).json({ error: "only the learner or programme staff may update status" });
-  if ((patch.appliedAssessmentScore !== undefined || patch.applicationScore !== undefined) && !staff) {
-    return res.status(403).json({ error: "only programme trainers/admins may set scores" });
+  const learnerRow = await db.user.findUnique({ where: { id: current.learnerId }, select: { managerId: true } }).catch(() => null);
+  const lineManager = !!learnerRow && learnerRow.managerId === me.id;
+
+  const parsed = parseEnrolmentPatch(req.body ?? {}, { staff, lineManager });
+  if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+  if (parsed.forbidden.length) {
+    return res.status(403).json({ error: `you may not set ${parsed.forbidden.join(", ")} on this enrolment` });
   }
+  const { staff: patch, manager } = parsed;
+  const staffFieldCount = Object.keys(patch).filter((k) => k !== "reason").length;
+  if (!staffFieldCount && manager.managerSignOff === undefined) {
+    return res.status(400).json({ error: "nothing to update" });
+  }
+
   // Round 8 / 1.3: an applied score or completion override must carry a reason.
   const overridesOutcome =
     patch.appliedAssessmentScore !== undefined || patch.status !== undefined || patch.completionDate !== undefined;
@@ -400,27 +415,33 @@ router.patch("/enrolments/:id", async (req, res) => {
   }
   let signOffBy: string | undefined;
   let signOffAt: Date | undefined;
-  if (patch.managerSignOff !== undefined) {
-    const learner = await db.user.findUnique({ where: { id: current.learnerId } }).catch(() => null);
-    if (!learner || learner.managerId !== me.id) return res.status(403).json({ error: "only the learner's line manager may sign off" });
+  if (manager.managerSignOff !== undefined) {
+    if (!lineManager) return res.status(403).json({ error: "only the learner's line manager may sign off" });
     signOffBy = me.id;
     signOffAt = new Date();
   }
-  // Round 6 / M1: the in-transaction withdrawal hook below must see the row as it was, so it is
-  // captured here rather than read back after the update.
+
+  // Round 6 / M1: the withdrawal hook below must see the row as it was.
   const wasWithdrawn = current.status === "withdrawn";
-  const merged = { ...current, ...patch };
   const manualScore = patch.appliedAssessmentScore !== undefined;
-  const appliedForScore = manualScore ? Number(patch.appliedAssessmentScore) : current.appliedAssessmentScore ?? null;
-  const completionDateForScore = patch.completionDate !== undefined
-    ? (patch.completionDate ? new Date(patch.completionDate) : null)
-    : merged.completionDate ?? null;
-  const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: appliedForScore, completionDate: completionDateForScore, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
+  const appliedForScore = manualScore ? (patch.appliedAssessmentScore as number) : current.appliedAssessmentScore ?? null;
+  const completionDateForScore = patch.completionDate !== undefined ? patch.completionDate : current.completionDate ?? null;
+  const deadlineForScore = patch.deadlineDate !== undefined ? patch.deadlineDate : current.deadlineDate ?? null;
+  const applicationForScore = patch.applicationScore !== undefined ? patch.applicationScore : current.applicationScore ?? null;
+  const { score, b } = calculateEnrolmentScore({
+    appliedAssessmentScore: appliedForScore,
+    completionDate: completionDateForScore,
+    deadlineDate: deadlineForScore,
+    applicationScore: applicationForScore,
+  });
+  // A staff status change is a manual completion; the automatic loop writes "assessment".
+  const completes = patch.status === "completed" && current.status !== "completed";
   const e = await db.enrolment.update({
     where: { id: req.params.id },
     data: {
       status: patch.status ?? undefined,
-      completionDate: patch.completionDate !== undefined ? (patch.completionDate ? new Date(patch.completionDate) : null) : undefined,
+      completionDate: patch.completionDate !== undefined ? patch.completionDate : completes ? current.completionDate ?? new Date() : undefined,
+      deadlineDate: patch.deadlineDate !== undefined ? patch.deadlineDate : undefined,
       appliedAssessmentScore: manualScore ? appliedForScore : undefined,
       ...(manualScore ? {
         appliedScoreSource: "manual",
@@ -430,10 +451,11 @@ router.patch("/enrolments/:id", async (req, res) => {
         pendingAssessmentScore: null,
         pendingAssessmentScoreAt: null,
       } : {}),
-      applicationScore: patch.applicationScore ?? undefined,
+      applicationScore: patch.applicationScore !== undefined ? patch.applicationScore : undefined,
       timelinessScore: b,
       enrolmentScore: score,
-      managerSignOff: patch.managerSignOff ?? undefined,
+      ...(completes ? { completionSource: "manual" as const } : {}),
+      managerSignOff: manager.managerSignOff ?? undefined,
       managerSignOffBy: signOffBy ?? undefined,
       managerSignOffAt: signOffAt ?? undefined,
     },
@@ -445,7 +467,7 @@ router.patch("/enrolments/:id", async (req, res) => {
         action: manualScore ? "ENROLMENT_SCORE_OVERRIDDEN" : "ENROLMENT_STATUS_OVERRIDDEN",
         entity: "enrolment",
         entityId: e.id,
-        details: JSON.stringify({ reason, status: patch.status ?? null, completionDate: patch.completionDate ?? null, appliedAssessmentScore: manualScore ? appliedForScore : null }),
+        details: JSON.stringify({ reason, status: patch.status ?? null, completionDate: patch.completionDate ?? null, deadlineDate: patch.deadlineDate ?? null, appliedAssessmentScore: manualScore ? appliedForScore : null, completionSource: completes ? "manual" : null }),
       },
     }).catch(() => null);
   }
@@ -453,7 +475,7 @@ router.patch("/enrolments/:id", async (req, res) => {
     // Round 6 / M1: a withdrawn learner loses the threads of that programme.
     await revokeStaleThreadAccess(e.learnerId, scope.orgId);
   }
-  if (patch.status === "completed") {
+  if (completes) {
     const [{ issueCertificateForEnrolment }, { checkStreakRecognition }] = await Promise.all([
       import("../services/certificates.js"),
       import("../services/recognition.js"),
@@ -1066,7 +1088,7 @@ router.patch("/assessments/:id", requireProgrammeRole("admin", "owner", "trainer
   const scope = orgScope(req as AuthedRequest);
   const a = await db.assessment.findFirst({
     where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } },
-    include: { module: { select: { courseId: true } }, questions: { include: { options: true } } },
+    include: { module: { select: { courseId: true } } },
   });
   if (!a) return res.status(404).json({ error: "assessment not found in your organization" });
   if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
@@ -1078,54 +1100,20 @@ router.patch("/assessments/:id", requireProgrammeRole("admin", "owner", "trainer
   }
   if (req.body?.title !== undefined) data.title = String(req.body.title);
 
-  // Round 8 / 2.1 + 2.4: editing a published paper creates version N+1. The old
-  // version is taken offline (superseded) but keeps its questions so in-flight
-  // attempts are still graded against the paper they started on.
-  if (a.isPublished && req.body?.confirmNewVersion !== true) {
-    return res.status(409).json({
-      error: `saving this edit creates version ${a.version + 1}, takes version ${a.version} offline, and learners will need to retake it`,
-      requiresNewVersion: true,
-      nextVersion: a.version + 1,
-    });
-  }
-  if (a.isPublished && req.body?.confirmNewVersion === true) {
-    const created = await db.$transaction(async (tx) => {
-      const next = await tx.assessment.create({
-        data: {
-          moduleId: a.moduleId,
-          type: (data.type as string) ?? a.type,
-          title: (data.title as string) ?? a.title,
-          maxScore: (data.maxScore as number) ?? a.maxScore,
-          passMark: (data.passMark as number | null) ?? a.passMark,
-          maxAttempts: (data.maxAttempts as number | null) ?? a.maxAttempts,
-          timeLimitMinutes: (data.timeLimitMinutes as number | null) ?? a.timeLimitMinutes,
-          version: a.version + 1,
-          isPublished: false,
-        },
+  // Round 9 / 2.1: editing a live paper no longer takes it offline. The change goes into one
+  // draft that accumulates further edits; nothing a learner sees moves until the draft is
+  // published, and pushing a draft live is what retires the old version.
+  if (a.isPublished) {
+    if (req.body?.confirmNewVersion !== true) {
+      return res.status(409).json({
+        error: `this assessment is live; your edit opens draft v${a.version + 1} and learners stay on v${a.version} until you publish it`,
+        requiresNewVersion: true,
+        nextVersion: a.version + 1,
       });
-      for (const q of a.questions) {
-        const nq = await tx.question.create({
-          data: {
-            assessmentId: next.id,
-            order: q.order,
-            kind: q.kind,
-            prompt: q.prompt,
-            scenarioContext: q.scenarioContext,
-            points: q.points,
-            rubric: q.rubric,
-            acceptedAnswers: q.acceptedAnswers,
-          },
-        });
-        for (const o of q.options) {
-          await tx.questionOption.create({ data: { questionId: nq.id, text: o.text, isCorrect: o.isCorrect, order: o.order } });
-        }
-      }
-      await tx.assessment.update({ where: { id: a.id }, data: { isPublished: false, supersededAt: new Date(), supersededById: (req as AuthedRequest).user!.id } });
-      return next;
-    });
-    await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "ASSESSMENT_SUPERSEDED", entity: "assessment", entityId: a.id, details: JSON.stringify({ newVersionId: created.id, version: created.version }) } }).catch(() => null);
-    await evaluateCourseEnrolments(a.module.courseId, "assessment_superseded");
-    return res.status(201).json({ ...created, supersededId: a.id, redirectedTo: created.id });
+    }
+    const draft = await ensureDraftFor(a.id, (req as AuthedRequest).user!.id);
+    const saved = await db.assessment.update({ where: { id: draft.id }, data });
+    return res.status(201).json({ ...saved, supersededId: a.id, draft: true });
   }
   return res.json(await db.assessment.update({ where: { id: a.id }, data }));
 });
@@ -1315,12 +1303,22 @@ function shortAnswerMatches(text: string, accepted: string[]): boolean {
 
 // Publish freezes the current question set. A later edit to a published assessment clones it into
 // a new version instead of changing questions that attempt history depends on.
-async function cloneAssessmentVersion(assessmentId: string, actorId: string) {
+/**
+ * Round 9 / 2.1. The one draft for a live paper. A published assessment is never edited in place:
+ * the edit opens (or reuses) a draft at version + 1 that points back at it, and the live row keeps
+ * its questions, its attempts and its place as the paper learners are taking.
+ */
+async function ensureDraftFor(assessmentId: string, actorId: string) {
   const source = await db.assessment.findUniqueOrThrow({
     where: { id: assessmentId },
     include: { questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } },
   });
+  const existing = await db.assessment.findFirst({ where: { supersedesId: source.id, isPublished: false, deletedAt: null } });
+  if (existing) return existing;
   return db.$transaction(async (tx) => {
+    // Re-check inside the transaction: two trainers saving at once must still get one draft.
+    const again = await tx.assessment.findFirst({ where: { supersedesId: source.id, isPublished: false, deletedAt: null } });
+    if (again) return again;
     const copy = await tx.assessment.create({
       data: {
         moduleId: source.moduleId,
@@ -1353,17 +1351,13 @@ async function cloneAssessmentVersion(assessmentId: string, actorId: string) {
         await tx.questionOption.create({ data: { questionId: q.id, text: option.text, isCorrect: option.isCorrect, order: option.order } });
       }
     }
-    // The old row keeps its attempts but stops being the live copy.
-    await tx.assessment.update({ where: { id: source.id }, data: { isPublished: false, publishedAt: null, supersededAt: new Date(), supersededById: actorId } });
     await tx.auditLog.create({
-      data: { userId: actorId, action: "ASSESSMENT_VERSION_CREATED", entity: "assessment", entityId: copy.id, details: `continued from ${source.id} (v${source.version})` },
+      data: { userId: actorId, action: "ASSESSMENT_DRAFT_OPENED", entity: "assessment", entityId: copy.id, details: JSON.stringify({ supersedesId: source.id, version: copy.version }) },
     }).catch(() => null);
     return copy;
   });
 }
 
-// Round 8 / 2.1: validation shared by the builder routes. The detailed list is what the UI shows
-// above the publish button, so a trainer can see every problem at once instead of one at a time.
 function questionProblems(kind: QuestionKind, assessmentType: string, options: Array<{ text?: unknown; isCorrect?: unknown }>, acceptedAnswers?: unknown): string[] {
   const problems: string[] = [];
   if (assessmentType === "recall" && kind === "scenario") problems.push("recall assessments cannot contain scenario questions");
@@ -1491,7 +1485,7 @@ router.post("/assessments/:id/questions", requireProgrammeRole("admin", "owner",
 
   let versionCreated = false;
   if (assessment.isPublished) {
-    assessment = (await assessmentInOrg((await cloneAssessmentVersion(assessment.id, me.id)).id, scope.orgId))!;
+    assessment = (await assessmentInOrg((await ensureDraftFor(assessment.id, me.id)).id, scope.orgId))!;
     versionCreated = true;
   }
   const options = Array.isArray(req.body?.options) ? (req.body.options as any[]) : [];
@@ -1581,11 +1575,110 @@ router.post("/assessments/:id/publish", requireProgrammeRole("admin", "owner", "
   if (assessment.isPublished && assessment.publishedAt) return res.status(409).json({ error: "this assessment is already published; edit it to start a new version" });
   const problems = publishProblems(assessment);
   if (problems.length) return res.status(400).json({ error: problems[0], problems });
+
+  // Round 9 / 2.2: a version that replaces a live one must say how the change was meant. A minor
+  // correction carries earlier results forward; a new paper means a retake and a fresh attempt
+  // count. The trainer chooses, so a typo fix does not silently cost a learner their competence.
+  const previous = assessment.supersedesId
+    ? await db.assessment.findUnique({ where: { id: assessment.supersedesId }, select: { id: true, version: true, supersededAt: true } })
+    : null;
+  const replacesLive = !!previous && !previous.supersededAt;
+  const changeKind = req.body?.changeKind;
+  if (replacesLive && !["minor", "new_paper"].includes(String(changeKind))) {
+    return res.status(400).json({
+      error: "changeKind is required when publishing over a live version: \"minor\" (results carry forward) or \"new_paper\" (learners must retake)",
+      requiresChangeKind: true,
+    });
+  }
+  if (changeKind !== undefined && !["minor", "new_paper"].includes(String(changeKind))) {
+    return res.status(400).json({ error: "changeKind must be minor or new_paper" });
+  }
+
   const total = assessment.questions.reduce((sum, q) => sum + (q.points ?? 1), 0);
-  const updated = await db.assessment.update({ where: { id: assessment.id }, data: { isPublished: true, publishedAt: new Date(), maxScore: total } });
-  await db.auditLog.create({ data: { userId: me.id, action: "ASSESSMENT_PUBLISHED", entity: "assessment", entityId: assessment.id, details: `v${assessment.version}, ${assessment.questions.length} question(s)` } }).catch(() => null);
-  await evaluateCourseEnrolments(assessment.module.courseId, "assessment_published");
+  const now = new Date();
+  const updated = await db.$transaction(async (tx) => {
+    const published = await tx.assessment.update({
+      where: { id: assessment.id },
+      data: { isPublished: true, publishedAt: now, maxScore: total, changeKind: changeKind === undefined ? null : String(changeKind) },
+    });
+    if (replacesLive) {
+      await tx.assessment.update({ where: { id: previous.id }, data: { isPublished: false, publishedAt: null, supersededAt: now, supersededById: me.id } });
+    }
+    return published;
+  });
+  await db.auditLog.create({
+    data: {
+      userId: me.id,
+      action: "ASSESSMENT_PUBLISHED",
+      entity: "assessment",
+      entityId: assessment.id,
+      details: `v${assessment.version}, ${assessment.questions.length} question(s)${replacesLive ? `, replaces v${previous.version} as ${changeKind}` : ""}`,
+    },
+  }).catch(() => null);
+
+  // Round 9 / 3.3: the re-evaluation is queued, not run inside the request.
+  if (replacesLive) {
+    await enqueueCourseEvaluation(assessment.module.courseId, "assessment_superseded");
+    // A new paper is a retake for everyone who has not completed: say so, once.
+    if (changeKind === "new_paper") {
+      await notifyRetakeRequired(assessment.module.courseId, assessment.title);
+    }
+  } else {
+    await enqueueCourseEvaluation(assessment.module.courseId, "assessment_published");
+  }
   return res.json(updated);
+});
+
+/** Tell the enrolled, not-yet-completed learners that a new paper is up and they need to retake. */
+async function notifyRetakeRequired(courseId: string, title: string): Promise<void> {
+  const enrolments = await db.enrolment.findMany({
+    where: { courseId, status: { not: "withdrawn" }, withdrawnAt: null, OR: [{ status: { not: "completed" } }, { completionSource: null }] },
+    select: { learnerId: true },
+  }).catch(() => [] as Array<{ learnerId: string }>);
+  const { notify } = await import("../services/notify.js");
+  for (const e of enrolments) {
+    await notify(e.learnerId, "assessment_retake_required", {
+      title: "This assessment was updated",
+      body: `"${title}" has been replaced with a new paper. Please retake it to update your result.`,
+      link: "/assessments",
+    }).catch(() => null);
+  }
+}
+
+// Round 9 / 2.1: discarding a draft is how a trainer backs out of an edit. The live version is
+// untouched; only the unpublished row goes away.
+router.post("/assessments/:id/discard-draft", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const draft = await db.assessment.findFirst({
+    where: { id: req.params.id, isPublished: false, module: { course: { programme: { orgId: scope.orgId } } } },
+    select: { id: true, supersedesId: true, version: true },
+  }).catch(() => null);
+  if (!draft) return res.status(404).json({ error: "no editable draft with that id in your organization" });
+  if (!draft.supersedesId) return res.status(409).json({ error: "this is not a draft of a live version; delete it with the normal rules instead" });
+  const attempts = await db.assessmentAttempt.count({ where: { assessmentId: draft.id } });
+  if (attempts) return res.status(409).json({ error: "this draft already has attempts; it cannot be discarded" });
+  await db.$transaction(async (tx) => {
+    await tx.questionOption.deleteMany({ where: { question: { assessmentId: draft.id } } });
+    await tx.question.deleteMany({ where: { assessmentId: draft.id } });
+    await tx.assessment.delete({ where: { id: draft.id } });
+    await tx.auditLog.create({
+      data: { userId: me.id, action: "ASSESSMENT_DRAFT_DISCARDED", entity: "assessment", entityId: draft.id, details: JSON.stringify({ supersedesId: draft.supersedesId, version: draft.version }) },
+    }).catch(() => null);
+  });
+  return res.json({ discarded: draft.id, liveVersion: draft.supersedesId });
+});
+
+router.get("/courses/:id/evaluation-status", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const course = await db.course.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } }, select: { programmeId: true } }).catch(() => null);
+  if (!course) return res.status(404).json({ error: "course not found in your organization" });
+  const staff = (await isOrgStaff(me.id)) || (await isProgrammeStaff(me.id, course.programmeId));
+  if (!staff) return res.status(403).json({ error: "programme staff access required" });
+  const { evaluationStatusFor } = await import("../services/evaluationQueue.js");
+  const status = await evaluationStatusFor(req.params.id);
+  return res.json(status);
 });
 
 router.get("/courses/:id/assessments", async (req, res) => {
@@ -2271,7 +2364,7 @@ router.post("/modules/:moduleId/content", requireProgrammeRole("admin", "owner",
     const item = await db.contentItem.create({ data: { ...data, orgId: scope.orgId, moduleId: mod.id } as any });
     await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "CONTENT_ITEM_CREATED", entity: "content_item", entityId: item.id, details: item.type } }).catch(() => null);
     // Adding required content can make a previously complete course incomplete.
-    if (item.required) await evaluateCourseEnrolments(mod.courseId, "content_changed");
+    if (item.required) await enqueueCourseEvaluation(mod.courseId, "content_changed");
     return res.status(201).json(item);
   } catch (e) {
     return res.status((e as { status?: number }).status ?? 400).json({ error: (e as Error).message });
@@ -2308,7 +2401,7 @@ router.patch("/content/:id", requireProgrammeRole("admin", "owner", "trainer"), 
   // A required item that changes can make a complete course incomplete again.
   const courseId = (await db.module.findUnique({ where: { id: item.moduleId }, select: { courseId: true } }))?.courseId;
   if (courseId && (patch.required !== undefined || patch.isArchived !== undefined)) {
-    await evaluateCourseEnrolments(courseId, "content_changed");
+    await enqueueCourseEvaluation(courseId, "content_changed");
   }
   return res.json(updated);
 });
@@ -2320,7 +2413,7 @@ router.delete("/content/:id", requireProgrammeRole("admin", "owner", "trainer"),
   const now = new Date();
   const archived = await db.contentItem.update({ where: { id: item.id }, data: { isArchived: true, archivedAt: now } });
   const courseId = (await db.module.findUnique({ where: { id: item.moduleId }, select: { courseId: true } }))?.courseId;
-  if (courseId) await evaluateCourseEnrolments(courseId, "content_changed");
+  if (courseId) await enqueueCourseEvaluation(courseId, "content_changed");
   return res.json(archived);
 });
 
