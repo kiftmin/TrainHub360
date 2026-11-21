@@ -322,10 +322,23 @@ async function runEvaluation(
       const contentCompletedAtChanged = (nextContentCompletedAt?.getTime() ?? null) !== (e.contentCompletedAt?.getTime() ?? null);
 
       // A locked period must not move the applied/timeliness/enrolment scores, status or
-      // completion date. Content completion is not a score, so it can still be recorded.
+      // completion date. Content completion is not a score, so it can still be recorded. The new
+      // automatic result is held for staff review rather than silently dropped: accepting it is an
+      // explicit override, which is the only way across a locked review-credit period.
       if (locked) {
-        if (contentCompletedAtChanged) {
-          await tx.enrolment.update({ where: { id: e.id }, data: { contentCompletedAt: nextContentCompletedAt } }).catch(() => null);
+        const shouldHold = trigger === "attempt_graded"
+          && core.appliedScore !== (e.appliedAssessmentScore ?? 0)
+          && core.appliedScore !== e.pendingRejectedScore
+          && core.appliedScore !== e.pendingAssessmentScore;
+        const pendingChanged = shouldHold;
+        if (contentCompletedAtChanged || shouldHold) {
+          await tx.enrolment.update({
+            where: { id: e.id },
+            data: {
+              ...(contentCompletedAtChanged ? { contentCompletedAt: nextContentCompletedAt } : {}),
+              ...(shouldHold ? { pendingAssessmentScore: core.appliedScore, pendingAssessmentScoreAt: now, pendingRejectedScore: null } : {}),
+            },
+          }).catch(() => null);
         }
         if (trigger === "attempt_graded") {
           await tx.auditLog.create({
@@ -334,10 +347,11 @@ async function runEvaluation(
               action: "ASSESSMENT_RESULT_NOT_APPLIED_LOCKED",
               entity: "enrolment",
               entityId: e.id,
-              details: JSON.stringify({ trigger, appliedScore: core.appliedScore, liveApplied: core.liveApplied }),
+              details: JSON.stringify({ trigger, appliedScore: core.appliedScore, liveApplied: core.liveApplied, heldForReview: pendingChanged }),
             },
           }).catch(() => null);
           effects.push({ kind: "locked_notice", programmeId: e.programmeId, learnerId: e.learnerId });
+          if (pendingChanged) effects.push({ kind: "pending_changed", programmeId: e.programmeId, learnerId: e.learnerId, score: core.appliedScore });
         }
         return {
           ...empty,
@@ -348,6 +362,7 @@ async function runEvaluation(
           competent: core.competent,
           appliedScore: core.appliedScore,
           appliedScoreSource: e.appliedScoreSource,
+          scoreChanged: pendingChanged,
           completed: e.status === "completed",
           certificateIssued: false,
         };
