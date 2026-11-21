@@ -1,7 +1,14 @@
 # Round 10 — report
 
-Branches/PRs: one PR per phase, stacked from the Round 9 tip `deaf58d`. PR numbers will be filled in
-after creation.
+Branches/PRs: one PR per phase, stacked from the Round 9 tip `deaf58d`.
+
+| Phase | PR | Head branch |
+| --- | --- | --- |
+| 1 | #8 | `round10-phase1` |
+| 2 | #9 | `round10-phase2` |
+| 3 | #10 | `round10-phase3` |
+| 4 | #11 | `round10-phase4` |
+| 5 | #12 | `round10-phase5` |
 
 ## What ran, against what
 
@@ -99,5 +106,8 @@ Mass-assignment audit research found 0 vulnerabilities. All spread/`Object.assig
 
 ## Open items
 
-- PRs: Phase 1, Phase 2, Phase 3, Phase 4, Phase 5.
-- Merge in order, tag the final state, then delete the confirmed old branches.
+- Merge/tag was not performed: the pre-existing PR stack has unrelated conflicts in PR #5
+  (`phase/a3-b-1.7`) and PR #7 (`round9-phases-1-3`), which is the base of Round 10 PR #8. Merging
+  Round 10 into that branch would alter another open PR.
+- After the earlier conflicts are resolved: merge #8–#12 in order, tag the final state, then delete
+  the confirmed old `fix/*` and `phase/*` branches.
