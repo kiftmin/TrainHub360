@@ -24,9 +24,12 @@ export async function recomputeEnrolmentProgress(enrolmentId: string): Promise<n
 export function providerForUrl(url: string): string {
   try {
     const host = new URL(url).hostname.toLowerCase();
-    if (host.endsWith("coursera.org")) return "coursera";
-    if (host.endsWith("linkedin.com")) return "linkedin_learning";
-    if (host.endsWith("udemy.com")) return "udemy";
+    // Round 8 / E.9: a suffix match alone labelled evilcoursera.org as Coursera. Match the
+    // domain itself or a real subdomain of it, never a look-alike.
+    const onDomain = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+    if (onDomain("coursera.org")) return "coursera";
+    if (onDomain("linkedin.com")) return "linkedin_learning";
+    if (onDomain("udemy.com")) return "udemy";
     return "other";
   } catch {
     return "other";

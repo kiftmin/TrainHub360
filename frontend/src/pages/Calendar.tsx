@@ -18,18 +18,17 @@ import {
   useProgrammes,
   useCourses,
   useCreateCourse,
-  useSubmitAttempt,
   useModules,
   useSessions,
   useCreateSession,
   useRsvpSession,
-  useIcalToken,
   useGenerateIcalToken,
   useThreads,
   useThreadMessages,
   useSendMessage,
   useBookings,
   useCreateBooking,
+  useBookableTrainers,
   useCalendarEvents,
   useReviewCreditSettings,
   useUpdateReviewCreditSettings,
@@ -78,10 +77,11 @@ export function CalendarPage() {
   const programmes = useProgrammes();
   const bookings = useBookings();
   const events = useCalendarEvents();
+  const trainers = useBookableTrainers();
+  const courses = useCourses();
   const create = useCreateBooking();
   const createSession = useCreateSession();
   const rsvp = useRsvpSession();
-  const ical = useIcalToken();
   const generateIcal = useGenerateIcalToken();
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -105,21 +105,28 @@ export function CalendarPage() {
     });
   };
   const addToCalendar = async () => {
-    const existing = ical.data?.url;
-    if (existing) { window.location.href = existing; return; }
+    // Round 8 / D.2: the server only keeps a hash of the feed token, so every subscription
+    // starts by rotating it. The previous subscription stops working.
     const meId = getSessionUser()?.id;
     if (!meId) return;
     generateIcal.mutate(meId, { onSuccess: (data) => { window.location.href = data.url; } });
   };
-  const [form, setForm] = useState({ trainer: '', course: '', date: '', time: '' });
+  // Round 8 / B.1: a booking points at a trainer and course by id, so the booking cannot drift
+  // to a different person when someone is renamed.
+  const [form, setForm] = useState({ trainerId: '', courseId: '', date: '', time: '' });
+  const [bookingError, setBookingError] = useState<string | null>(null);
   const book = () => {
-    if (!form.trainer || !form.date || !form.time) return;
-    create.mutate({ trainer: form.trainer, course: form.course, date: form.date, time: form.time }, { onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); setOpen(false); setForm({ trainer: '', course: '', date: '', time: '' }); } });
+    setBookingError(null);
+    if (!form.trainerId || !form.date || !form.time) { setBookingError('Pick a trainer, date and time.'); return; }
+    create.mutate({ trainerId: form.trainerId, courseId: form.courseId || undefined, date: form.date, time: form.time }, {
+      onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); setOpen(false); setForm({ trainerId: '', courseId: '', date: '', time: '' }); },
+      onError: (e) => setBookingError((e as Error).message),
+    });
   };
   const loading = sessions.isLoading || bookings.isLoading || events.isLoading;
   const failed = sessions.isError || bookings.isError || events.isError;
   return <div className="page-in">
-    <PageHeading eyebrow="Schedule & support" title="Make the next step easy." detail="One operational view for live training, online sessions, and focused 1:1 support." action={<><Button variant="outline" onClick={() => setSessionOpen(true)}><CalendarDays className="size-4" />Schedule session</Button><Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus className="size-4" />Book 1:1</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Book a 1:1 session</DialogTitle></DialogHeader><div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Trainer<Input className="mt-2" placeholder="Trainer name" value={form.trainer} onChange={(e) => setForm({ ...form, trainer: e.target.value })} /></label><label className="block text-xs font-semibold">Course (optional)<Input className="mt-2" placeholder="Related course" value={form.course} onChange={(e) => setForm({ ...form, course: e.target.value })} /></label><label className="block text-xs font-semibold">Date<Input className="mt-2" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></label><label className="block text-xs font-semibold">Time<Input className="mt-2" type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} /></label><Button className="w-full" onClick={book} disabled={create.isPending}>{create.isPending ? 'Booking-' : 'Confirm booking'}</Button></div></DialogContent></Dialog></>} />
+    <PageHeading eyebrow="Schedule & support" title="Make the next step easy." detail="One operational view for live training, online sessions, and focused 1:1 support." action={<><Button variant="outline" onClick={() => setSessionOpen(true)}><CalendarDays className="size-4" />Schedule session</Button><Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus className="size-4" />Book 1:1</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Book a 1:1 session</DialogTitle></DialogHeader><div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={form.trainerId} onChange={(e) => setForm({ ...form, trainerId: e.target.value })} data-testid="select-booking-trainer"><option value="">Select a trainer</option>{(trainers.data || []).map((t) => <option key={t.id} value={t.id}>{t.name} - {t.email}</option>)}</select>{!trainers.isLoading && !(trainers.data || []).length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainer is available in your programmes yet.</span>}</label><label className="block text-xs font-semibold">Course (optional)<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={form.courseId} onChange={(e) => setForm({ ...form, courseId: e.target.value })} data-testid="select-booking-course"><option value="">No specific course</option>{(courses.data || []).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</select></label><label className="block text-xs font-semibold">Date<Input className="mt-2" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></label><label className="block text-xs font-semibold">Time<Input className="mt-2" type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} /></label>{bookingError && <p className="text-xs text-destructive">{bookingError}</p>}<Button className="w-full" onClick={book} disabled={create.isPending}>{create.isPending ? 'Booking-' : 'Confirm booking'}</Button></div></DialogContent></Dialog></>} />
     <Dialog open={sessionOpen} onOpenChange={setSessionOpen}>
       <DialogContent>
         <DialogHeader><DialogTitle>Schedule a session</DialogTitle></DialogHeader>
