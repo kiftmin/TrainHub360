@@ -1,4 +1,4 @@
-import { db } from "../db.js";
+import { db, Prisma } from "../db.js";
 
 const COMPLIANCE_CATEGORIES = ["compliance", "certification"];
 
@@ -26,4 +26,15 @@ export async function issueCertificateForEnrolment(enrolmentId: string, attemptI
     data: { learnerId: e.learnerId, courseId: e.courseId, enrolmentId: e.id, attemptId: attemptId ?? null, expiresAt, status: "active" },
   });
   return { issued: true, id: cert.id };
+}
+
+export async function revokeCertificatesForEnrolment(
+  tx: Prisma.TransactionClient,
+  enrolmentId: string,
+): Promise<string[]> {
+  const active = await tx.certificate.findMany({ where: { enrolmentId, status: "active" }, select: { id: true } });
+  if (!active.length) return [];
+  const ids = active.map((c) => c.id);
+  await tx.certificate.updateMany({ where: { id: { in: ids } }, data: { status: "revoked" } });
+  return ids;
 }

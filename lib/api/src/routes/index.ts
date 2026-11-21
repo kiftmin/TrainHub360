@@ -23,6 +23,7 @@ import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures } from
 import { assertNotGradingSelf } from "../middleware/grading.js";
 import { parseEnrolmentPatch } from "../services/enrolmentPatch.js";
 import { applyScoreChange, lockEnrolmentRow, notifyManagerSignoffRequired } from "../services/scoreChange.js";
+import { revokeCertificatesForEnrolment } from "../services/certificates.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -430,15 +431,22 @@ router.patch("/enrolments/:id", async (req, res) => {
     // time cannot overwrite this override (or silently clear the sign-off a second time).
     const row = await lockEnrolmentRow(tx, req.params.id);
     if (!row) return null;
+    // [CONFIRM] 2026-11-21: un-completing revokes the certificate issued for that completion. A
+    // later automatic completion is a new completion and issues a fresh certificate as normal.
+    const uncompleting = patch.status === "enrolled" && row.status === "completed";
     const appliedForScore = manualScore ? (patch.appliedAssessmentScore as number) : row.appliedAssessmentScore ?? null;
-    const completionDateForScore = patch.completionDate !== undefined ? patch.completionDate : row.completionDate ?? null;
+    const completionDateForScore = uncompleting
+      ? null
+      : patch.completionDate !== undefined ? patch.completionDate : row.completionDate ?? null;
     const deadlineForScore = patch.deadlineDate !== undefined ? patch.deadlineDate : row.deadlineDate ?? null;
     const applicationForScore = patch.applicationScore !== undefined ? patch.applicationScore : row.applicationScore ?? null;
     // A staff status change is a manual completion; the automatic loop writes "assessment".
     const completes = patch.status === "completed" && row.status !== "completed";
-    const finalCompletionDate = patch.completionDate !== undefined
-      ? patch.completionDate
-      : completes ? row.completionDate ?? new Date() : completionDateForScore;
+    const finalCompletionDate = uncompleting
+      ? null
+      : patch.completionDate !== undefined
+        ? patch.completionDate
+        : completes ? row.completionDate ?? new Date() : completionDateForScore;
     const { score, b } = calculateEnrolmentScore({
       appliedAssessmentScore: appliedForScore,
       completionDate: finalCompletionDate,
@@ -453,10 +461,12 @@ router.patch("/enrolments/:id", async (req, res) => {
       timelinessScore: b,
       enrolmentScore: score,
     });
+    const revokedCertificateIds = uncompleting ? await revokeCertificatesForEnrolment(tx, row.id) : [];
     await tx.enrolment.update({
       where: { id: row.id },
       data: {
         status: patch.status ?? undefined,
+        ...(uncompleting ? { completionDate: null, completionSource: null } : {}),
         ...(manualScore ? {
           appliedScoreSource: "manual",
           appliedScoreOverrideReason: reason,
@@ -478,7 +488,18 @@ router.patch("/enrolments/:id", async (req, res) => {
           action: manualScore ? "ENROLMENT_SCORE_OVERRIDDEN" : "ENROLMENT_STATUS_OVERRIDDEN",
           entity: "enrolment",
           entityId: row.id,
-          details: JSON.stringify({ reason, status: patch.status ?? null, completionDate: patch.completionDate ?? null, deadlineDate: patch.deadlineDate ?? null, appliedAssessmentScore: manualScore ? appliedForScore : null, completionSource: completes ? "manual" : null }),
+          details: JSON.stringify({ reason, status: patch.status ?? null, completionDate: patch.completionDate ?? null, deadlineDate: patch.deadlineDate ?? null, appliedAssessmentScore: manualScore ? appliedForScore : null, completionSource: completes ? "manual" : null, uncompleted: uncompleting }),
+        },
+      }).catch(() => null);
+    }
+    if (revokedCertificateIds.length) {
+      await tx.auditLog.create({
+        data: {
+          userId: me.id,
+          action: "CERTIFICATE_REVOKED",
+          entity: "enrolment",
+          entityId: row.id,
+          details: JSON.stringify({ reason, certificateIds: revokedCertificateIds }),
         },
       }).catch(() => null);
     }
