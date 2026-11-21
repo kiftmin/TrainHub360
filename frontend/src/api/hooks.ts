@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient, type UseQueryOptions } from '@tanstack/react-query';
 import { api } from './client';
 
@@ -892,13 +893,43 @@ export interface CourseAssessment {
   timeLimitMinutes?: number | null;
   isPublished: boolean;
   version?: number;
+  publishedAt?: string | null;
   supersededAt?: string | null;
+  supersedesId?: string | null;
+  changeKind?: 'minor' | 'new_paper' | null;
   questions: AssessmentQuestion[];
   module?: { id: string; title: string };
   attemptCount: number;
   bestScore: number | null;
   remainingAttempts: number | null;
   locked: boolean;
+}
+
+export interface EvaluationStatus {
+  pending: boolean;
+  job: { id?: string; status?: string; attempts?: number; lastError?: string | null } | null;
+  attempts: number;
+  stale: boolean;
+  lastError: string | null;
+}
+
+export function useEvaluationStatus(courseId: string, enabled = true) {
+  return useQuery(queryOpts(['evaluation-status', courseId] as const, () => api<EvaluationStatus>(`/courses/${courseId}/evaluation-status`), enabled && !!courseId));
+}
+
+export function useRecalculationStatus(courseId: string, active: boolean, intervalMs = 2000) {
+  const status = useEvaluationStatus(courseId, active);
+  const pending = status.data?.pending;
+  const stale = status.data?.stale;
+  const jobStatus = status.data?.job?.status;
+
+  useEffect(() => {
+    if (!active || status.isError || pending !== true || stale || jobStatus === 'failed') return;
+    const timer = setTimeout(() => { void status.refetch(); }, intervalMs);
+    return () => clearTimeout(timer);
+  }, [active, intervalMs, jobStatus, pending, stale, status.dataUpdatedAt, status.isError, status.refetch]);
+
+  return status;
 }
 
 export function useCourseAssessments(courseId: string, enabled = true) {
@@ -967,6 +998,7 @@ export function useUpdateAssessment(assessmentId: string) {
       qc.invalidateQueries({ queryKey: ['assessment', assessmentId] });
       qc.invalidateQueries({ queryKey: ['module-assessments'] });
       qc.invalidateQueries({ queryKey: ['course-assessments'] });
+      if (data.id && data.id !== assessmentId) qc.invalidateQueries({ queryKey: ['assessment', data.id] });
       if (data.redirectedTo) qc.invalidateQueries({ queryKey: ['assessment', data.redirectedTo] });
     },
   });
@@ -975,9 +1007,22 @@ export function useUpdateAssessment(assessmentId: string) {
 export function usePublishAssessment(assessmentId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api(`/assessments/${assessmentId}/publish`, { method: 'POST' }),
+    mutationFn: (input?: { changeKind?: 'minor' | 'new_paper' }) => api(`/assessments/${assessmentId}/publish`, { method: 'POST', body: JSON.stringify(input ?? {}) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['assessment', assessmentId] });
+      qc.invalidateQueries({ queryKey: ['module-assessments'] });
+      qc.invalidateQueries({ queryKey: ['course-assessments'] });
+    },
+  });
+}
+
+export function useDiscardAssessmentDraft() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (assessmentId: string) => api<{ discarded: string; liveVersion: string }>(`/assessments/${assessmentId}/discard-draft`, { method: 'POST' }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['assessment', data.discarded] });
+      qc.invalidateQueries({ queryKey: ['module-assessments'] });
       qc.invalidateQueries({ queryKey: ['course-assessments'] });
     },
   });

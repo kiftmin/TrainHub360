@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'wouter';
 import { ArrowDown, ArrowUp, Clock3, Plus, Target, Trash2, TriangleAlert } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -24,6 +24,9 @@ import {
   useReorderQuestions,
   useUpdateAssessment,
   usePublishAssessment,
+  useDiscardAssessmentDraft,
+  useRecalculationStatus,
+  useEnrolments,
   type Course,
   type CourseAssessment,
   type QuestionKind,
@@ -36,6 +39,23 @@ const CHOICE_KINDS: QuestionKind[] = ['single_choice', 'multi_choice', 'true_fal
 
 const statusOf = (error: unknown) => (error as { status?: number })?.status;
 const messageOf = (error: unknown) => (error as Error)?.message ?? 'Something went wrong';
+
+type VersionState = 'live' | 'draft' | 'superseding' | 'superseded';
+
+function versionStateOf(a: CourseAssessment): VersionState {
+  if (a.supersededAt) return 'superseded';
+  if (a.isPublished) return 'live';
+  return a.supersedesId ? 'superseding' : 'draft';
+}
+
+function versionLabelOf(a: CourseAssessment, versions: CourseAssessment[]) {
+  const state = versionStateOf(a);
+  const detail = state === 'live' ? 'live'
+    : state === 'superseded' ? 'superseded'
+    : state === 'superseding' ? `draft superseding v${versions.find((v) => v.id === a.supersedesId)?.version ?? '?'}`
+    : 'draft';
+  return `v${a.version ?? 1} — ${a.title || `${a.type} assessment`} (${detail})`;
+}
 
 function formatRemaining(seconds: number) {
   const m = Math.floor(seconds / 60);
@@ -107,7 +127,10 @@ export function Assessments() {
   const [error, setError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
-  const canAuthor = ['admin', 'owner', 'trainer'].includes(getSessionUser()?.role ?? '');
+  const sessionUser = getSessionUser();
+  const enrolments = useEnrolments();
+  const canAuthor = ['admin', 'owner', 'trainer'].includes(sessionUser?.role ?? '');
+  const pendingScoreNotice = !!selected && !!sessionUser?.id && (enrolments.data ?? []).some((e) => e.learnerId === sessionUser.id && e.courseId === selected.id && e.pendingAssessmentScore != null);
 
   const begin = (data: StartedAttempt) => {
     setAttempt(data);
@@ -174,35 +197,42 @@ export function Assessments() {
         <p className="font-mono text-[10px] uppercase tracking-[.15em] text-primary-foreground/60">Submission panel</p>
         <h2 className="mt-1 text-base font-bold">{selected ? selected.title : 'Select a course'}</h2>
         {!selected ? <p className="mt-3 text-sm text-primary-foreground/70">Choose a course from the queue to start an assessment.</p>
-        : result ? <AttemptResult result={result} onClose={() => { setResult(null); setAttempt(null); }} />
-        : attempt ? <>
-          <div className="mt-1 flex items-center justify-between gap-2 text-xs text-primary-foreground/65">
-            <span>Attempt {attempt.attemptNumber}{attempt.version ? ` · version ${attempt.version}` : ''}{attempt.resumed ? ' · resumed' : ''}</span>
-            {secondsLeft !== null && <span className={cn('flex items-center gap-1 font-mono', expired && 'text-[hsl(var(--status-off-track))]')}><Clock3 className="size-3" />{formatRemaining(secondsLeft)}</span>}
-          </div>
-          {expired && <p className="mt-2 rounded bg-primary-foreground/10 p-2 text-xs">Time is up. Submit to have what you entered graded.</p>}
-          <div className="mt-4 max-h-[420px] space-y-4 overflow-y-auto">
-            {attempt.questions.map((q) => <QuestionField key={q.id} question={q} value={answers[q.id] ?? {}} disabled={expired} onChange={(next) => setAnswers((prev) => ({ ...prev, [q.id]: next }))} />)}
-          </div>
-          <p className="mt-2 text-[11px] text-primary-foreground/60">{saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Answers saved' : saveState === 'error' ? 'Could not save answers' : 'Answers save as you go'}</p>
-          <Button variant="secondary" className="mt-3 w-full" disabled={submitAttempt.isPending} onClick={submit}>{submitAttempt.isPending ? 'Submitting…' : expired ? 'Submit what was saved' : 'Submit answers'}</Button>
-        </> : <>
-          <p className="mt-1 text-xs text-primary-foreground/65">{selected.programmeName}</p>
-          <div className="mt-4 space-y-2">
-            {assessments.isLoading ? <p className="text-xs text-primary-foreground/70">Loading assessments…</p>
-            : assessments.isError ? <p className="text-xs text-primary-foreground/80">{messageOf(assessments.error)}</p>
-            : !assessments.data?.length ? <p className="text-xs text-primary-foreground/70">No published assessments for this course yet.</p>
-            : assessments.data.map((a) => <div key={a.id} className="rounded-lg bg-primary-foreground/10 p-3"><div className="flex items-center justify-between gap-2">
-              <div>
-                <p className="text-sm font-semibold">{a.title || `${a.type} assessment`}</p>
-                <p className="text-xs text-primary-foreground/70">{a.type}{a.version ? ` · v${a.version}` : ''} · pass {a.passMark}% · best {a.bestScore == null ? '—' : `${a.bestScore}%`}</p>
-                <p className="text-[11px] text-primary-foreground/55">{a.attemptCount} used{a.remainingAttempts !== null && a.remainingAttempts !== undefined ? ` · ${a.remainingAttempts} left` : ' · unlimited'}{a.timeLimitMinutes ? ` · ${a.timeLimitMinutes} min` : ''}</p>
-              </div>
-              <Button size="sm" variant="secondary" disabled={a.locked || !a.isPublished || startAttempt.isPending} onClick={() => startAttempt.mutate(a.id, { onSuccess: begin, onError: (e) => setError(messageOf(e)) })}>
-                {a.locked ? 'Locked' : a.attemptCount ? 'Resume / retry' : 'Start'}
-              </Button>
-            </div></div>)}
-          </div>
+        : <>
+          {pendingScoreNotice && <p data-testid="pending-score-notice" className="mt-2 rounded bg-primary-foreground/10 p-2 text-xs">A new assessment result is waiting for staff review. Your current score has not changed.</p>}
+          {result ? <AttemptResult result={result} onClose={() => { setResult(null); setAttempt(null); }} />
+          : attempt ? <>
+            <div className="mt-1 flex items-center justify-between gap-2 text-xs text-primary-foreground/65">
+              <span>Attempt {attempt.attemptNumber}{attempt.version ? ` · version ${attempt.version}` : ''}{attempt.resumed ? ' · resumed' : ''}</span>
+              {secondsLeft !== null && <span className={cn('flex items-center gap-1 font-mono', expired && 'text-[hsl(var(--status-off-track))]')}><Clock3 className="size-3" />{formatRemaining(secondsLeft)}</span>}
+            </div>
+            {expired && <p className="mt-2 rounded bg-primary-foreground/10 p-2 text-xs">Time is up. Submit to have what you entered graded.</p>}
+            <div className="mt-4 max-h-[420px] space-y-4 overflow-y-auto">
+              {attempt.questions.map((q) => <QuestionField key={q.id} question={q} value={answers[q.id] ?? {}} disabled={expired} onChange={(next) => setAnswers((prev) => ({ ...prev, [q.id]: next }))} />)}
+            </div>
+            <p className="mt-2 text-[11px] text-primary-foreground/60">{saveState === 'saving' ? 'Saving…' : saveState === 'saved' ? 'Answers saved' : saveState === 'error' ? 'Could not save answers' : 'Answers save as you go'}</p>
+            <Button variant="secondary" className="mt-3 w-full" disabled={submitAttempt.isPending} onClick={submit}>{submitAttempt.isPending ? 'Submitting…' : expired ? 'Submit what was saved' : 'Submit answers'}</Button>
+          </> : <>
+            <p className="mt-1 text-xs text-primary-foreground/65">{selected.programmeName}</p>
+            <div className="mt-4 space-y-2">
+              {assessments.isLoading ? <p className="text-xs text-primary-foreground/70">Loading assessments…</p>
+              : assessments.isError ? <p className="text-xs text-primary-foreground/80">{messageOf(assessments.error)}</p>
+              : !assessments.data?.length ? <p className="text-xs text-primary-foreground/70">No published assessments for this course yet.</p>
+              : assessments.data.map((a) => <div key={a.id} data-testid={`assessment-row-${a.id}`} className="rounded-lg bg-primary-foreground/10 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold">{a.title || `${a.type} assessment`}</p>
+                    <p className="text-xs text-primary-foreground/70">{a.type}{a.version ? ` · v${a.version}` : ''} · pass {a.passMark}% · best {a.bestScore == null ? '—' : `${a.bestScore}%`}</p>
+                    <p className="text-[11px] text-primary-foreground/55">{a.attemptCount} used{a.remainingAttempts !== null && a.remainingAttempts !== undefined ? ` · ${a.remainingAttempts} left` : ' · unlimited'}{a.timeLimitMinutes ? ` · ${a.timeLimitMinutes} min` : ''}</p>
+                    {a.changeKind === 'new_paper' && <p data-testid={`new-paper-note-${a.id}`} className="mt-1 text-[11px] text-primary-foreground/90">This paper replaced an earlier version — please retake it.</p>}
+                    {a.supersededAt && <p data-testid={`superseded-note-${a.id}`} className="mt-1 text-[11px] text-primary-foreground/70">Superseded — no new attempts on this version.</p>}
+                  </div>
+                  <Button size="sm" variant="secondary" disabled={!!a.supersededAt || a.locked || !a.isPublished || startAttempt.isPending} onClick={() => startAttempt.mutate(a.id, { onSuccess: begin, onError: (e) => setError(messageOf(e)) })}>
+                    {a.supersededAt ? 'Superseded' : a.locked ? 'Locked' : a.attemptCount ? 'Resume / retry' : 'Start'}
+                  </Button>
+                </div>
+              </div>)}
+            </div>
+          </>}
         </>}
         {error && <p className="mt-3 text-xs text-primary-foreground/80">{error}</p>}
       </section>
@@ -232,6 +262,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
   const reorderQuestions = useReorderQuestions(assessmentId);
   const updateAssessment = useUpdateAssessment(assessmentId);
   const publish = usePublishAssessment(assessmentId);
+  const discardDraft = useDiscardAssessmentDraft();
 
   const [title, setTitle] = useState('');
   const [type, setType] = useState<'recall' | 'applied'>('recall');
@@ -248,9 +279,15 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
   const [builderError, setBuilderError] = useState<string | null>(null);
   const [publishProblems, setPublishProblems] = useState<string[]>([]);
   const [confirmVersion, setConfirmVersion] = useState(false);
+  const [changeKind, setChangeKind] = useState<'minor' | 'new_paper'>('minor');
+  const [recalcActive, setRecalcActive] = useState(false);
+  const [discardNotice, setDiscardNotice] = useState<string | null>(null);
+  const recalculation = useRecalculationStatus(courseId, recalcActive, 2000);
 
   const isPublished = !!detail.data?.isPublished;
-  const superseded = useMemo(() => (moduleAssessments.data ?? []).filter((a) => (a as CourseAssessment & { supersededAt?: string | null }).supersededAt), [moduleAssessments.data]);
+  const supersededSelected = !!detail.data && versionStateOf(detail.data) === 'superseded';
+  const editable = !!detail.data && !isPublished && !supersededSelected;
+  const superseded = (moduleAssessments.data ?? []).filter((a) => a.supersededAt);
   const choiceKind = CHOICE_KINDS.includes(kind);
 
   const resetDraft = () => {
@@ -297,7 +334,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
 
   const saveDetails = (confirmNewVersion: boolean) => {
     updateAssessment.mutate({ title: title || detail.data?.title || undefined, passMark: Number(passMark), maxAttempts: maxAttempts ? Number(maxAttempts) : null, timeLimitMinutes: timeLimit ? Number(timeLimit) : null, confirmNewVersion }, {
-      onSuccess: (updated) => { if (updated.redirectedTo) setAssessmentId(updated.redirectedTo); setConfirmVersion(false); setBuilderError(null); },
+      onSuccess: (updated) => { if (updated.id && updated.id !== assessmentId) setAssessmentId(updated.id); setConfirmVersion(false); setBuilderError(null); },
       onError: (e) => {
         const body = (e as { body?: { requiresNewVersion?: boolean } }).body;
         if (statusOf(e) === 409 && body?.requiresNewVersion) { setConfirmVersion(true); return; }
@@ -306,19 +343,31 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
     });
   };
 
-  const doPublish = () => publish.mutate(undefined, {
-    onSuccess: () => { setPublishProblems([]); setBuilderError(null); },
+  const doPublish = () => publish.mutate(detail.data?.supersedesId ? { changeKind } : undefined, {
+    onSuccess: () => {
+      setPublishProblems([]); setBuilderError(null); setRecalcActive(true);
+    },
     onError: (e) => {
       const problems = (e as { body?: { problems?: string[] } }).body?.problems;
       setPublishProblems(problems?.length ? problems : [messageOf(e)]);
     },
   });
 
+  const doDiscard = () => {
+    if (!detail.data) return;
+    discardDraft.mutate(detail.data.id, {
+      onSuccess: () => {
+        setAssessmentId(''); setConfirmVersion(false); setDiscardNotice('Draft discarded — the live paper was not changed.'); setBuilderError(null);
+      },
+      onError: (e) => setBuilderError(messageOf(e)),
+    });
+  };
+
   return <section className="mt-5 rounded-lg border border-border/80 bg-card p-5">
     <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Assessment builder</p>
     <h2 className="mt-1 text-base font-bold">Draft questions, then publish</h2>
     <div className="mt-4 grid gap-3 md:grid-cols-3">
-      <label className="block text-xs font-semibold">Module<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={moduleId} onChange={(e) => { setModuleId(e.target.value); setAssessmentId(''); }}>
+      <label className="block text-xs font-semibold">Module<select data-testid="module-select" className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={moduleId} onChange={(e) => { setModuleId(e.target.value); setAssessmentId(''); }}>
         <option value="">Select module</option>{courseModules.map((m) => <option key={m.id} value={m.id}>{m.title}</option>)}
       </select></label>
       <label className="block text-xs font-semibold">Title<Input className="mt-2" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Applied scenario test" /></label>
@@ -328,23 +377,45 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
       <label className="block text-xs font-semibold">Time limit (min)<Input className="mt-2" type="number" value={timeLimit} onChange={(e) => setTimeLimit(e.target.value)} placeholder="Untimed" /></label>
     </div>
     <Button className="mt-3" onClick={addAssessment} disabled={!moduleId || createAssessment.isPending}>{createAssessment.isPending ? 'Creating…' : 'Create assessment'}</Button>
-    {!!moduleAssessments.data?.length && <label className="mt-3 block text-xs font-semibold">Assessment<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={assessmentId} onChange={(e) => {
+    {!!moduleAssessments.data?.length && <label className="mt-3 block text-xs font-semibold">Assessment<select data-testid="assessment-version-select" className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={assessmentId} onChange={(e) => {
       setAssessmentId(e.target.value);
+      setPublishProblems([]); setConfirmVersion(false); setDiscardNotice(null);
       const found = moduleAssessments.data?.find((a) => a.id === e.target.value);
-      if (found) { setType(found.type); if (found.passMark) setPassMark(String(found.passMark)); setTitle(found.title ?? ''); }
+      if (found) {
+        setType(found.type); if (found.passMark) setPassMark(String(found.passMark)); setTitle(found.title ?? '');
+        setChangeKind(found.changeKind === 'new_paper' ? 'new_paper' : 'minor');
+      }
     }}>
-      <option value="">Select assessment</option>{moduleAssessments.data.map((a) => <option key={a.id} value={a.id}>{a.title || `${a.type} assessment`}{a.version ? ` (v${a.version})` : ''}</option>)}
+      <option value="">Select assessment</option>{moduleAssessments.data.map((a) => <option key={a.id} value={a.id}>{versionLabelOf(a, moduleAssessments.data ?? [])}</option>)}
     </select></label>}
 
     {assessmentId && detail.data && <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-semibold">{isPublished ? `Published — version ${detail.data.version ?? 1}, questions locked` : 'Draft — add your questions'}</p>
+        <p data-testid="builder-version-state" className="text-sm font-semibold">
+          {supersededSelected ? `Superseded — version ${detail.data.version ?? 1}; no new attempts` : isPublished ? `Published — live version ${detail.data.version ?? 1}, questions locked` : 'Draft — add your questions'}
+        </p>
         <div className="flex items-center gap-2">
-          <Badge variant="outline" className="font-mono text-[10px]">v{detail.data.version ?? 1}</Badge>
-          <Button size="sm" variant="secondary" onClick={doPublish} disabled={publish.isPending || isPublished}>{publish.isPending ? 'Publishing…' : 'Publish'}</Button>
+          <Badge variant="outline" className="font-mono text-[10px]">{versionStateOf(detail.data)} v{detail.data.version ?? 1}</Badge>
+          {isPublished && !supersededSelected && <Button size="sm" variant="outline" onClick={() => setConfirmVersion(true)} disabled={updateAssessment.isPending}>Create draft from live</Button>}
+          {editable && <Button size="sm" variant="outline" onClick={() => saveDetails(false)} disabled={updateAssessment.isPending}>Save draft details</Button>}
+          {editable && !!detail.data.supersedesId && <Button size="sm" variant="ghost" onClick={doDiscard} disabled={discardDraft.isPending}>{discardDraft.isPending ? 'Discarding…' : 'Discard draft'}</Button>}
+          {editable && <Button size="sm" variant="secondary" onClick={doPublish} disabled={publish.isPending}>{publish.isPending ? 'Publishing…' : 'Publish'}</Button>}
         </div>
       </div>
 
+      {editable && !!detail.data.supersedesId && <label className="block text-xs font-semibold">Publish as<select data-testid="publish-change-kind" className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={changeKind} onChange={(e) => setChangeKind(e.target.value as 'minor' | 'new_paper')}>
+        <option value="minor">Minor change — carry results forward</option>
+        <option value="new_paper">New paper — learners retake</option>
+      </select></label>}
+
+      {recalcActive && <div data-testid="recalculation-status" className="rounded-lg border border-border/60 bg-secondary/40 p-3 text-xs">
+        {recalculation.isError ? `Could not check recalculation: ${messageOf(recalculation.error)}`
+          : recalculation.data?.stale || recalculation.data?.job?.status === 'failed'
+            ? `Recalculation stalled${recalculation.data?.lastError ? `: ${recalculation.data.lastError}` : ''}. Check the evaluation queue.`
+            : recalculation.data?.pending === false
+              ? 'Recalculation complete — scores are up to date.'
+              : `Recalculating… ${recalculation.data?.job?.status ?? 'queued'} · ${recalculation.data?.attempts ?? 0} attempt(s)`}
+      </div>}
       {!!publishProblems.length && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
         <p className="flex items-center gap-1 font-semibold text-destructive"><TriangleAlert className="size-3.5" />Fix these before publishing</p>
         <ul className="mt-1 list-disc space-y-1 pl-5 text-destructive/90">{publishProblems.map((p) => <li key={p}>{p}</li>)}</ul>
@@ -373,7 +444,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
 
       <div className="flex flex-wrap gap-2">
         {(kind === 'single_choice' || kind === 'multi_choice') && <Button size="sm" variant="outline" onClick={() => setOptions([...options, { text: '', isCorrect: false }])}><Plus className="size-3.5" />Option</Button>}
-        <Button size="sm" onClick={addQuestion} disabled={!prompt.trim() || createQuestion.isPending}>{createQuestion.isPending ? 'Adding…' : 'Add question'}</Button>
+        <Button size="sm" onClick={addQuestion} disabled={!editable || !prompt.trim() || createQuestion.isPending}>{createQuestion.isPending ? 'Adding…' : 'Add question'}</Button>
       </div>
 
       <div className="space-y-2">
@@ -383,7 +454,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
             <p className="truncate text-xs font-semibold">{q.prompt}</p>
             <p className="text-[11px] text-muted-foreground">{q.kind.replace('_', ' ')} · {q.points} pt{q.points === 1 ? '' : 's'}{q.options?.length ? ` · ${q.options.length} options` : ''}</p>
           </div>
-          {!isPublished && <div className="flex items-center gap-1">
+          {editable && <div className="flex items-center gap-1">
             <Button size="sm" variant="ghost" disabled={i === 0 || reorderQuestions.isPending} onClick={() => move(i, -1)} aria-label="Move up"><ArrowUp className="size-3.5" /></Button>
             <Button size="sm" variant="ghost" disabled={i === (detail.data?.questions.length ?? 0) - 1 || reorderQuestions.isPending} onClick={() => move(i, 1)} aria-label="Move down"><ArrowDown className="size-3.5" /></Button>
             <Button size="sm" variant="ghost" disabled={deleteQuestion.isPending} onClick={() => deleteQuestion.mutate(q.id, { onError: (e) => setBuilderError(messageOf(e)) })} aria-label="Delete question"><Trash2 className="size-3.5" /></Button>
@@ -392,10 +463,10 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
         {!detail.data.questions.length && <p className="text-xs text-muted-foreground">No questions yet.</p>}
       </div>
 
-      {isPublished && <div className="rounded-lg border border-border/60 p-3">
+      {isPublished && !supersededSelected && <div className="rounded-lg border border-border/60 p-3">
         <p className="text-xs font-semibold">Change this paper</p>
-        <p className="mt-1 text-[11px] text-muted-foreground">Saving an edit creates version {(detail.data.version ?? 1) + 1}, takes the current version offline and asks learners to retake it.</p>
-        <div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => saveDetails(false)} disabled={updateAssessment.isPending}>Save details…</Button></div>
+        <p className="mt-1 text-[11px] text-muted-foreground">Saving an edit opens draft version {(detail.data.version ?? 1) + 1}. Learners stay on this live paper until the draft is published.</p>
+        <div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => setConfirmVersion(true)} disabled={updateAssessment.isPending}>Open draft with these details</Button></div>
       </div>}
 
       {!!superseded.length && <div className="rounded-lg border border-border/60 p-3">
@@ -403,12 +474,13 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
         <ul className="mt-1 space-y-1 text-[11px] text-muted-foreground">{superseded.map((a) => <li key={a.id}>v{a.version ?? 1} — {a.title || 'untitled'} (superseded)</li>)}</ul>
       </div>}
     </div>}
+    {discardNotice && <p data-testid="discard-notice" className="mt-2 text-xs text-muted-foreground">{discardNotice}</p>}
     {builderError && <p className="mt-2 text-xs text-destructive">{builderError}</p>}
 
     <Dialog open={confirmVersion} onOpenChange={setConfirmVersion}>
-      <DialogContent>
+      <DialogContent data-testid="version-confirm-dialog">
         <DialogHeader><DialogTitle>Create version {(detail.data?.version ?? 1) + 1}?</DialogTitle></DialogHeader>
-        <p className="text-sm text-muted-foreground">This creates version {(detail.data?.version ?? 1) + 1}, takes the current version offline, and learners will need to retake it. Attempts already in progress on the old version can still be submitted.</p>
+        <p className="text-sm text-muted-foreground">This opens draft version {(detail.data?.version ?? 1) + 1}. Learners stay on the live paper until you publish the draft, and attempts already in progress can still be submitted.</p>
         <div className="mt-4 flex justify-end gap-2">
           <Button variant="outline" onClick={() => setConfirmVersion(false)}>Cancel</Button>
           <Button onClick={() => saveDetails(true)} disabled={updateAssessment.isPending}>{updateAssessment.isPending ? 'Creating…' : `Create v${(detail.data?.version ?? 1) + 1}`}</Button>

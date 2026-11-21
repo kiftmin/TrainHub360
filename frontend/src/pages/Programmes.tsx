@@ -47,6 +47,7 @@ import {
   useCreateContent,
   useArchiveContent,
   useUploadContent,
+  useRecalculationStatus,
   downloadReviewCreditCsv,
   type Course,
   type UploadedFile,
@@ -366,11 +367,13 @@ export function ProgrammeDetail({ id }: { id: string }) {
   </div>;
 }
 
-function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: string; moduleTitle: string; courseId: string }) {
+export function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: string; moduleTitle: string; courseId: string }) {
   const content = useModuleContent(moduleId);
   const create = useCreateContent(moduleId, courseId);
   const archive = useArchiveContent(moduleId, courseId);
   const upload = useUploadContent(moduleId);
+  const [recalcActive, setRecalcActive] = useState(false);
+  const recalculation = useRecalculationStatus(courseId, recalcActive, 2000);
   const [type, setType] = useState<'native' | 'file' | 'external_link'>('native');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -392,16 +395,27 @@ function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: s
       completionMode: type === 'external_link' ? completionMode : undefined,
       // A.3: the item points at the org-bound upload, not at a key copied from the response.
       ...(uploaded ? { storedFileId: uploaded.storedFileId } : {}),
-    }, { onSuccess: reset, onError: (e) => setError((e as Error).message) });
+    }, {
+      onSuccess: (item) => { reset(); if (item.required) setRecalcActive(true); },
+      onError: (e) => setError((e as Error).message),
+    });
   };
   return <div className="space-y-4 pt-2">
     <p className="text-xs text-muted-foreground">{moduleTitle} - learners see items in this order.</p>
+    {recalcActive && <div data-testid="recalculation-status" className="rounded-lg border border-border/60 bg-secondary/40 p-3 text-xs">
+      {recalculation.isError ? `Could not check recalculation: ${(recalculation.error as Error)?.message ?? 'unknown error'}`
+        : recalculation.data?.stale || recalculation.data?.job?.status === 'failed'
+          ? `Recalculation stalled${recalculation.data?.lastError ? `: ${recalculation.data.lastError}` : ''}. Check the evaluation queue.`
+          : recalculation.data?.pending === false
+            ? 'Recalculation complete — course progress is up to date.'
+            : `Recalculating… ${recalculation.data?.job?.status ?? 'queued'} · ${recalculation.data?.attempts ?? 0} attempt(s)`}
+    </div>}
     <div className="max-h-48 space-y-2 overflow-y-auto">
       {content.isLoading ? <p className="text-xs text-muted-foreground">Loading content-</p>
       : !content.data?.length ? <p className="text-xs text-muted-foreground">No content yet.</p>
       : content.data.map((item, index) => <div key={item.id} className="flex items-center justify-between gap-2 rounded-md border border-border/70 p-2 text-xs">
         <span className="min-w-0 truncate"><span className="font-semibold">{index + 1}. {item.title}</span> <span className="text-muted-foreground">- {item.type}{item.required ? ' - required' : ''}</span></span>
-        <Button size="sm" variant="outline" onClick={() => archive.mutate(item.id)} disabled={archive.isPending}>Archive</Button>
+        <Button size="sm" variant="outline" onClick={() => archive.mutate(item.id, { onSuccess: () => setRecalcActive(true) })} disabled={archive.isPending}>Archive</Button>
       </div>)}
     </div>
     <div className="rounded-lg border border-border/70 p-4">
