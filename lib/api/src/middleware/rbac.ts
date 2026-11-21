@@ -163,7 +163,12 @@ export async function canModifyOwner(actorId: string): Promise<boolean> {
   return isOrgOwner(actorId);
 }
 
+// Round 6 / M1: a programme admin grant is not the only way to administer a programme — an
+// org-wide owner/admin grant covers every programme (the same rule requireProgrammeRole uses).
+// Reading threads used the programme grant alone, so org staff saw only metadata for their own
+// programmes' threads while requireProgrammeRole let them manage them.
 export async function isProgrammeAdmin(userId: string, programmeId: string): Promise<boolean> {
+  if (await isOrgStaff(userId)) return true;
   const grant = await db.userRole
     .findFirst({ where: { userId, programmeId, role: { name: "admin" } } })
     .catch(() => null);

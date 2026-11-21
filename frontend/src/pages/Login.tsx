@@ -5,13 +5,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
-type Mode = "login" | "forgot" | "reset";
+type Mode = "login" | "forgot";
 
 export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?: () => void }) {
   const [email, setEmail] = useState("admin@example.com");
   const [password, setPassword] = useState("");
-  const [token, setToken] = useState("");
-  const [newPassword, setNewPassword] = useState("");
   const [mode, setMode] = useState<Mode>("login");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -78,30 +76,11 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ email }),
       });
-      setNotice("If an account exists for that email, a reset link was sent. Check the backend console for the token in local dev.");
-      setMode("reset");
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function submitReset(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/auth/reset-password", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ token, newPassword }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `Reset failed (${res.status})`);
-      setNotice("Password updated — sign in with your new password.");
+      // Round 7 gap 4: the email carries the token in its link and the frontend has a
+      // /reset-password page now, so there is nothing to paste and nothing to look up in a
+      // console the backend no longer writes to.
+      setNotice("If an account exists for that email, a reset link has been sent. Open it from your inbox to choose a new password.");
       setMode("login");
-      setPassword("");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -177,36 +156,6 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button className="w-full bg-primary text-primary-foreground" disabled={busy}>
             {busy ? "Sending…" : "Send reset link"}
-          </Button>
-          <button type="button" onClick={() => { setMode("login"); setError(null); }} className="w-full text-center text-xs font-semibold text-primary hover:underline">
-            Back to sign in
-          </button>
-        </form>
-        )}
-        {mode === "reset" && (
-        <form onSubmit={submitReset} className="mt-6 space-y-4">
-          <label className="block text-xs font-semibold">Reset token
-            <Input
-              className="mt-2"
-              value={token}
-              onChange={(e) => setToken(e.target.value)}
-              placeholder="Paste the token from the reset email"
-              required
-            />
-          </label>
-          <label className="block text-xs font-semibold">New password
-            <Input
-              className="mt-2"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="At least 8 characters"
-              type="password"
-              required
-            />
-          </label>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button className="w-full bg-primary text-primary-foreground" disabled={busy}>
-            {busy ? "Updating…" : "Set new password"}
           </Button>
           <button type="button" onClick={() => { setMode("login"); setError(null); }} className="w-full text-center text-xs font-semibold text-primary hover:underline">
             Back to sign in

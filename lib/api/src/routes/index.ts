@@ -25,7 +25,19 @@ import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jo
 import { runNudgeJob } from "../jobs/nudgeJob.js";
 import { runContentLifecycleJob } from "../jobs/contentLifecycleJob.js";
 import { dispatchWebhook } from "../services/webhook.js";
-import { getStorageProvider, newStorageKey, scanUpload } from "../services/storage.js";
+import { getStorageProvider } from "../services/storage.js";
+import {
+  UPLOAD_EXT,
+  UPLOAD_MIME,
+  UploadRejected,
+  consumeTempFile,
+  extensionOf,
+  resolveUploadedFile,
+  safeFileName,
+  storeUpload,
+  uploadSingleFile,
+  uploadMaxBytes,
+} from "../services/uploads.js";
 import { recomputeEnrolmentProgress, providerForUrl, isSafeExternalUrl } from "../services/contentProgress.js";
 import { buildIcsCalendar, sessionsForUser } from "../services/ical.js";
 import crypto from "node:crypto";
@@ -42,7 +54,9 @@ router.post("/auth/login", async (req, res) => {
   const { email, password } = req.body ?? {};
   if (!email || !password) return res.status(400).json({ error: "email and password required" });
   const keys = loginKeys(req.ip, email);
-  // Locked-out and wrong-password responses are deliberately identical.
+  // Locked-out and wrong-password responses are deliberately identical, so a caller cannot
+  // tell whether an account exists or is locked. Round 7 gap 8: the throttle is always live;
+  // a test that needs different limits configures them (configureLoginThrottle) for that case.
   if (isLoginLocked(keys)) return res.status(401).json({ error: "invalid credentials" });
   const user = await db.user.findUnique({ where: { email } }).catch(() => null);
   const ok = await verifyLoginPassword(password, user?.passwordHash ?? null);
@@ -129,7 +143,7 @@ router.get("/users", async (req, res) => {
   const users = (await db.user.findMany({
     where: { orgId: scope.orgId, ...searchFilter },
     select: {
-      id: true, name: true, email: true, department: true, jobFunction: true, isActive: true,
+      id: true, name: true, email: true, department: true, jobFunction: true, isActive: true, activatedAt: true,
       roles: {
         where: orgStaff ? undefined : { programmeId: { in: adminProgrammeIds } },
         select: { programmeId: true, role: { select: { name: true } } },
@@ -137,7 +151,7 @@ router.get("/users", async (req, res) => {
     },
     orderBy: { name: "asc" },
     take,
-  }).catch(() => [])) as Array<{ id: string; name: string; email: string; department: string | null; jobFunction: string | null; isActive: boolean; roles: Array<{ programmeId: string | null; role: { name: string } }> }>;
+  }).catch(() => [])) as Array<{ id: string; name: string; email: string; department: string | null; jobFunction: string | null; isActive: boolean; activatedAt: Date | null; roles: Array<{ programmeId: string | null; role: { name: string } }> }>;
   const programmeIds = [...new Set(users.flatMap((u) => u.roles.map((r) => r.programmeId).filter((v): v is string => !!v)))];
   const programmeRows = (programmeIds.length
     ? await db.programme.findMany({ where: { id: { in: programmeIds }, orgId: scope.orgId }, select: { id: true, name: true } }).catch(() => [])
@@ -151,6 +165,10 @@ router.get("/users", async (req, res) => {
     // grants; department/job function and other programmes' grants stay private.
     ...(orgStaff ? { department: u.department, jobFunction: u.jobFunction } : {}),
     isActive: u.isActive,
+    // Round 7 gap 5: org staff can see who has not opened their invitation yet, which is
+    // what makes the "resend invite" action next to it meaningful. Never sent to
+    // programme admins, who have no way to act on it.
+    ...(orgStaff ? { activatedAt: u.activatedAt } : {}),
     roles: u.roles.map((r) => ({ role: r.role.name, programmeId: r.programmeId, programmeName: r.programmeId ? programmeNames.get(r.programmeId) ?? null : null })),
   })));
 });
@@ -176,10 +194,13 @@ router.post("/users", requireOrgStaff(), async (req, res) => {
   }).catch(() => null);
   if (!user) return res.status(500).json({ error: "could not create user" });
   const activation = await issueActivationToken(user.id);
-  await sendActivationEmail(user.email, user.name, activation.token);
+  // Round 7 gap 3: a send that fails is recorded, not swallowed. The account still exists,
+  // so the response says so and the admin can resend (gap 5).
+  const emailSent = await sendActivationEmail(user.email, user.name, activation.token);
   await db.auditLog.create({ data: { userId: me.id, action: "USER_CREATED", entity: "user", entityId: user.id, details: email } }).catch(() => null);
   return res.status(201).json({
-    id: user.id, name: user.name, email: user.email, department: user.department, jobFunction: user.jobFunction, isActive: true,
+    id: user.id, name: user.name, email: user.email, department: user.department, jobFunction: user.jobFunction, isActive: true, activatedAt: user.activatedAt,
+    emailSent,
     // NEVER expose the token outside the test environment.
     ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}),
   });
@@ -195,9 +216,9 @@ router.post("/users/:id/resend-activation", requireOrgStaff(), async (req, res) 
   // Invalidate any outstanding activation links before issuing a new one.
   await db.passwordResetToken.updateMany({ where: { userId: target.id, purpose: "activation", usedAt: null }, data: { usedAt: new Date() } }).catch(() => null);
   const activation = await issueActivationToken(target.id);
-  await sendActivationEmail(target.email, target.name, activation.token);
+  const emailSent = await sendActivationEmail(target.email, target.name, activation.token);
   await db.auditLog.create({ data: { userId: me.id, action: "ACTIVATION_RESENT", entity: "user", entityId: target.id, details: target.email } }).catch(() => null);
-  return res.json({ ok: true, ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}) });
+  return res.json({ ok: true, emailSent, ...(process.env.NODE_ENV === "test" ? { activationToken: activation.token } : {}) });
 });
 
 // Update an org user (name, department, jobFunction) or deactivate/reactivate.
@@ -231,7 +252,12 @@ router.patch("/users/:id", requireOrgStaff(), async (req, res) => {
     const row = await tx.user.update({ where: { id: target.id }, data });
     if (data.name && data.name !== target.name) {
       // Keep the denormalized display name in sync; identity stays trainerId.
-      await tx.course.updateMany({ where: { OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainer: String(data.name) } }).catch(() => null);
+      // Round 6 / H3: the name fallback is only for legacy rows with no trainerId, and it is
+      // scoped to this organization, so a rename never rewrites another tenant's courses.
+      await tx.course.updateMany({
+        where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] },
+        data: { trainer: String(data.name) },
+      }).catch(() => null);
     }
     return row;
   }).catch(() => null);
@@ -348,9 +374,16 @@ router.patch("/enrolments/:id", async (req, res) => {
     signOffBy = me.id;
     signOffAt = new Date();
   }
+  // Round 6 / M1: the in-transaction withdrawal hook below must see the row as it was, so it is
+  // captured here rather than read back after the update.
+  const wasWithdrawn = current.status === "withdrawn";
   const merged = { ...current, ...patch };
   const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: merged.appliedAssessmentScore ?? null, completionDate: merged.completionDate ?? null, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
   const e = await db.enrolment.update({ where: { id: req.params.id }, data: { status: patch.status ?? undefined, appliedAssessmentScore: patch.appliedAssessmentScore ?? undefined, applicationScore: patch.applicationScore ?? undefined, timelinessScore: b, enrolmentScore: score, managerSignOff: patch.managerSignOff ?? undefined, managerSignOffBy: signOffBy ?? undefined, managerSignOffAt: signOffAt ?? undefined } });
+  if (patch.status === "withdrawn" && !wasWithdrawn) {
+    // Round 6 / M1: a withdrawn learner loses the threads of that programme.
+    await revokeStaleThreadAccess(e.learnerId, scope.orgId);
+  }
   if (patch.status === "completed") {
     const [{ issueCertificateForEnrolment }, { checkStreakRecognition }] = await Promise.all([
       import("../services/certificates.js"),
@@ -651,8 +684,10 @@ export async function removeProgrammeMembers(
       data: { status: "withdrawn", withdrawnAt: now, withdrawnBy: actorId },
     });
     withdrawn = w.count;
+    // Round 6 / H3: match by identity first; the name fallback only for legacy rows with no
+    // trainerId, so two trainers who share a name do not affect each other's courses.
     const unassign = await tx.course.updateMany({
-      where: { programmeId, OR: [{ trainerId: { in: ids } }, { trainer: { in: users.map((u) => u.name) } }] },
+      where: { programmeId, OR: [{ trainerId: { in: ids } }, { trainerId: null, trainer: { in: users.map((u) => u.name) } }] },
       data: { trainerId: null, trainer: "" },
     });
     coursesUnassigned = unassign.count;
@@ -667,6 +702,14 @@ export async function removeProgrammeMembers(
       },
     }).catch(() => null);
   });
+  // Round 6 / M1: removed members lose their threads in this programme with their grant.
+  const threadRows = await db.threadParticipant.findMany({
+    where: { userId: { in: ids }, thread: { programmeId } },
+    select: { id: true },
+  }).catch(() => [] as Array<{ id: string }>);
+  if (threadRows.length) {
+    await db.threadParticipant.deleteMany({ where: { id: { in: threadRows.map((r) => r.id) } } }).catch(() => null);
+  }
   return { removed, withdrawn, coursesUnassigned, userIds: ids };
 }
 
@@ -714,7 +757,12 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
   const toRole = req.body?.toRole === undefined ? (req.body?.role === undefined ? undefined : String(req.body.role)) : String(req.body.toRole);
   const fromRole = req.body?.fromRole === undefined ? undefined : String(req.body.fromRole);
   const nameInput = req.body?.name === undefined ? undefined : String(req.body.name).trim();
-  if (toRole === undefined && nameInput === undefined && fromRole === undefined) return res.status(400).json({ error: "fromRole/toRole or name required" });
+  // Round 6: a `roles` array is a complete replacement of this programme's grants, so it
+  // needs no fromRole/toRole. The single-grant guard must therefore only apply when no
+  // roles array was sent — checking it first made the multi-role branch below unreachable
+  // (every roles-only PATCH returned 400 "fromRole/toRole or name required").
+  const replacesGrants = Array.isArray(req.body?.roles);
+  if (!replacesGrants && toRole === undefined && nameInput === undefined && fromRole === undefined) return res.status(400).json({ error: "fromRole/toRole or name required" });
   if (nameInput !== undefined && !nameInput) return res.status(400).json({ error: "name cannot be empty" });
   if (toRole !== undefined && !MEMBER_ROLES.has(toRole)) return res.status(400).json({ error: "role must be admin|trainer|learner|stakeholder" });
   if (fromRole !== undefined && !MEMBER_ROLES.has(fromRole)) return res.status(400).json({ error: "fromRole must be admin|trainer|learner|stakeholder" });
@@ -737,7 +785,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
         const previousName = target.name;
         row = await tx.user.update({ where: { id: target.id }, data: { name: nameInput } });
         const renamed = await tx.course.updateMany({
-          where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainer: previousName }] },
+          where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainerId: null, trainer: previousName }] },
           data: { trainer: nameInput },
         }).catch(() => ({ count: 0 }));
         coursesUpdated += renamed.count;
@@ -750,7 +798,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
       }
       if (desired.includes("learner")) await ensureLearnerEnrolments(tx, target.id, req.params.id);
       if (currentNames.has("trainer") && !desired.includes("trainer")) {
-        const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
+        const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
         coursesUnassigned += result.count;
       }
       if (currentGrants.length !== desired.length) await tx.user.update({ where: { id: target.id }, data: { tokenVersion: { increment: 1 } } });
@@ -773,7 +821,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
         const previousName = target.name;
         row = await tx.user.update({ where: { id: target.id }, data: { name: nameInput } });
         const renamed = await tx.course.updateMany({
-          where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainer: previousName }] },
+          where: { programme: { orgId: scope.orgId }, OR: [{ trainerId: target.id }, { trainerId: null, trainer: previousName }] },
           data: { trainer: nameInput },
         }).catch(() => ({ count: 0 }));
         coursesUpdated += renamed.count;
@@ -790,7 +838,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
         if (role.name === "learner" && req.body?.enrol !== false) await ensureLearnerEnrolments(tx, target.id, req.params.id);
         const remainingTrainer = await tx.userRole.findFirst({ where: { userId: target.id, programmeId: req.params.id, role: { name: "trainer" } } });
         if (sourceRoleName === "trainer" && !remainingTrainer) {
-          const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
+          const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
           coursesUpdated = result.count;
         }
       }
@@ -824,7 +872,7 @@ router.delete("/programmes/:id/members/:userId", requireProgrammeRole("admin", "
         if (roleFilter === "trainer") {
           const remainingTrainer = await tx.userRole.findFirst({ where: { userId: target.id, programmeId: req.params.id, role: { name: "trainer" } } });
           if (!remainingTrainer) {
-            const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
+            const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
             coursesUnassigned = result.count;
           }
         }
@@ -1279,18 +1327,6 @@ async function computeCompetence(learnerId: string, programmeId: string) {
   };
 }
 const CONTENT_TYPES = new Set(["native", "file", "external_link"]);
-const UPLOAD_MIME = new Set([
-  "application/pdf",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  "application/vnd.ms-excel",
-  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "application/vnd.ms-powerpoint",
-  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-  "image/png", "image/jpeg", "image/gif", "image/webp",
-  "video/mp4", "video/webm", "application/zip",
-]);
-const UPLOAD_EXT = new Set(["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "png", "jpg", "jpeg", "gif", "webp", "mp4", "webm", "zip"]);
 
 function contentItemData(body: any) {
   const type = String(body?.type ?? "");
@@ -1309,13 +1345,17 @@ function contentItemData(body: any) {
     if (!body?.body) throw Object.assign(new Error("body required for native content"), { status: 400 });
     base.body = String(body.body);
   }
+  // A.3: a file item points at an upload that belongs to this organization (resolved by the
+  // caller, which has the org scope). The request body can no longer name an arbitrary key.
   if (type === "file") {
-    if (!body?.storageKey || !body?.fileName || !body?.mimeType) throw Object.assign(new Error("storageKey, fileName and mimeType required for file content"), { status: 400 });
-    base.storageKey = String(body.storageKey);
-    base.fileName = String(body.fileName);
-    base.mimeType = String(body.mimeType);
-    base.sizeBytes = body.sizeBytes !== undefined ? Number(body.sizeBytes) : null;
-    base.checksum = body.checksum ? String(body.checksum) : null;
+    const file = body?.__storedFile;
+    if (!file) throw Object.assign(new Error("upload the file first, then pass its storedFileId"), { status: 400 });
+    base.storedFileId = file.id;
+    base.storageKey = file.storageKey;
+    base.fileName = file.fileName;
+    base.mimeType = file.mimeType;
+    base.sizeBytes = file.sizeBytes;
+    base.checksum = file.checksum;
   }
   if (type === "external_link") {
     const url = String(body?.url ?? "");
@@ -1328,29 +1368,77 @@ function contentItemData(body: any) {
   return base;
 }
 
-router.post("/modules/:moduleId/content/upload", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
-  const fileName = String(req.body?.fileName ?? "").trim();
-  const mimeType = String(req.body?.mimeType ?? "").trim().toLowerCase();
-  const dataBase64 = String(req.body?.dataBase64 ?? "");
-  if (!fileName || !mimeType || !dataBase64) return res.status(400).json({ error: "fileName, mimeType and dataBase64 required" });
-  const ext = (fileName.split(".").pop() ?? "").toLowerCase();
-  if (!UPLOAD_EXT.has(ext)) return res.status(400).json({ error: `file extension .${ext} is not allowed` });
-  if (!UPLOAD_MIME.has(mimeType)) return res.status(400).json({ error: `mime type ${mimeType} is not allowed` });
-  let buffer: Buffer;
-  try { buffer = Buffer.from(dataBase64, "base64"); } catch { return res.status(400).json({ error: "invalid file data" }); }
-  const maxBytes = Number(process.env.UPLOAD_MAX_BYTES ?? 50 * 1024 * 1024);
-  if (buffer.length > maxBytes) return res.status(413).json({ error: `file exceeds the ${Math.round(maxBytes / (1024 * 1024))}MB limit` });
-  if (!buffer.length) return res.status(400).json({ error: "empty file" });
-  const key = newStorageKey(ext);
-  const stored = await getStorageProvider().put(key, buffer);
-  const scan = await scanUpload({ key, mimeType, sizeBytes: stored.sizeBytes });
-  if (!scan.ok) {
-    await getStorageProvider().delete(key).catch(() => null);
-    return res.status(422).json({ error: scan.reason ?? "upload rejected by scanner" });
+// A.3: multipart upload. `multipart/form-data` with one part named `file` streams to disk, so
+// the body is not base64 in JSON and the express.json() 100 KB limit no longer applies (H4).
+// `multipart/form-data` and the old JSON body are both accepted: the JSON path is kept for
+// existing clients, and both produce a StoredFile row bound to the caller's organization.
+router.post("/modules/:moduleId/content/upload", requireProgrammeRole("admin", "owner", "trainer"), uploadSingleFile, async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const mod = await db.module.findFirst({ where: { id: req.params.moduleId, course: { programme: { orgId: scope.orgId } } } }).catch(() => null);
+  if (!mod) return res.status(404).json({ error: "module not found in your organization" });
+  const purpose = req.body?.purpose === "evidence" ? "evidence" : "content";
+  try {
+    let file: { fileName: string; mimeType: string; data: Buffer };
+    if (req.file) {
+      file = { fileName: req.file.originalname, mimeType: req.file.mimetype, data: await consumeTempFile(req.file) };
+    } else {
+      const fileName = String(req.body?.fileName ?? "").trim();
+      const mimeType = String(req.body?.mimeType ?? "").trim().toLowerCase();
+      const dataBase64 = String(req.body?.dataBase64 ?? "");
+      if (!fileName || !mimeType || !dataBase64) {
+        return res.status(400).json({ error: "send the file as multipart/form-data with a part named \"file\", or as fileName, mimeType and dataBase64" });
+      }
+      file = { fileName, mimeType, data: Buffer.from(dataBase64, "base64") };
+    }
+    const stored = await storeUpload({ orgId: scope.orgId, userId: me.id, purpose, ...file });
+    await db.auditLog.create({ data: { userId: me.id, action: "FILE_UPLOADED", entity: "stored_file", entityId: stored.id, details: stored.fileName } }).catch(() => null);
+    return res.status(201).json({
+      storedFileId: stored.id,
+      storageKey: stored.storageKey,
+      fileName: stored.fileName,
+      mimeType: stored.mimeType,
+      sizeBytes: stored.sizeBytes,
+      checksum: stored.checksum,
+      purpose: stored.purpose,
+    });
+  } catch (e) {
+    if (e instanceof UploadRejected) return res.status(e.status).json({ error: e.message });
+    // multer's own errors (LIMIT_FILE_SIZE, …) arrive here with a `code`.
+    const code = (e as { code?: string }).code;
+    if (code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: `file exceeds the ${Math.round(uploadMaxBytes() / (1024 * 1024))}MB limit` });
+    if (code) return res.status(400).json({ error: `upload rejected (${code})` });
+    throw e;
   }
-  // Sanitized display name — never used as a filesystem path.
-  const safeName = fileName.replace(/[\\/:*?"<>|]/g, "_").slice(0, 200);
-  return res.status(201).json({ storageKey: stored.key, fileName: safeName, mimeType, sizeBytes: stored.sizeBytes, checksum: stored.checksum });
+});
+
+// A.3: learners attach proof for a trainer-verified item. This route is deliberately open to
+// any authenticated member of the organization (the content-upload route above is staff-only),
+// and the file it stores is still an org-bound StoredFile, so evidenceFileId cannot be faked.
+router.post("/uploads/evidence", uploadSingleFile, async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  try {
+    if (!req.file) return res.status(400).json({ error: "send the file as multipart/form-data with a part named \"file\"" });
+    const stored = await storeUpload({
+      orgId: scope.orgId,
+      userId: me.id,
+      purpose: "evidence",
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      data: await consumeTempFile(req.file),
+    });
+    return res.status(201).json({
+      storedFileId: stored.id, fileName: stored.fileName, mimeType: stored.mimeType,
+      sizeBytes: stored.sizeBytes, checksum: stored.checksum, purpose: stored.purpose,
+    });
+  } catch (e) {
+    if (e instanceof UploadRejected) return res.status(e.status).json({ error: e.message });
+    const code = (e as { code?: string }).code;
+    if (code === "LIMIT_FILE_SIZE") return res.status(413).json({ error: `file exceeds the ${Math.round(uploadMaxBytes() / (1024 * 1024))}MB limit` });
+    if (code) return res.status(400).json({ error: `upload rejected (${code})` });
+    throw e;
+  }
 });
 
 router.get("/modules/:moduleId/content", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
@@ -1366,7 +1454,9 @@ router.post("/modules/:moduleId/content", requireProgrammeRole("admin", "owner",
   const mod = await db.module.findFirst({ where: { id: req.params.moduleId, course: { programme: { orgId: scope.orgId } } } }).catch(() => null);
   if (!mod) return res.status(404).json({ error: "module not found in your organization" });
   try {
-    const data = contentItemData(req.body);
+    // A.3: a file item must name an upload of this organization, not an arbitrary key.
+    const storedFile = req.body?.type === "file" ? await resolveUploadedFile(scope.orgId, req.body) : null;
+    const data = contentItemData({ ...req.body, __storedFile: storedFile });
     const item = await db.contentItem.create({ data: { ...data, orgId: scope.orgId, moduleId: mod.id } as any });
     await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "CONTENT_ITEM_CREATED", entity: "content_item", entityId: item.id, details: item.type } }).catch(() => null);
     return res.status(201).json(item);
@@ -1390,6 +1480,17 @@ router.patch("/content/:id", requireProgrammeRole("admin", "owner", "trainer"), 
     data.provider = providerForUrl(String(patch.url));
   }
   if (patch.completionMode !== undefined) data.completionMode = patch.completionMode === "self_report" ? "self_report" : "trainer_verified";
+  if (patch.storedFileId !== undefined || patch.storageKey !== undefined) {
+    const file = await resolveUploadedFile(scope.orgId, patch).catch((e) => e as UploadRejected);
+    if (file instanceof UploadRejected) return res.status(file.status).json({ error: file.message });
+    if (!file) return res.status(400).json({ error: "storedFileId required" });
+    data.storedFileId = file.id;
+    data.storageKey = file.storageKey;
+    data.fileName = file.fileName;
+    data.mimeType = file.mimeType;
+    data.sizeBytes = file.sizeBytes;
+    data.checksum = file.checksum;
+  }
   return res.json(await db.contentItem.update({ where: { id: item.id }, data }));
 });
 
@@ -1455,10 +1556,22 @@ router.post("/content/:id/progress", async (req, res) => {
   const requested = req.body?.status === "completed" ? "completed" : "in_progress";
   let status = requested;
   let completedAt: Date | null = requested === "completed" ? new Date() : null;
+  // A.3: an evidence attachment must be an upload of this organization. A bare key from the
+  // request body is no longer accepted on its own.
+  let evidenceFileId: string | null = null;
+  let evidenceFileKey: string | null = req.body?.evidenceFileKey ? String(req.body.evidenceFileKey) : null;
+  if (req.body?.evidenceFileId || req.body?.evidenceFileKey) {
+    const file = await resolveUploadedFile(scope.orgId, { storedFileId: req.body?.evidenceFileId, storageKey: req.body?.evidenceFileKey })
+      .catch((e) => e as UploadRejected);
+    if (file instanceof UploadRejected) return res.status(file.status).json({ error: file.message });
+    if (!file) return res.status(400).json({ error: "evidenceFileId not found in your organization" });
+    if (file.purpose !== "evidence") return res.status(400).json({ error: "attach a file uploaded through /uploads/evidence" });
+    evidenceFileId = file.id;
+    evidenceFileKey = file.storageKey;
+  }
   if (item.type === "external_link" && item.completionMode === "trainer_verified" && requested === "completed") {
     const note = req.body?.evidenceNote ? String(req.body.evidenceNote) : null;
-    const fileKey = req.body?.evidenceFileKey ? String(req.body.evidenceFileKey) : null;
-    if (!note && !fileKey) return res.status(400).json({ error: "evidence note or file is required for trainer verification" });
+    if (!note && !evidenceFileId) return res.status(400).json({ error: "evidence note or file is required for trainer verification" });
     status = "pending_verification";
     completedAt = null;
   }
@@ -1470,14 +1583,15 @@ router.post("/content/:id/progress", async (req, res) => {
       startedAt: now,
       completedAt,
       evidenceNote: req.body?.evidenceNote ? String(req.body.evidenceNote) : null,
-      evidenceFileKey: req.body?.evidenceFileKey ? String(req.body.evidenceFileKey) : null,
+      evidenceFileId,
+      evidenceFileKey,
     },
     update: {
       status,
       startedAt: undefined,
       completedAt,
       ...(req.body?.evidenceNote !== undefined ? { evidenceNote: String(req.body.evidenceNote) } : {}),
-      ...(req.body?.evidenceFileKey !== undefined ? { evidenceFileKey: String(req.body.evidenceFileKey) } : {}),
+      ...(evidenceFileId ? { evidenceFileId, evidenceFileKey } : {}),
     },
   });
   const progress = await recomputeEnrolmentProgress(enrolment.id);
@@ -1493,6 +1607,10 @@ router.post("/content-progress/:id/verify", requireProgrammeRole("admin", "owner
   }).catch(() => null);
   if (!row) return res.status(404).json({ error: "progress record not found in your organization" });
   const verified = req.body?.verified !== false;
+  // A.3: a trainer only sees the learner's evidence through the org-scoped download below.
+  const evidenceFile = row.evidenceFileId
+    ? await db.storedFile.findFirst({ where: { id: row.evidenceFileId, orgId: scope.orgId }, select: { id: true, fileName: true, mimeType: true, sizeBytes: true } }).catch(() => null)
+    : null;
   const updated = await db.contentProgress.update({
     where: { id: row.id },
     data: {
@@ -1505,7 +1623,34 @@ router.post("/content-progress/:id/verify", requireProgrammeRole("admin", "owner
   });
   const progress = await recomputeEnrolmentProgress(row.enrolmentId);
   await db.auditLog.create({ data: { userId: me.id, action: verified ? "CONTENT_VERIFIED" : "CONTENT_VERIFICATION_REJECTED", entity: "content_progress", entityId: row.id, details: null } }).catch(() => null);
-  return res.json({ ...updated, enrolmentProgress: progress });
+  return res.json({ ...updated, evidenceFile, enrolmentProgress: progress });
+});
+
+// A.3: a learner's evidence attachment. Programme staff of the item's programme, or the
+// learner who uploaded it, and only within the same organization.
+router.get("/content-progress/:id/evidence", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const row = await db.contentProgress.findFirst({
+    where: { id: req.params.id, contentItem: { orgId: scope.orgId } },
+    include: { contentItem: { select: { module: { select: { course: { select: { programmeId: true } } } } } } },
+  }).catch(() => null);
+  if (!row || !row.evidenceFileId) return res.status(404).json({ error: "evidence file not found" });
+  const isMine = (await db.enrolment.findFirst({ where: { id: row.enrolmentId, learnerId: me.id }, select: { id: true } }).catch(() => null)) !== null;
+  const programmeId = row.contentItem.module.course.programmeId;
+  const staff = (await isOrgStaff(me.id)) || (programmeId ? await isProgrammeStaff(me.id, programmeId) : false);
+  if (!isMine && !staff) return res.status(403).json({ error: "programme staff access required" });
+  const file = await db.storedFile.findFirst({ where: { id: row.evidenceFileId, orgId: scope.orgId } }).catch(() => null);
+  if (!file) return res.status(404).json({ error: "evidence file not found" });
+  try {
+    const buffer = await getStorageProvider().get(file.storageKey);
+    res.setHeader("Content-Type", file.mimeType);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Disposition", `attachment; filename="${file.fileName.replace(/["\\]/g, "_")}"`);
+    return res.send(buffer);
+  } catch {
+    return res.status(404).json({ error: "stored file is unavailable" });
+  }
 });
 
 router.get("/content/:id/download", async (req, res) => {
@@ -1530,9 +1675,36 @@ router.get("/content/:id/download", async (req, res) => {
   }
 });
 
+/**
+ * Round 6 / M3: every session in the organization used to go to every user, `joinUrl` and
+ * `location` included. A join link is the right to be in the room, so it is only sent to people
+ * who have one: org staff, programme staff of the session's programme, the session's trainer,
+ * an invited learner (an RSVP row), or a learner enrolled on the session's course.
+ * Everyone else still sees that the session exists, with the link fields withheld.
+ */
 router.get("/sessions", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  res.json(await db.session.findMany({ where: { orgId: scope.orgId }, take: 200 }).catch(() => []));
+  const sessions = await db.session.findMany({ where: { orgId: scope.orgId }, orderBy: { startsAt: "asc" }, take: 200 }).catch(() => []);
+  const staff = await isOrgStaff(me.id);
+  const [rsvps, enrolments, staffGrants] = await Promise.all([
+    db.sessionRSVP.findMany({ where: { learnerId: me.id }, select: { sessionId: true } }).catch(() => [] as Array<{ sessionId: string }>),
+    db.enrolment.findMany({ where: { learnerId: me.id, status: { not: "withdrawn" } }, select: { courseId: true } }).catch(() => [] as Array<{ courseId: string }>),
+    db.userRole.findMany({ where: { userId: me.id, programmeId: { not: null }, role: { name: { in: ["admin", "trainer"] } } }, select: { programmeId: true } }).catch(() => [] as Array<{ programmeId: string | null }>),
+  ]);
+  const invited = new Set(rsvps.map((r) => r.sessionId));
+  const enrolledCourses = new Set(enrolments.map((e) => e.courseId));
+  const staffProgrammes = new Set(staffGrants.map((g) => g.programmeId));
+  return res.json(sessions.map((session) => {
+    const canJoin = staff
+      || session.trainerId === me.id
+      || invited.has(session.id)
+      || (session.courseId ? enrolledCourses.has(session.courseId) : false)
+      || (session.programmeId ? staffProgrammes.has(session.programmeId) : false);
+    if (canJoin) return { ...session, canJoin: true };
+    const { joinUrl: _joinUrl, location: _location, ...visible } = session;
+    return { ...visible, joinUrl: null, location: null, canJoin: false };
+  }));
 });
 async function canManageSessionProgramme(userId: string, programmeId: string | null | undefined): Promise<boolean> {
   if (await isOrgStaff(userId)) return true;
@@ -1664,12 +1836,26 @@ router.post("/sessions/:id/invite", async (req, res) => {
     return res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
   }
 });
+// Round 6 / M2(d): a token never answers on someone else's behalf. A learner answers only for
+// themselves; anyone answering for another person must be staff of the session's programme (or
+// org staff) AND enrolled as a learner there — a plain org member cannot seat anyone.
 router.post("/sessions/:id/rsvp", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const { confirmRsvp, declineRsvp } = await import("../services/rsvp.js");
-  const learnerId = me.role === "learner" ? me.id : (req.body?.learnerId ?? me.id);
-  if (me.role === "learner" && learnerId !== me.id) return res.status(403).json({ error: "learners may only RSVP for themselves" });
   const rsvpOrg = orgIdOf(req as AuthedRequest);
+  const requested = req.body?.learnerId ? String(req.body.learnerId) : me.id;
+  const learnerId = requested === me.id ? me.id : requested;
+  if (learnerId !== me.id) {
+    const session = await db.session.findFirst({ where: { id: req.params.id, orgId: rsvpOrg }, select: { programmeId: true } }).catch(() => null);
+    if (!session) return res.status(404).json({ error: "session not found in your organization" });
+    const staff = (await isOrgStaff(me.id)) || (session.programmeId ? await isProgrammeStaff(me.id, session.programmeId) : false);
+    if (!staff) return res.status(403).json({ error: "only programme staff may answer for another learner" });
+    const target = await db.user.findFirst({ where: { id: learnerId, orgId: rsvpOrg }, select: { id: true } }).catch(() => null);
+    if (!target) return res.status(404).json({ error: "learner not found in your organization" });
+    const isLearner = await db.userRole.findFirst({ where: { userId: learnerId, role: { name: "learner" } }, select: { id: true } }).catch(() => null);
+    const enrolled = await db.enrolment.findFirst({ where: { learnerId, status: { not: "withdrawn" } }, select: { id: true } }).catch(() => null);
+    if (!isLearner && !enrolled) return res.status(400).json({ error: "that user is not a learner in this organization" });
+  }
   try {
     if (req.body?.status === "declined") return res.json(await declineRsvp(req.params.id, learnerId, rsvpOrg));
     return res.json(await confirmRsvp(req.params.id, learnerId, rsvpOrg));
@@ -1703,10 +1889,66 @@ async function threadAccess(userId: string, threadId: string, orgId: string) {
   return { thread, participant, programmeAdmin } as const;
 }
 
+/**
+ * Round 6 / M1: a ThreadParticipant row used to outlive the reason for it, so someone removed
+ * from a programme — or withdrawn from their enrolment — kept reading and posting in its
+ * threads. This revokes those rows. It runs on every thread read and write (cheap: only the
+ * caller's own rows, one query) and whenever members are removed.
+ *
+ * Returns the number of rows revoked. Org staff are never revoked: they administer every
+ * programme in the organization.
+ */
+export async function revokeStaleThreadAccess(userId: string, orgId: string): Promise<number> {
+  const rows = await db.threadParticipant.findMany({
+    where: { userId, thread: { orgId } },
+    select: { id: true, thread: { select: { id: true, programmeId: true } } },
+  }).catch(() => [] as Array<{ id: string; thread: { id: string; programmeId: string | null } }>);
+  if (!rows.length) return 0;
+  if (await isOrgStaff(userId)) return 0;
+  const programmeIds = [...new Set(rows.map((r) => r.thread.programmeId).filter((v): v is string => !!v))];
+  const grants = programmeIds.length
+    ? await db.userRole.findMany({ where: { userId, programmeId: { in: programmeIds } }, select: { programmeId: true } }).catch(() => [] as Array<{ programmeId: string | null }>)
+    : [];
+  const granted = new Set(grants.map((g) => g.programmeId));
+  // A learner whose enrolment was withdrawn on that programme has lost access too.
+  const enrolled = programmeIds.length
+    ? await db.enrolment.findMany({ where: { learnerId: userId, programmeId: { in: programmeIds }, status: { not: "withdrawn" } }, select: { programmeId: true } }).catch(() => [] as Array<{ programmeId: string }>)
+    : [];
+  const enrolledSet = new Set(enrolled.map((e) => e.programmeId));
+  // A withdrawal keeps the programme grant (the person is still on the roster), so for anyone
+  // who holds a learner grant in that programme the enrolment decides. Staff grants keep access.
+  const staffGrants = programmeIds.length
+    ? await db.userRole.findMany({
+        where: { userId, programmeId: { in: programmeIds }, role: { name: { in: ["admin", "trainer", "owner"] } } },
+        select: { programmeId: true },
+      }).catch(() => [] as Array<{ programmeId: string | null }>)
+    : [];
+  const staffSet = new Set(staffGrants.map((g) => g.programmeId));
+  const stale = rows
+    .filter((r) => r.thread.programmeId)
+    .filter((r) => {
+      const programmeId = r.thread.programmeId!;
+      if (staffSet.has(programmeId)) return false;
+      if (granted.has(programmeId)) {
+        // Learner grant: access lasts while an enrolment is live.
+        return !enrolledSet.has(programmeId);
+      }
+      return true;
+    })
+    .map((r) => r.id);
+  if (!stale.length) return 0;
+  const deleted = await db.threadParticipant.deleteMany({ where: { id: { in: stale } } }).catch(() => ({ count: 0 }));
+  if (deleted.count) {
+    await db.auditLog.create({ data: { userId, action: "THREAD_ACCESS_REVOKED", entity: "thread_participant", entityId: userId, details: `${deleted.count} thread(s)` } }).catch(() => null);
+  }
+  return deleted.count;
+}
+
 router.get("/threads", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   if (await isStakeholder(me.id)) return res.status(403).json({ error: "stakeholders do not have access to direct messages" });
+  await revokeStaleThreadAccess(me.id, scope.orgId);
   const [participations, adminIds, orgStaff] = await Promise.all([adminProgrammeIds(me.id), adminProgrammeIds(me.id), isOrgStaff(me.id)]);
   const participantThreads = await db.threadParticipant.findMany({ where: { userId: me.id }, select: { threadId: true } }).catch(() => [] as Array<{ threadId: string }>);
   const participantIds = new Set(participantThreads.map((p) => p.threadId));
@@ -1809,6 +2051,7 @@ router.get("/threads/:id/messages", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   if (await isStakeholder(me.id)) return res.status(403).json({ error: "stakeholders do not have access to direct messages" });
+  await revokeStaleThreadAccess(me.id, scope.orgId);
   const { thread, participant, programmeAdmin } = await threadAccess(me.id, req.params.id, scope.orgId);
   // 404 (not 403) so non-participants cannot probe thread existence.
   if (!thread || (!participant && !programmeAdmin)) return res.status(404).json({ error: "thread not found" });
@@ -1819,6 +2062,7 @@ router.post("/threads/:id/messages", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   if (await isStakeholder(me.id)) return res.status(403).json({ error: "stakeholders do not have access to direct messages" });
+  await revokeStaleThreadAccess(me.id, scope.orgId);
   const { thread, participant, programmeAdmin } = await threadAccess(me.id, req.params.id, scope.orgId);
   if (!thread || (!participant && !programmeAdmin)) return res.status(404).json({ error: "thread not found" });
   const bodyText = String(req.body?.body ?? "").trim();
@@ -1947,6 +2191,42 @@ router.get("/recognitions", async (req, res) => {
   } else {
     res.json(await db.recognition.findMany({ where: { user: { orgId: scope.orgId } }, include: { user: { select: { name: true, email: true } } }, orderBy: { awardedAt: "desc" }, take: 200 }).catch(() => []));
   }
+});
+// A.2 notification bell. Scoped to the caller: there is no path to another user's
+// notifications, and orgId is not trusted from the client.
+router.get("/notifications", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const unreadOnly = String(req.query.unread ?? "") === "true";
+  const take = Math.min(Number(req.query.limit ?? 50) || 50, 100);
+  const rows = await db.notification.findMany({
+    where: { userId: me.id, ...(unreadOnly ? { readAt: null } : {}) },
+    orderBy: { createdAt: "desc" },
+    take,
+  }).catch(() => []);
+  const unread = await db.notification.count({ where: { userId: me.id, readAt: null } }).catch(() => 0);
+  res.json({ items: rows, unread });
+});
+router.post("/notifications/:id/read", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  // Scoped by userId in the same statement, so a guessed id from another user is a no-op
+  // rather than a cross-user write.
+  const result = await db.notification.updateMany({
+    where: { id: String(req.params.id), userId: me.id, readAt: null },
+    data: { readAt: new Date() },
+  }).catch(() => ({ count: 0 }));
+  if (!result.count) {
+    const mine = await db.notification.findFirst({ where: { id: String(req.params.id), userId: me.id }, select: { id: true } }).catch(() => null);
+    if (!mine) {
+      res.status(404).json({ error: "notification not found" });
+      return;
+    }
+  }
+  res.json({ ok: true });
+});
+router.post("/notifications/read-all", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const result = await db.notification.updateMany({ where: { userId: me.id, readAt: null }, data: { readAt: new Date() } }).catch(() => ({ count: 0 }));
+  res.json({ ok: true, updated: result.count });
 });
 router.get("/certificates", async (req, res) => {
   const me = (req as AuthedRequest).user!;
