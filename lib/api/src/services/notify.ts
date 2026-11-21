@@ -8,6 +8,8 @@ export interface NotifyPayload {
   body?: string;
   link?: string;
   email?: boolean;
+  /** Round 8 / D.2: calendar invitations and updates travel with the mail as an .ics file. */
+  attachments?: Array<{ filename: string; contentType: string; content: string }>;
 }
 
 // Creates the in-app notification record and (best effort) sends an email.
@@ -40,6 +42,7 @@ export async function notify(userId: string, type: string, payload: NotifyPayloa
           html: `<p>${escapeHtml(bodyText)}</p>${
             payload.link ? `<p><a href="${escapeHtml(appUrl(payload.link))}">Open in TrainHub360</a></p>` : ""
           }`,
+          attachments: payload.attachments,
         });
         if (!ok) {
           await recordEmailFailure({ to: user.email, subject: payload.title, kind: `notification:${type}`, error: "sender rejected the message", context: { userId } });

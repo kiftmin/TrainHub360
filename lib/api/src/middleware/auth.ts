@@ -3,16 +3,6 @@ import jwt from "jsonwebtoken";
 import { db } from "../db.js";
 export interface AuthedRequest extends Request { user?: { id: string; role: string; orgId?: string; tokenVersion?: number } }
 
-const PUBLIC_PATHS = new Set([
-  "/api/healthz",
-  "/api/auth/login",
-  "/api/auth/sso",
-  "/api/auth/forgot-password",
-  "/api/auth/reset-password",
-  "/api/auth/activate",
-  "/api/organizations",
-]);
-
 export async function authMiddleware(req: AuthedRequest, res: Response, next: NextFunction) {
   if (req.path === "/api/healthz" || req.path === "/api/auth/login" || req.path === "/api/auth/sso") return next();
   if (req.method === "POST" && req.path === "/api/organizations") return next();

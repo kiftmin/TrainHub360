@@ -110,7 +110,95 @@ Uploads (A.3) are **multipart**, not base64 in JSON — `express.json()` caps a 
 - Both cap the file at `UPLOAD_MAX_BYTES` (default 50 MB) and check an extension/MIME allowlist (`lib/api/src/services/uploads.ts`).
 - Every upload writes a **`StoredFile`** row (organization, uploader, name, MIME, size, checksum, purpose) and returns `storedFileId`. A content item or a progress record may only reference a `StoredFile` of its own organization — a copied or invented `storageKey` is refused.
 
-Session reminders are scheduled when the API starts (`jobs/sessionReminderJob.ts`), deduplicated through `ReminderLog`. Personal calendar feeds live at `GET /api/calendar/feed.ics?token=...`; the token is issued by `GET /api/me/ical-token` and can be rotated by org admins.
+### The assessment lifecycle (round 8)
+
+**Versions.** Publishing an assessment freezes its questions and stamps `publishedAt`; any edit
+afterwards clones the row into a new version and marks the old one `supersededAt`, so `live` means
+exactly `isPublished && publishedAt !== null && supersededAt === null && !isArchived && deletedAt ===
+null`. An attempt that was already open keeps the version it started on: it can still be saved,
+submitted and graded inside its time limit, while new attempts only start on the live version.
+
+**Grading.** Objective answers (`single_choice`, `true_false`, `multi_choice`, and a short answer
+with `acceptedAnswers`) are marked by the server on submit. Anything with a manual question goes to
+the grading queue with `status = grading`, and **a partial grade is not a result**: score, percent
+and passed stay null until a trainer finishes marking every manual question. Nobody may grade their
+own attempt, and a graded attempt is final (a correction is a new attempt, not an edit).
+
+**Completion is not competence.** Round 8 replaced the scattered rules with one idempotent service,
+`lib/api/src/services/enrolmentOutcome.ts` → `evaluateEnrolment(enrolmentId, trigger)`:
+
+- *content complete* = every required, non-archived content item of the course has a completed
+  progress row for this enrolment (a course with no required content counts as complete);
+- *competent* = content complete **and** every live applied assessment has met its own pass mark;
+- *completed* = competent. Only then are `status` and `completionDate` set, the certificate is
+  issued and recognitions are checked.
+
+It runs from every place that can change the answer — a progress change or verification, an attempt
+becoming graded, an assessment being published or superseded, a required item added or archived, and
+a staff status change — so finishing the content after passing (or the other way round) closes the
+loop the same way. Withdrawn enrolments are skipped.
+
+**Score sources and overrides.** `Enrolment.appliedScoreSource` is `assessment` or `manual`. In the
+`assessment` source the standing score is computed from the data, never from `max(previous, new)`:
+the average of each live applied assessment's best graded percentage, where an assessment with no
+graded attempt counts as 0 — so a superseded version cannot inflate it. A staff `PATCH` that changes
+the score, the status or the completion date needs a `reason` of at least 10 characters, is audited,
+and sets the source to `manual`; from then on an automatic result is stored in
+`pendingAssessmentScore` instead of overwriting it, and staff accept or reject it with
+`POST /api/enrolments/:id/accept-assessment-score` / `…/reject-assessment-score`.
+
+**Locks and sign-off.** A locked review-credit period (`reviewCreditLockedAt`) never moves: a late
+graded attempt is still recorded, but the score, timeliness, enrolment score, status and completion
+date stay put and an `ASSESSMENT_RESULT_NOT_APPLIED_LOCKED` audit entry plus a notification go to the
+programme admins and the line manager. Only an organisation owner may override a locked enrolment,
+and that needs a reason too. On an unlocked enrolment, any score change clears `managerSignOff` and
+notifies the manager to confirm again.
+
+### Reminders and calendar
+
+The reminder job (`jobs/sessionReminderJob.ts` → `services/reminderCadence.ts`) follows each
+organisation's `reminderCadenceJson`: `unansweredHours` offsets after an unanswered invitation (up to
+`maxUnanswered`) and `confirmedBeforeStartHours` offsets before a confirmed session starts. The
+cadence is validated on save (arrays of positive integers, bounded length) and is editable in
+**Settings**. Each reminder is logged with its offset in its kind (`rsvp_48`, `session_24`), unique
+per `(sessionId, learnerId, kind)`, so several are sent and none twice; declined RSVPs, past or
+cancelled sessions, inactive users and withdrawn learners are skipped. The job runs every 15 minutes
+(`REMINDER_INTERVAL_MS`, `0` disables it) and org staff can run it on demand with
+`POST /api/reminders/run`.
+
+`GET /api/sessions/:id/ics` serves one session as a calendar file (invited or confirmed learners,
+and programme staff); invitation and confirmation emails carry the same file (`METHOD:REQUEST`,
+stable `UID`, `SEQUENCE`). Editing a session bumps the sequence and emails attendees an updated
+file; cancelling sends `METHOD:CANCEL`. Personal feeds live at `GET /api/calendar/feed.ics?token=…`,
+with a token issued by `GET /api/me/ical-token` that is stored hashed, shown once and can be
+rotated by org admins. Real Outlook/Google API sync is **not built** and stays out of scope.
+
+### Running behind a proxy
+
+`TRUST_PROXY` decides whether `X-Forwarded-For` is believed. It is off by default, so a client
+cannot pick its own login-throttle bucket by sending a header; behind a reverse proxy set it to the
+hop count (`1`), `loopback`, or a CIDR list. In production an unset `TRUST_PROXY` logs a startup
+warning, and `LOGIN_THROTTLE_ENABLED=false` is ignored there unless `LOGIN_THROTTLE_ALLOW_DISABLE=true`.
+
+Failed email deliveries are readable at `GET /api/email-failures` (org staff, org-scoped, paginated)
+and dismissible with `POST /api/email-failures/:id/dismiss`; **Settings → Email delivery** lists them
+with a resend-invitation shortcut.
+
+### Running the tests
+
+```sh
+set -a && . ./.env && set +a
+pnpm --filter @workspace/db run prisma:push        # or prisma migrate deploy
+pnpm --filter @workspace/api run build             # the tests import dist/
+pnpm --filter @workspace/api run test
+cd frontend && pnpm install --ignore-workspace && pnpm run typecheck && pnpm run test:ui
+```
+
+The API suite runs against a real SQL Server (`DATABASE_URL`, `TrainHub360_Test`), one file at a
+time (`--test-concurrency=1`), and every file that logs in resets the in-process login throttle in
+`before()` through `tests/support/resetTestState.js`, so a re-run in another order gives the same
+result. `scripts/check-openapi-drift.mjs` lists the registered routes against `openapi.yaml` and
+fails when they drift.
 
 ## Docs
 See `documents/corporate-training-platform-proposal.md` and `ARCHITECTURE.md`.

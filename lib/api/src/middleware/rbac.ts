@@ -67,6 +67,14 @@ async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
       const a = await db.assessment.findUnique({ where: { id: params.id }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);
       if (a) return a.module.course.programmeId;
     }
+    // An attempt has no programmeId of its own: it is reached through its assessment, which is
+    // the only description of who may act on it.
+    if (req.path.includes("/attempts/")) {
+      const attempt = await db.assessmentAttempt
+        .findUnique({ where: { id: params.id }, select: { assessment: { select: { module: { select: { course: { select: { programmeId: true } } } } } } } })
+        .catch(() => null);
+      if (attempt) return attempt.assessment.module.course.programmeId;
+    }
     if (req.path.includes("/enrolments/")) {
       const e = await db.enrolment.findUnique({ where: { id: params.id }, select: { programmeId: true } }).catch(() => null);
       if (e?.programmeId) return e.programmeId;
@@ -74,6 +82,10 @@ async function resolveProgrammeId(req: AuthedRequest): Promise<string | null> {
     if (req.path.includes("/content-progress/")) {
       const cp = await db.contentProgress.findUnique({ where: { id: params.id }, select: { contentItem: { select: { module: { select: { course: { select: { programmeId: true } } } } } } } }).catch(() => null);
       if (cp) return cp.contentItem.module.course.programmeId;
+    }
+    if (req.path.includes("/attempts/")) {
+      const at = await db.assessmentAttempt.findUnique({ where: { id: params.id }, select: { assessment: { select: { module: { select: { course: { select: { programmeId: true } } } } } } } }).catch(() => null);
+      if (at) return at.assessment.module.course.programmeId;
     }
     if (req.path.includes("/content/")) {
       const c = await db.contentItem.findUnique({ where: { id: params.id }, select: { module: { select: { course: { select: { programmeId: true } } } } } }).catch(() => null);

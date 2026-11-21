@@ -20,6 +20,7 @@ import {
   requireOrgStaffOrProgrammeAdmin,
 } from "../middleware/rbac.js";
 import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures } from "../middleware/rateLimit.js";
+import { assertNotGradingSelf } from "../middleware/grading.js";
 import { computeKpis } from "../jobs/kpiJob.js";
 import { avgResponseHours, slaStatusFor, runSlaJob, type SlaThread } from "../jobs/slaJob.js";
 import { runNudgeJob } from "../jobs/nudgeJob.js";
@@ -39,6 +40,7 @@ import {
   uploadMaxBytes,
 } from "../services/uploads.js";
 import { recomputeEnrolmentProgress, providerForUrl, isSafeExternalUrl } from "../services/contentProgress.js";
+import { evaluateEnrolment, evaluateCourseEnrolments } from "../services/enrolmentOutcome.js";
 import { buildIcsCalendar, sessionsForUser } from "../services/ical.js";
 import crypto from "node:crypto";
 import { db, orgScope, orgIdOf } from "../db.js";
@@ -49,6 +51,25 @@ type Enrolment = EnrolmentRow;
 export const router = Router();
 
 router.get("/healthz", (_req, res) => res.json({ status: "ok" }));
+
+// Round 8 / 3.3: a failed send is only useful if an operator can see it. Org staff read the
+// failures that belong to their organization, newest first; dismiss removes one after handling.
+router.get("/email-failures", requireOrgStaff(), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const limit = Math.min(Math.max(Number(req.query.limit ?? 50) || 50, 1), 200);
+  const offset = Math.max(Number(req.query.offset ?? 0) || 0, 0);
+  const { listEmailFailures } = await import("../services/emailFailures.js");
+  const items = await listEmailFailures(scope.orgId, limit, offset);
+  return res.json({ items, limit, offset });
+});
+
+router.post("/email-failures/:id/dismiss", requireOrgStaff(), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const row = await db.emailFailure.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
+  if (!row) return res.status(404).json({ error: "email failure not found" });
+  await db.emailFailure.delete({ where: { id: row.id } });
+  return res.status(204).end();
+});
 
 router.post("/auth/login", async (req, res) => {
   const { email, password } = req.body ?? {};
@@ -366,6 +387,17 @@ router.patch("/enrolments/:id", async (req, res) => {
   if ((patch.appliedAssessmentScore !== undefined || patch.applicationScore !== undefined) && !staff) {
     return res.status(403).json({ error: "only programme trainers/admins may set scores" });
   }
+  // Round 8 / 1.3: an applied score or completion override must carry a reason.
+  const overridesOutcome =
+    patch.appliedAssessmentScore !== undefined || patch.status !== undefined || patch.completionDate !== undefined;
+  const reason = typeof patch.reason === "string" ? patch.reason.trim() : "";
+  if (overridesOutcome && reason.length < 10) {
+    return res.status(400).json({ error: "a reason of at least 10 characters is required to override a score or completion" });
+  }
+  // [CONFIRM] 2026-11-21: only an org owner may override a locked enrolment.
+  if (overridesOutcome && current.reviewCreditLockedAt && !(await isOrgOwner(me.id))) {
+    return res.status(403).json({ error: "this review-credit period is locked; only an organization owner may override it" });
+  }
   let signOffBy: string | undefined;
   let signOffAt: Date | undefined;
   if (patch.managerSignOff !== undefined) {
@@ -378,8 +410,45 @@ router.patch("/enrolments/:id", async (req, res) => {
   // captured here rather than read back after the update.
   const wasWithdrawn = current.status === "withdrawn";
   const merged = { ...current, ...patch };
-  const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: merged.appliedAssessmentScore ?? null, completionDate: merged.completionDate ?? null, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
-  const e = await db.enrolment.update({ where: { id: req.params.id }, data: { status: patch.status ?? undefined, appliedAssessmentScore: patch.appliedAssessmentScore ?? undefined, applicationScore: patch.applicationScore ?? undefined, timelinessScore: b, enrolmentScore: score, managerSignOff: patch.managerSignOff ?? undefined, managerSignOffBy: signOffBy ?? undefined, managerSignOffAt: signOffAt ?? undefined } });
+  const manualScore = patch.appliedAssessmentScore !== undefined;
+  const appliedForScore = manualScore ? Number(patch.appliedAssessmentScore) : current.appliedAssessmentScore ?? null;
+  const completionDateForScore = patch.completionDate !== undefined
+    ? (patch.completionDate ? new Date(patch.completionDate) : null)
+    : merged.completionDate ?? null;
+  const { score, b } = calculateEnrolmentScore({ appliedAssessmentScore: appliedForScore, completionDate: completionDateForScore, deadlineDate: merged.deadlineDate ?? null, applicationScore: merged.applicationScore ?? null });
+  const e = await db.enrolment.update({
+    where: { id: req.params.id },
+    data: {
+      status: patch.status ?? undefined,
+      completionDate: patch.completionDate !== undefined ? (patch.completionDate ? new Date(patch.completionDate) : null) : undefined,
+      appliedAssessmentScore: manualScore ? appliedForScore : undefined,
+      ...(manualScore ? {
+        appliedScoreSource: "manual",
+        appliedScoreOverrideReason: reason,
+        appliedScoreOverriddenBy: me.id,
+        appliedScoreOverriddenAt: new Date(),
+        pendingAssessmentScore: null,
+        pendingAssessmentScoreAt: null,
+      } : {}),
+      applicationScore: patch.applicationScore ?? undefined,
+      timelinessScore: b,
+      enrolmentScore: score,
+      managerSignOff: patch.managerSignOff ?? undefined,
+      managerSignOffBy: signOffBy ?? undefined,
+      managerSignOffAt: signOffAt ?? undefined,
+    },
+  });
+  if (overridesOutcome) {
+    await db.auditLog.create({
+      data: {
+        userId: me.id,
+        action: manualScore ? "ENROLMENT_SCORE_OVERRIDDEN" : "ENROLMENT_STATUS_OVERRIDDEN",
+        entity: "enrolment",
+        entityId: e.id,
+        details: JSON.stringify({ reason, status: patch.status ?? null, completionDate: patch.completionDate ?? null, appliedAssessmentScore: manualScore ? appliedForScore : null }),
+      },
+    }).catch(() => null);
+  }
   if (patch.status === "withdrawn" && !wasWithdrawn) {
     // Round 6 / M1: a withdrawn learner loses the threads of that programme.
     await revokeStaleThreadAccess(e.learnerId, scope.orgId);
@@ -392,7 +461,7 @@ router.patch("/enrolments/:id", async (req, res) => {
     await issueCertificateForEnrolment(e.id).catch(() => null);
     await checkStreakRecognition(e.learnerId).catch(() => null);
   }
-  if (patch.appliedAssessmentScore !== undefined) {
+  if (manualScore) {
     const { checkAppliedScoreRecognition } = await import("../services/recognition.js");
     await checkAppliedScoreRecognition(e.id).catch(() => null);
   }
@@ -405,6 +474,47 @@ router.delete("/enrolments/:id", requireProgrammeRole("admin", "owner"), async (
   await db.enrolment.delete({ where: { id: req.params.id } }).catch(() => null);
   return res.status(204).end();
 });
+async function loadEnrolmentForStaff(req: AuthedRequest, id: string) {
+  const scope = orgScope(req);
+  const e = await db.enrolment.findFirst({ where: { id, programme: { orgId: scope.orgId } } });
+  if (!e) throw Object.assign(new Error("not found"), { status: 404 });
+  const staff = (await isOrgStaff(req.user!.id)) || (await isProgrammeStaff(req.user!.id, e.programmeId));
+  if (!staff) throw Object.assign(new Error("programme staff access required"), { status: 403 });
+  return e;
+}
+
+router.post("/enrolments/:id/accept-assessment-score", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const e = await loadEnrolmentForStaff(req as AuthedRequest, req.params.id);
+  if (e.pendingAssessmentScore == null) return res.status(409).json({ error: "there is no pending assessment result" });
+  await db.enrolment.update({
+    where: { id: e.id },
+    data: {
+      appliedAssessmentScore: e.pendingAssessmentScore,
+      appliedScoreSource: "assessment",
+      appliedScoreOverrideReason: null,
+      appliedScoreOverriddenBy: null,
+      appliedScoreOverriddenAt: null,
+      pendingAssessmentScore: null,
+      pendingAssessmentScoreAt: null,
+    },
+  });
+  await db.auditLog.create({ data: { userId: me.id, action: "ASSESSMENT_SCORE_ACCEPTED", entity: "enrolment", entityId: e.id, details: String(e.pendingAssessmentScore) } }).catch(() => null);
+  return res.json(await evaluateEnrolment(e.id, "manual_status"));
+});
+
+router.post("/enrolments/:id/reject-assessment-score", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const e = await loadEnrolmentForStaff(req as AuthedRequest, req.params.id);
+  if (e.pendingAssessmentScore == null) return res.status(409).json({ error: "there is no pending assessment result" });
+  await db.enrolment.update({
+    where: { id: e.id },
+    data: { pendingAssessmentScore: null, pendingAssessmentScoreAt: null },
+  });
+  await db.auditLog.create({ data: { userId: me.id, action: "ASSESSMENT_SCORE_REJECTED", entity: "enrolment", entityId: e.id, details: String(e.pendingAssessmentScore) } }).catch(() => null);
+  return res.json({ ok: true, enrolmentId: e.id });
+});
+
 router.get("/enrolments/:id/score", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const e = await db.enrolment.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } });
@@ -643,7 +753,14 @@ async function ensureLearnerEnrolments(tx: typeof db | any, userId: string, prog
   const courses = await tx.course.findMany({ where: { programmeId, deletedAt: null, isArchived: false }, select: { id: true } });
   for (const c of courses) {
     const already = await tx.enrolment.findFirst({ where: { learnerId: userId, courseId: c.id } }).catch(() => null);
-    if (!already) await tx.enrolment.create({ data: { learnerId: userId, courseId: c.id, programmeId, status: "enrolled" } }).catch(() => null);
+    if (!already) {
+      await tx.enrolment.create({ data: { learnerId: userId, courseId: c.id, programmeId, status: "enrolled" } }).catch(() => null);
+    } else if (already.status === "withdrawn" || already.withdrawnAt) {
+      // Round 8 / E.5: removing a member withdraws their enrolment but keeps the row. Adding the
+      // learner grant back therefore has to reinstate it, or a re-added member has a grant that
+      // can never grant access (content, progress, threads).
+      await tx.enrolment.update({ where: { id: already.id }, data: { status: "enrolled", withdrawnAt: null, withdrawnBy: null } }).catch(() => null);
+    }
   }
 }
 
@@ -702,13 +819,14 @@ export async function removeProgrammeMembers(
       },
     }).catch(() => null);
   });
-  // Round 6 / M1: removed members lose their threads in this programme with their grant.
-  const threadRows = await db.threadParticipant.findMany({
-    where: { userId: { in: ids }, thread: { programmeId } },
-    select: { id: true },
-  }).catch(() => [] as Array<{ id: string }>);
-  if (threadRows.length) {
-    await db.threadParticipant.deleteMany({ where: { id: { in: threadRows.map((r) => r.id) } } }).catch(() => null);
+  // Round 6 / M1 + Round 8 / E.5: removed members lose their threads in this programme, but the
+  // participation rows stay (leftAt/leftReason) so the history survives and a re-add can restore.
+  const revoke = await db.threadParticipant.updateMany({
+    where: { userId: { in: ids }, thread: { programmeId }, leftAt: null },
+    data: { leftAt: now, leftReason: "removed from programme" },
+  }).catch(() => ({ count: 0 }));
+  if (revoke.count) {
+    await db.auditLog.create({ data: { userId: actorId, action: "THREAD_ACCESS_REVOKED", entity: "programme", entityId: programmeId, details: `${revoke.count} thread participation(s)` } }).catch(() => null);
   }
   return { removed, withdrawn, coursesUnassigned, userIds: ids };
 }
@@ -769,6 +887,10 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
   const target = await db.user.findFirst({ where: { id: req.params.userId, orgId: scope.orgId } }).catch(() => null);
   if (!target) return res.status(404).json({ error: "member not found in your organization" });
   const currentGrants = (await db.userRole.findMany({ where: { userId: target.id, programmeId: req.params.id }, include: { role: true } }).catch(() => [])) as Array<{ id: string; roleId: string; role: { name: string } }>;
+  // Round 8 / E.10: toRole alone used to rewrite whichever grant happened to come first.
+  if (!replacesGrants && toRole !== undefined && fromRole === undefined && currentGrants.length > 1) {
+    return res.status(400).json({ error: "fromRole is required when the member holds more than one role in this programme" });
+  }
   // Multi-role edit: replace the exact set of grants for this programme.
   if (Array.isArray(req.body?.roles)) {
     const desired = [...new Set((req.body.roles as unknown[]).map(String))];
@@ -942,7 +1064,10 @@ router.patch("/modules/:id", requireProgrammeRole("admin", "owner", "trainer"), 
 });
 router.patch("/assessments/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
-  const a = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } });
+  const a = await db.assessment.findFirst({
+    where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } },
+    include: { module: { select: { courseId: true } }, questions: { include: { options: true } } },
+  });
   if (!a) return res.status(404).json({ error: "assessment not found in your organization" });
   if (req.body?.type && !["recall", "applied"].includes(req.body.type)) return res.status(400).json({ error: "type must be recall|applied" });
   const data: Record<string, unknown> = {};
@@ -952,7 +1077,56 @@ router.patch("/assessments/:id", requireProgrammeRole("admin", "owner", "trainer
     if (req.body?.[k] !== undefined) data[k] = req.body[k] === null ? null : Number(req.body[k]);
   }
   if (req.body?.title !== undefined) data.title = String(req.body.title);
-  if (req.body?.attemptsResetAt !== undefined) data.attemptsResetAt = req.body.attemptsResetAt ? new Date(req.body.attemptsResetAt) : null;
+
+  // Round 8 / 2.1 + 2.4: editing a published paper creates version N+1. The old
+  // version is taken offline (superseded) but keeps its questions so in-flight
+  // attempts are still graded against the paper they started on.
+  if (a.isPublished && req.body?.confirmNewVersion !== true) {
+    return res.status(409).json({
+      error: `saving this edit creates version ${a.version + 1}, takes version ${a.version} offline, and learners will need to retake it`,
+      requiresNewVersion: true,
+      nextVersion: a.version + 1,
+    });
+  }
+  if (a.isPublished && req.body?.confirmNewVersion === true) {
+    const created = await db.$transaction(async (tx) => {
+      const next = await tx.assessment.create({
+        data: {
+          moduleId: a.moduleId,
+          type: (data.type as string) ?? a.type,
+          title: (data.title as string) ?? a.title,
+          maxScore: (data.maxScore as number) ?? a.maxScore,
+          passMark: (data.passMark as number | null) ?? a.passMark,
+          maxAttempts: (data.maxAttempts as number | null) ?? a.maxAttempts,
+          timeLimitMinutes: (data.timeLimitMinutes as number | null) ?? a.timeLimitMinutes,
+          version: a.version + 1,
+          isPublished: false,
+        },
+      });
+      for (const q of a.questions) {
+        const nq = await tx.question.create({
+          data: {
+            assessmentId: next.id,
+            order: q.order,
+            kind: q.kind,
+            prompt: q.prompt,
+            scenarioContext: q.scenarioContext,
+            points: q.points,
+            rubric: q.rubric,
+            acceptedAnswers: q.acceptedAnswers,
+          },
+        });
+        for (const o of q.options) {
+          await tx.questionOption.create({ data: { questionId: nq.id, text: o.text, isCorrect: o.isCorrect, order: o.order } });
+        }
+      }
+      await tx.assessment.update({ where: { id: a.id }, data: { isPublished: false, supersededAt: new Date(), supersededById: (req as AuthedRequest).user!.id } });
+      return next;
+    });
+    await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "ASSESSMENT_SUPERSEDED", entity: "assessment", entityId: a.id, details: JSON.stringify({ newVersionId: created.id, version: created.version }) } }).catch(() => null);
+    await evaluateCourseEnrolments(a.module.courseId, "assessment_superseded");
+    return res.status(201).json({ ...created, supersededId: a.id, redirectedTo: created.id });
+  }
   return res.json(await db.assessment.update({ where: { id: a.id }, data }));
 });
 router.get("/modules/:id/assessments", async (req, res) => {
@@ -1065,48 +1239,268 @@ function shuffleInPlace<T>(arr: T[]): T[] {
   return arr;
 }
 
-function validateQuestionOptions(type: string, options: Array<{ text?: unknown; isCorrect?: unknown; id?: string }>) {
-  if (!Array.isArray(options) || options.length < 2) return "at least two options are required";
-  if (options.some((o) => !String(o?.text ?? "").trim())) return "every option needs text";
-  const correct = options.filter((o) => o?.isCorrect === true).length;
-  if (type === "recall" && correct !== 1) return "recall questions must have exactly one correct option";
-  if (type === "applied" && correct < 1) return "applied questions need at least one correct option";
+// Round 8 / 2.1: the five question kinds the builder and learner screen share.
+export const QUESTION_KINDS = ["single_choice", "multi_choice", "true_false", "short_answer", "scenario"] as const;
+type QuestionKind = (typeof QUESTION_KINDS)[number];
+const CHOICE_KINDS = new Set<QuestionKind>(["single_choice", "multi_choice", "true_false"]);
+const MANUAL_KINDS = new Set<QuestionKind>(["scenario"]);
+
+function normalizeKind(value: unknown, assessmentType: string): QuestionKind | null {
+  const raw = String(value ?? "").trim();
+  if ((QUESTION_KINDS as readonly string[]).includes(raw)) return raw as QuestionKind;
+  // Backwards compatibility with rows/questions posted before kinds existed.
+  if (raw === "recall" || raw === "applied") return "multi_choice";
+  if (!raw) return assessmentType === "applied" ? "scenario" : "multi_choice";
   return null;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Phase 4 — assessment builder, server-side grading, the review queue, and what a result sets off.
+//
+// Three rules run through everything here:
+//   * a score never comes from the request body;
+//   * a learner never sees an answer key or a rubric;
+//   * a published assessment is frozen — editing it makes a new version, so past attempts keep
+//     pointing at the questions they were graded against.
+// ---------------------------------------------------------------------------------------------
+
+// Only the live copy of an assessment may be read by a learner: a superseded version keeps its
+// attempts but accepts no new ones.
+function liveAssessmentFilter() {
+  return { isPublished: true, publishedAt: { not: null } as { not: null } };
+}
+
+async function assessmentInOrg(assessmentId: string, orgId: string) {
+  return db.assessment
+    .findFirst({
+      where: { id: assessmentId, module: { course: { programme: { orgId } } } },
+      include: {
+        module: { select: { id: true, title: true, courseId: true, course: { select: { id: true, title: true, programmeId: true, appliedThreshold: true } } } },
+        questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } },
+      },
+    })
+    .catch(() => null);
+}
+
+// The rows a learner may see: no `isCorrect`, no `rubric`. Leaving them out of the query rather
+// than deleting them afterwards means no future edit to this file can leak them by accident.
+function learnerQuestionView(questions: Array<{ id: string; kind: string; prompt: string; scenarioContext: string | null; points: number; order: number; options: Array<{ id: string; text: string; order: number }> }>) {
+  return shuffleInPlace(
+    questions.map((q) => ({
+      id: q.id,
+      kind: q.kind,
+      prompt: q.prompt,
+      scenarioContext: q.scenarioContext,
+      points: q.points,
+      order: q.order,
+      options: shuffleInPlace(q.options.map((o) => ({ id: o.id, text: o.text, order: o.order }))),
+    })),
+  );
+}
+
+// Short answers are auto-marked when the question lists accepted answers. Doing it here keeps the
+// rule in one place: an answer counts when it matches an accepted form once case, surrounding
+// space and repeated spaces are ignored — never by substring, so "not at all" cannot match "all".
+function acceptedForms(accepted: string[]): string[] {
+  return accepted.map((s) => s.trim().toLowerCase().replace(/\s+/g, " ")).filter(Boolean);
+}
+
+function shortAnswerMatches(text: string, accepted: string[]): boolean {
+  const normalise = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ").replace(/[.!]$/, "");
+  const forms = acceptedForms(accepted);
+  if (!forms.length) return false;
+  const answer = normalise(text);
+  return answer.length > 0 && forms.some((f) => normalise(f) === answer);
+}
+
+// Publish freezes the current question set. A later edit to a published assessment clones it into
+// a new version instead of changing questions that attempt history depends on.
+async function cloneAssessmentVersion(assessmentId: string, actorId: string) {
+  const source = await db.assessment.findUniqueOrThrow({
+    where: { id: assessmentId },
+    include: { questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } },
+  });
+  return db.$transaction(async (tx) => {
+    const copy = await tx.assessment.create({
+      data: {
+        moduleId: source.moduleId,
+        type: source.type,
+        title: source.title,
+        maxScore: source.maxScore,
+        passMark: source.passMark,
+        maxAttempts: source.maxAttempts,
+        timeLimitMinutes: source.timeLimitMinutes,
+        isPublished: false,
+        publishedAt: null,
+        version: source.version + 1,
+        supersedesId: source.id,
+      },
+    });
+    for (const question of source.questions) {
+      const q = await tx.question.create({
+        data: {
+          assessmentId: copy.id,
+          order: question.order,
+          kind: question.kind,
+          prompt: question.prompt,
+          scenarioContext: question.scenarioContext,
+          points: question.points,
+          rubric: question.rubric,
+          acceptedAnswers: question.acceptedAnswers,
+        },
+      });
+      for (const option of question.options) {
+        await tx.questionOption.create({ data: { questionId: q.id, text: option.text, isCorrect: option.isCorrect, order: option.order } });
+      }
+    }
+    // The old row keeps its attempts but stops being the live copy.
+    await tx.assessment.update({ where: { id: source.id }, data: { isPublished: false, publishedAt: null, supersededAt: new Date(), supersededById: actorId } });
+    await tx.auditLog.create({
+      data: { userId: actorId, action: "ASSESSMENT_VERSION_CREATED", entity: "assessment", entityId: copy.id, details: `continued from ${source.id} (v${source.version})` },
+    }).catch(() => null);
+    return copy;
+  });
+}
+
+// Round 8 / 2.1: validation shared by the builder routes. The detailed list is what the UI shows
+// above the publish button, so a trainer can see every problem at once instead of one at a time.
+function questionProblems(kind: QuestionKind, assessmentType: string, options: Array<{ text?: unknown; isCorrect?: unknown }>, acceptedAnswers?: unknown): string[] {
+  const problems: string[] = [];
+  if (assessmentType === "recall" && kind === "scenario") problems.push("recall assessments cannot contain scenario questions");
+  if (CHOICE_KINDS.has(kind)) {
+    if (!Array.isArray(options) || options.length < 2) problems.push(`${kind} questions need at least two options`);
+    if (Array.isArray(options) && options.some((o) => !String(o?.text ?? "").trim())) problems.push("every option needs text");
+    const correct = Array.isArray(options) ? options.filter((o) => o?.isCorrect === true).length : 0;
+    if (kind === "multi_choice" && correct < 1) problems.push("multi-choice questions need at least one correct option");
+    if ((kind === "single_choice" || kind === "true_false") && correct !== 1) problems.push(`${kind} questions need exactly one correct option`);
+    if (kind === "true_false" && Array.isArray(options) && options.length !== 2) problems.push("true/false questions need exactly two options");
+  } else if (options.length) {
+    problems.push(`${kind} questions do not use options`);
+  }
+  if (kind === "short_answer" && acceptedAnswers !== undefined && !Array.isArray(acceptedAnswers)) {
+    problems.push("acceptedAnswers must be a list of strings");
+  }
+  return problems;
+}
+
+function acceptedAnswersJson(value: unknown): string | null {
+  if (value === undefined) return null;
+  if (!Array.isArray(value)) return null;
+  const list = value.map((v) => String(v).trim()).filter(Boolean).slice(0, 50);
+  return list.length ? JSON.stringify(list) : null;
+}
+
+function parseAcceptedAnswers(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function publishProblems(assessment: { type: string; questions: Array<{ kind: string; options: Array<{ isCorrect: boolean }> }> }): string[] {
+  const problems: string[] = [];
+  if (!assessment.questions.length) problems.push("add at least one question before publishing");
+  for (const q of assessment.questions) {
+    const kind = normalizeKind(q.kind, assessment.type);
+    if (!kind) { problems.push(`unknown question kind ${q.kind}`); continue; }
+    problems.push(...questionProblems(kind, assessment.type, q.options ?? []));
+  }
+  if (assessment.type === "applied" && !assessment.questions.some((q) => {
+    const k = normalizeKind(q.kind, assessment.type);
+    return k === "scenario" || k === "short_answer";
+  })) {
+    problems.push("applied assessments need at least one scenario or short-answer question (a scenario or short answer cannot be shown by choice alone)");
+  }
+  return problems;
 }
 
 router.get("/assessments/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
-  const assessment = await db.assessment.findFirst({
-    where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } },
-    include: { questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } },
-  }).catch(() => null);
+  const assessment = await assessmentInOrg(req.params.id, scope.orgId);
   if (!assessment) return res.status(404).json({ error: "assessment not found in your organization" });
-  return res.json(assessment);
+  const isLive = assessment.isPublished && assessment.publishedAt !== null;
+  return res.json({ ...assessment, editable: !isLive, live: isLive });
 });
 
+const QUESTION_KIND_SET = new Set(["single_choice", "multi_choice", "true_false", "short_answer", "scenario"]);
+
+// Static checks for a question. `type` is the assessment's type, because a recall assessment may
+// only carry objective kinds and an applied one needs at least one manual kind to publish.
+function validateQuestionInput(type: string, body: any, kind: string): string | null {
+  if (!QUESTION_KIND_SET.has(kind)) return "kind must be single_choice|multi_choice|true_false|short_answer|scenario";
+  if (type === "recall" && (kind === "short_answer" || kind === "scenario")) {
+    return `a recall assessment may only contain objective questions; ${kind} questions are not allowed`;
+  }
+  if (!String(body?.prompt ?? "").trim()) return "prompt required";
+  const points = body?.points === undefined ? 1 : Number(body.points);
+  if (!Number.isFinite(points) || points <= 0) return "points must be a positive number";
+  const objective = kind === "single_choice" || kind === "multi_choice" || kind === "true_false";
+  if (objective) {
+    const options = Array.isArray(body?.options) ? (body.options as any[]) : [];
+    if (options.length < 2) return "at least two options are required";
+    if (options.some((o) => !String(o?.text ?? "").trim())) return "every option needs text";
+    const correct = options.filter((o) => o?.isCorrect === true).length;
+    if (kind !== "multi_choice" && correct !== 1) return `${kind} questions must have exactly one correct option`;
+    if (kind === "multi_choice" && correct < 1) return "multi_choice questions need at least one correct option";
+    return null;
+  }
+  // A scenario is marked against a rubric by a person. A short answer may list accepted forms and
+  // be marked without one, so its rubric stays optional.
+  if (kind === "scenario" && !String(body?.rubric ?? "").trim()) return "a scenario question needs a rubric to mark it against";
+  return null;
+}
+
+function questionWriteData(type: string, body: any, kind: string, fallbackOrder: number) {
+  const data: Record<string, unknown> = {
+    kind,
+    prompt: String(body.prompt).trim(),
+    points: body.points === undefined ? 1 : Number(body.points),
+    order: body.order === undefined ? fallbackOrder : Number(body.order),
+    scenarioContext: body.scenarioContext === undefined || body.scenarioContext === null ? null : String(body.scenarioContext),
+    rubric: body.rubric === undefined || body.rubric === null ? null : String(body.rubric),
+  };
+  if (body.acceptedAnswers !== undefined) {
+    // Short answers may carry a list of accepted forms; stored on the question as JSON so a rubric
+    // stays a single column of instructions for a person and the accepted forms stay machine-read.
+    const forms = Array.isArray(body.acceptedAnswers) ? body.acceptedAnswers.map(String) : [];
+    data.acceptedAnswers = forms.length ? JSON.stringify(forms) : null;
+  }
+  return data;
+}
+
+async function writeOptions(tx: any, questionId: string, options: any[]) {
+  await tx.questionOption.deleteMany({ where: { questionId } });
+  for (let i = 0; i < options.length; i++) {
+    await tx.questionOption.create({ data: { questionId, text: String(options[i].text), isCorrect: options[i]?.isCorrect === true, order: i } });
+  }
+}
+
+// Editing a published assessment continues in a new version and returns where the edit landed,
+// so the client can follow the version rather than wonder why its change did not appear.
 router.post("/assessments/:id/questions", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const assessment = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } }).catch(() => null);
+  let assessment = await assessmentInOrg(req.params.id, scope.orgId);
   if (!assessment) return res.status(404).json({ error: "assessment not found in your organization" });
-  const type = req.body?.type === "applied" ? "applied" : "recall";
-  if (type !== assessment.type) return res.status(400).json({ error: `questions in a ${assessment.type} assessment must be of type ${assessment.type}` });
-  const options = (req.body?.options ?? []) as Array<{ text?: unknown; isCorrect?: unknown; order?: unknown }>;
-  const problem = validateQuestionOptions(type, options);
+  const kind = String(req.body?.kind ?? "");
+  const problem = validateQuestionInput(assessment.type, req.body, kind);
   if (problem) return res.status(400).json({ error: problem });
-  const prompt = String(req.body?.prompt ?? "").trim();
-  if (!prompt) return res.status(400).json({ error: "prompt required" });
-  const points = req.body?.points !== undefined ? Number(req.body.points) : 1;
-  if (!Number.isFinite(points) || points <= 0) return res.status(400).json({ error: "points must be a positive number" });
-  const count = await db.question.count({ where: { assessmentId: assessment.id } }).catch(() => 0);
-  if (assessment.isPublished) return res.status(409).json({ error: "cannot edit questions of a published assessment" });
+
+  let versionCreated = false;
+  if (assessment.isPublished) {
+    assessment = (await assessmentInOrg((await cloneAssessmentVersion(assessment.id, me.id)).id, scope.orgId))!;
+    versionCreated = true;
+  }
+  const options = Array.isArray(req.body?.options) ? (req.body.options as any[]) : [];
   const question = await db.$transaction(async (tx) => {
-    const q = await tx.question.create({ data: { assessmentId: assessment.id, kind: type, prompt, points, order: req.body?.order !== undefined ? Number(req.body.order) : count } });
-    for (let i = 0; i < options.length; i++) {
-      await tx.questionOption.create({ data: { questionId: q.id, text: String(options[i].text), isCorrect: options[i].isCorrect === true, order: i } });
-    }
+    const q = await tx.question.create({ data: { assessmentId: assessment!.id, ...(questionWriteData(assessment!.type, req.body, kind, assessment!.questions.length) as any) } });
+    if (options.length) await writeOptions(tx, q.id, options);
     return tx.question.findUnique({ where: { id: q.id }, include: { options: { orderBy: { order: "asc" } } } });
   });
-  return res.status(201).json(question);
+  return res.status(201).json({ ...question, assessmentId: assessment.id, version: assessment.version, versionCreated });
 });
 
 router.patch("/questions/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
@@ -1116,28 +1510,26 @@ router.patch("/questions/:id", requireProgrammeRole("admin", "owner", "trainer")
     include: { assessment: { select: { id: true, type: true, isPublished: true } } },
   }).catch(() => null);
   if (!question) return res.status(404).json({ error: "question not found in your organization" });
-  if (question.assessment.isPublished) return res.status(409).json({ error: "cannot edit questions of a published assessment" });
-  const data: Record<string, unknown> = {};
-  if (req.body?.prompt !== undefined) {
-    const prompt = String(req.body.prompt).trim();
-    if (!prompt) return res.status(400).json({ error: "prompt cannot be empty" });
-    data.prompt = prompt;
+  if (question.assessment.isPublished) {
+    return res.status(409).json({ error: "this assessment is published; editing it starts a new version", code: "published" });
   }
-  if (req.body?.points !== undefined) data.points = Number(req.body.points);
-  if (req.body?.order !== undefined) data.order = Number(req.body.order);
-  if (req.body?.options !== undefined) {
-    const problem = validateQuestionOptions(question.assessment.type, req.body.options as Array<{ text?: unknown; isCorrect?: unknown }>);
-    if (problem) return res.status(400).json({ error: problem });
-  }
+  const kind = String(req.body?.kind ?? question.kind);
+  const merged = {
+    prompt: req.body?.prompt ?? question.prompt,
+    points: req.body?.points ?? question.points,
+    options: req.body?.options,
+    rubric: req.body?.rubric ?? question.rubric,
+    acceptedAnswers: req.body?.acceptedAnswers,
+  };
+  const problem = validateQuestionInput(question.assessment.type, merged, kind);
+  if (problem) return res.status(400).json({ error: problem });
   const updated = await db.$transaction(async (tx) => {
+    const data: Record<string, unknown> = questionWriteData(question.assessment.type, { ...merged, order: req.body?.order ?? question.order, scenarioContext: req.body?.scenarioContext ?? question.scenarioContext }, kind, question.order);
+    // Only overwrite the accepted answers when the caller sent them, so a prompt edit does not
+    // silently drop the machine-marking rule.
+    if (req.body?.acceptedAnswers === undefined) delete data.acceptedAnswers;
     await tx.question.update({ where: { id: question.id }, data });
-    if (req.body?.options !== undefined) {
-      await tx.questionOption.deleteMany({ where: { questionId: question.id } });
-      const options = req.body.options as Array<{ text: string; isCorrect?: boolean }>;
-      for (let i = 0; i < options.length; i++) {
-        await tx.questionOption.create({ data: { questionId: question.id, text: String(options[i].text), isCorrect: options[i].isCorrect === true, order: i } });
-      }
-    }
+    if (Array.isArray(req.body?.options)) await writeOptions(tx, question.id, req.body.options);
     return tx.question.findUnique({ where: { id: question.id }, include: { options: { orderBy: { order: "asc" } } } });
   });
   return res.json(updated);
@@ -1150,8 +1542,12 @@ router.delete("/questions/:id", requireProgrammeRole("admin", "owner", "trainer"
     include: { assessment: { select: { isPublished: true } } },
   }).catch(() => null);
   if (!question) return res.status(404).json({ error: "question not found in your organization" });
-  if (question.assessment.isPublished) return res.status(409).json({ error: "cannot edit questions of a published assessment" });
+  if (question.assessment.isPublished) {
+    return res.status(409).json({ error: "this assessment is published; editing it starts a new version", code: "published" });
+  }
   await db.$transaction(async (tx) => {
+    // Stored answers to this question are part of an attempt that was already graded; keep them
+    // readable by clearing the link rather than refusing the edit.
     await tx.attemptAnswer.deleteMany({ where: { questionId: question.id } }).catch(() => null);
     await tx.questionOption.deleteMany({ where: { questionId: question.id } });
     await tx.question.delete({ where: { id: question.id } });
@@ -1159,17 +1555,36 @@ router.delete("/questions/:id", requireProgrammeRole("admin", "owner", "trainer"
   return res.json({ deleted: question.id });
 });
 
+router.put("/assessments/:id/questions/order", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const assessment = await db.assessment.findFirst({ where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } } }).catch(() => null);
+  if (!assessment) return res.status(404).json({ error: "assessment not found in your organization" });
+  if (assessment.isPublished) return res.status(409).json({ error: "cannot reorder questions of a published assessment", requiresNewVersion: true });
+  const ids = ((req.body?.ids ?? []) as string[]).map(String);
+  const questions = await db.question.findMany({ where: { assessmentId: assessment.id }, select: { id: true } }).catch(() => [] as Array<{ id: string }>);
+  const allowed = new Set(questions.map((q) => q.id));
+  if (ids.length !== allowed.size || ids.some((id) => !allowed.has(id))) {
+    return res.status(400).json({ error: "ids must list every question in this assessment exactly once" });
+  }
+  await db.$transaction(ids.map((id, index) => db.question.update({ where: { id }, data: { order: index } })));
+  return res.json({ assessmentId: assessment.id, order: ids });
+});
+
 router.post("/assessments/:id/publish", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   const assessment = await db.assessment.findFirst({
     where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } },
-    include: { questions: { include: { options: true } } },
+    include: { questions: { include: { options: true } }, module: { select: { courseId: true } } },
   }).catch(() => null);
   if (!assessment) return res.status(404).json({ error: "assessment not found in your organization" });
-  if (!assessment.questions.length) return res.status(400).json({ error: "add at least one question before publishing" });
+  if (assessment.isPublished && assessment.publishedAt) return res.status(409).json({ error: "this assessment is already published; edit it to start a new version" });
+  const problems = publishProblems(assessment);
+  if (problems.length) return res.status(400).json({ error: problems[0], problems });
   const total = assessment.questions.reduce((sum, q) => sum + (q.points ?? 1), 0);
-  const updated = await db.assessment.update({ where: { id: assessment.id }, data: { isPublished: true, maxScore: total } });
-  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "ASSESSMENT_PUBLISHED", entity: "assessment", entityId: assessment.id, details: null } }).catch(() => null);
+  const updated = await db.assessment.update({ where: { id: assessment.id }, data: { isPublished: true, publishedAt: new Date(), maxScore: total } });
+  await db.auditLog.create({ data: { userId: me.id, action: "ASSESSMENT_PUBLISHED", entity: "assessment", entityId: assessment.id, details: `v${assessment.version}, ${assessment.questions.length} question(s)` } }).catch(() => null);
+  await evaluateCourseEnrolments(assessment.module.courseId, "assessment_published");
   return res.json(updated);
 });
 
@@ -1182,50 +1597,157 @@ router.get("/courses/:id/assessments", async (req, res) => {
   const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: course.id } }).catch(() => null);
   if (!staff && !enrolled) return res.status(403).json({ error: "enrolment required" });
   const assessments = await db.assessment.findMany({
-    where: { module: { courseId: course.id, isArchived: false, deletedAt: null }, ...(staff ? {} : { isPublished: true }), ...lifecycleFilter(false) },
+    where: {
+      module: { courseId: course.id, isArchived: false, deletedAt: null },
+      ...(staff ? {} : { isPublished: true, supersededAt: null }),
+      ...lifecycleFilter(false),
+    },
     include: { questions: { select: { id: true, kind: true, points: true, order: true }, orderBy: { order: "asc" } }, module: { select: { id: true, title: true } } },
     orderBy: { id: "asc" },
   }).catch(() => [] as any[]);
-  const submitted = await db.assessmentAttempt.findMany({ where: { learnerId: me.id, assessmentId: { in: assessments.map((a) => a.id) }, status: "submitted" }, select: { assessmentId: true, score: true } }).catch(() => [] as any[]);
+  const submitted = await db.assessmentAttempt.findMany({ where: { learnerId: me.id, assessmentId: { in: assessments.map((a) => a.id) }, status: { in: ["submitted", "graded"] } }, select: { assessmentId: true, percent: true } }).catch(() => [] as any[]);
   return res.json(assessments.map((a) => {
     const attempts = submitted.filter((s) => s.assessmentId === a.id);
-    const best = attempts.length ? Math.max(...attempts.map((s) => s.score ?? 0)) : null;
+    const best = attempts.length ? Math.max(...attempts.map((s) => s.percent ?? 0)) : null;
     const locked = !!a.maxAttempts && attempts.length >= a.maxAttempts && (best ?? 0) < (a.passMark ?? 70);
     return { ...a, attemptCount: attempts.length, bestScore: best, remainingAttempts: a.maxAttempts ? Math.max(0, a.maxAttempts - attempts.length) : null, locked };
   }));
 });
 
+// Start an attempt. Eligibility is checked here and nowhere else: live assessment, enrolment in
+// the course, and attempts remaining.
 router.post("/assessments/:id/attempts", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const assessment = await db.assessment.findFirst({
-    where: { id: req.params.id, module: { course: { programme: { orgId: scope.orgId } } } },
-    include: { module: { select: { courseId: true } }, questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } },
-  }).catch(() => null);
+  const assessment = await assessmentInOrg(req.params.id, scope.orgId);
   if (!assessment) return res.status(404).json({ error: "assessment not found" });
-  if (!assessment.isPublished) return res.status(403).json({ error: "assessment is not published" });
+  if (!assessment.isPublished || !assessment.publishedAt) return res.status(403).json({ error: "assessment is not published" });
+  if (assessment.supersededAt) return res.status(403).json({ error: "this paper has been superseded; start the current version instead", superseded: true });
   const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: assessment.module.courseId } }).catch(() => null);
-  if (!enrolment) return res.status(403).json({ error: "enrolment required to take this assessment" });
+  if (!enrolment || enrolment.status === "withdrawn" || enrolment.withdrawnAt) return res.status(403).json({ error: "enrolment required to take this assessment" });
   if (!assessment.questions.length) return res.status(409).json({ error: "assessment has no questions" });
-  const submitted = await db.assessmentAttempt.findMany({ where: { assessmentId: assessment.id, learnerId: me.id, status: "submitted" }, select: { score: true } }).catch(() => [] as any[]);
-  const best = submitted.length ? Math.max(...submitted.map((s) => s.score ?? 0)) : null;
-  if (assessment.maxAttempts && submitted.length >= assessment.maxAttempts && (best ?? 0) < (assessment.passMark ?? 70)) {
-    return res.status(403).json({ error: "no attempts remaining; ask a trainer to reset your attempts", locked: true, bestScore: best });
-  }
-  const now = new Date();
-  const expiresAt = assessment.timeLimitMinutes ? new Date(now.getTime() + assessment.timeLimitMinutes * 60_000) : null;
-  const attempt = await db.assessmentAttempt.create({
-    data: { assessmentId: assessment.id, enrolmentId: enrolment.id, learnerId: me.id, attemptNumber: submitted.length + 1, startedAt: now, status: "in_progress" },
+
+  const graded = await db.assessmentAttempt.findMany({
+    where: { assessmentId: assessment.id, enrolmentId: enrolment.id, status: { in: ["submitted", "grading", "graded"] } },
+    select: { score: true, status: true },
   });
-  // Correct answers are never serialized to the learner.
-  const questions = shuffleInPlace(assessment.questions.map((q) => ({
-    id: q.id, type: q.kind, prompt: q.prompt, points: q.points, order: q.order,
-    options: shuffleInPlace(q.options.map((o) => ({ id: o.id, text: o.text, order: o.order }))),
-  })));
-  return res.status(201).json({ attemptId: attempt.id, attemptNumber: attempt.attemptNumber, startedAt: attempt.startedAt, expiresAt, timeLimitMinutes: assessment.timeLimitMinutes, assessmentId: assessment.id, questions });
+  const { passMarkFor, parseOptionIds } = await import("../services/assessment.js");
+  const threshold = passMarkFor({ passMark: assessment.passMark, type: assessment.type }, assessment.module.course);
+  const best = graded.reduce<number | null>((max, a) => (a.score === null ? max : max === null ? a.score : Math.max(max, a.score)), null);
+  const passedBefore = best !== null && best >= threshold;
+  if (assessment.maxAttempts && graded.length >= assessment.maxAttempts && !passedBefore) {
+    return res.status(403).json({ error: "no attempts remaining; ask a trainer to reset your attempts", locked: true, bestScore: best, attemptsUsed: graded.length, maxAttempts: assessment.maxAttempts });
+  }
+
+  // Resuming: an attempt already in progress is returned rather than a second one started, so a
+  // reload or a lost connection cannot burn an attempt.
+  const expiresAtFor = (startedAt: Date) => (assessment.timeLimitMinutes ? new Date(startedAt.getTime() + assessment.timeLimitMinutes * 60_000) : null);
+  let attempt = await db.assessmentAttempt.findFirst({ where: { assessmentId: assessment.id, enrolmentId: enrolment.id, status: "in_progress" }, orderBy: { startedAt: "desc" } });
+  let resumed = !!attempt;
+  if (attempt) {
+    const expires = expiresAtFor(attempt.startedAt);
+    // Time ran out while the learner was away: close the open attempt so a new one can start.
+    if (expires && expires <= new Date()) {
+      await db.assessmentAttempt.update({ where: { id: attempt.id }, data: { status: "grading", submittedAt: new Date() } }).catch(() => null);
+      attempt = null;
+      resumed = false;
+    }
+  }
+  if (!attempt) {
+    attempt = await db.assessmentAttempt.create({
+      data: { assessmentId: assessment.id, enrolmentId: enrolment.id, learnerId: me.id, attemptNumber: graded.length + 1, startedAt: new Date(), status: "in_progress" },
+    });
+  }
+  const savedAnswers = resumed ? await db.attemptAnswer.findMany({ where: { attemptId: attempt.id } }).catch(() => []) : [];
+  return res.status(resumed ? 200 : 201).json({
+    attemptId: attempt.id,
+    attemptNumber: attempt.attemptNumber,
+    resumed,
+    startedAt: attempt.startedAt,
+    expiresAt: expiresAtFor(attempt.startedAt),
+    timeLimitMinutes: assessment.timeLimitMinutes,
+    assessmentId: assessment.id,
+    assessmentTitle: assessment.title,
+    type: assessment.type,
+    version: assessment.version,
+    maxAttempts: assessment.maxAttempts,
+    attemptsUsed: graded.length,
+    questions: learnerQuestionView(assessment.questions),
+    answers: savedAnswers.map((a) => ({ questionId: a.questionId, optionIds: parseOptionIds(a.optionIds ?? null), text: a.answer })),
+  });
+});
+router.get("/attempts/:id", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const attempt = await db.assessmentAttempt.findFirst({
+    where: { id: req.params.id },
+    include: {
+      answers: true,
+      assessment: { include: { module: { include: { course: { select: { id: true, title: true, appliedThreshold: true, programme: { select: { orgId: true, id: true } } } } } }, questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } } },
+      learner: { select: { id: true, name: true, email: true } },
+    },
+  }).catch(() => null);
+  if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found" });
+  const staff = (await isOrgStaff(me.id)) || (await isProgrammeStaff(me.id, attempt.assessment.module.course.programme.id));
+  if (attempt.learnerId !== me.id && !staff) return res.status(403).json({ error: "this attempt belongs to another learner" });
+  const { parseOptionIds, passMarkFor } = await import("../services/assessment.js");
+  const answers = new Map(attempt.answers.map((a) => [a.questionId, a]));
+  const graded = attempt.status === "graded";
+  const body: Record<string, unknown> = {
+    attemptId: attempt.id,
+    assessmentId: attempt.assessmentId,
+    assessmentTitle: attempt.assessment.title,
+    type: attempt.assessment.type,
+    version: attempt.assessment.version,
+    attemptNumber: attempt.attemptNumber,
+    status: attempt.status,
+    startedAt: attempt.startedAt,
+    submittedAt: attempt.submittedAt,
+    gradedAt: attempt.gradedAt,
+    timeLimitMinutes: attempt.assessment.timeLimitMinutes,
+    expiresAt: attempt.assessment.timeLimitMinutes && attempt.status === "in_progress" ? new Date(attempt.startedAt.getTime() + attempt.assessment.timeLimitMinutes * 60_000) : null,
+    learner: attempt.learner,
+    // A score exists only after grading; before that the attempt is still open or in the queue.
+    score: graded ? attempt.score : null,
+    maxScore: graded ? attempt.maxScore : null,
+    percent: graded ? attempt.percent : null,
+    passed: graded ? attempt.passed : null,
+    passMark: passMarkFor({ passMark: attempt.assessment.passMark, type: attempt.assessment.type }, attempt.assessment.module.course),
+    passMarkSource: attempt.assessment.passMark !== null ? "assessment" : attempt.assessment.type === "applied" ? "course_applied_threshold" : "default",
+    questions: attempt.assessment.questions.map((q) => {
+      const answer = answers.get(q.id);
+      const options = q.options.map((o) => ({
+        id: o.id,
+        text: o.text,
+        order: o.order,
+        // The key and the rubric are for a trainer grading the attempt, never for the learner.
+        ...(staff ? { isCorrect: o.isCorrect } : {}),
+        ...(staff && graded && answer ? { selected: parseOptionIds(answer.optionIds ?? null).includes(o.id) } : {}),
+      }));
+      return {
+        id: q.id,
+        kind: q.kind,
+        prompt: q.prompt,
+        scenarioContext: q.scenarioContext,
+        points: q.points,
+        order: q.order,
+        options,
+        ...(staff ? { rubric: q.rubric } : {}),
+        ...(answer
+          ? {
+              yourAnswer: { optionIds: parseOptionIds(answer.optionIds ?? null), text: answer.answer },
+              ...(graded || staff ? { pointsAwarded: answer.pointsAwarded, graderComment: answer.graderComment, autoGraded: answer.autoGraded } : {}),
+            }
+          : { yourAnswer: null }),
+      };
+    }),
+  };
+  return res.json(body);
 });
 
-router.post("/attempts/:id/submit", async (req, res) => {
+// Save answers without submitting. The time limit is enforced here too, so a learner cannot keep
+// editing past the deadline by never pressing submit.
+router.put("/attempts/:id/answers", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   const attempt = await db.assessmentAttempt.findFirst({
@@ -1233,52 +1755,341 @@ router.post("/attempts/:id/submit", async (req, res) => {
     include: {
       assessment: {
         include: {
-          module: { select: { courseId: true, course: { select: { programmeId: true, programme: { select: { orgId: true } } } } } },
-          questions: { include: { options: true } },
-
+          module: { include: { course: { select: { programme: { select: { orgId: true } } } } } },
+          questions: { include: { options: { select: { id: true } } } },
         },
       },
     },
   }).catch(() => null);
   if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found" });
   if (attempt.status !== "in_progress") return res.status(409).json({ error: "attempt is already submitted" });
-  const answers = Array.isArray(req.body?.answers) ? (req.body.answers as Array<{ questionId?: string; optionIds?: string[] }>) : [];
+  const expired = attempt.assessment.timeLimitMinutes && Date.now() > attempt.startedAt.getTime() + attempt.assessment.timeLimitMinutes * 60_000;
+  if (expired) return res.status(409).json({ error: "the time limit for this attempt has passed; submit it to have what you entered graded", expired: true });
+  const { saveAnswers } = await import("../services/assessment.js");
+  const answers = Array.isArray(req.body?.answers) ? (req.body.answers as any[]) : [];
+  const saved = await saveAnswers(attempt.id, attempt.assessment.questions.map((q) => ({ id: q.id, kind: q.kind, options: q.options })), answers);
+  const expiresAt = attempt.assessment.timeLimitMinutes ? new Date(attempt.startedAt.getTime() + attempt.assessment.timeLimitMinutes * 60_000) : null;
+  return res.json({ attemptId: attempt.id, saved, expiresAt });
+});
+
+async function programmeTrainerIds(programmeId: string): Promise<string[]> {
+  const trainers = await db.userRole.findMany({ where: { programmeId, role: { name: "trainer" } }, select: { userId: true } }).catch(() => [] as Array<{ userId: string }>);
+  if (trainers.length) return [...new Set(trainers.map((t) => t.userId))];
+  const admins = await db.userRole.findMany({ where: { OR: [{ programmeId }, { programmeId: null }], role: { name: { in: ["admin", "owner"] } } }, select: { userId: true } }).catch(() => [] as Array<{ userId: string }>);
+  return [...new Set(admins.map((a) => a.userId))];
+}
+
+// Submit and grade. Objective answers are marked here against the stored key; a scenario or short
+// answer without accepted forms sends the attempt to the review queue instead of guessing.
+router.post("/attempts/:id/submit", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const attempt = await db.assessmentAttempt.findFirst({
+    where: { id: req.params.id, learnerId: me.id },
+    include: {
+      answers: true,
+      assessment: {
+        include: {
+          module: { include: { course: { include: { programme: { select: { orgId: true } } } } } },
+          questions: { include: { options: true } },
+        },
+      },
+    },
+  }).catch(() => null);
+  if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found" });
+  if (attempt.status !== "in_progress") return res.status(409).json({ error: "attempt is already submitted" });
+  // Round 8 / E.3: a withdrawn learner cannot keep answering, even on an attempt started earlier.
+  const enrolment = await db.enrolment.findFirst({
+    where: { learnerId: me.id, courseId: attempt.assessment.module.courseId, status: { not: "withdrawn" }, withdrawnAt: null },
+    select: { id: true },
+  }).catch(() => null);
+  if (!enrolment) return res.status(403).json({ error: "enrolment required to submit this assessment" });
+
+  const { gradeObjective, percentOf, passMarkFor, isObjective, isManual, parseOptionIds } = await import("../services/assessment.js");
+  const sent = Array.isArray(req.body?.answers) ? (req.body.answers as any[]) : [];
+
+  // Answers may arrive with the submit call or be already saved; the newer of the two wins.
+  let savedCount = 0;
+  if (sent.length) {
+    const { saveAnswers } = await import("../services/assessment.js");
+    savedCount = await saveAnswers(attempt.id, attempt.assessment.questions.map((q) => ({ id: q.id, kind: q.kind, options: q.options })), sent);
+  }
+  const stored = new Map((await db.attemptAnswer.findMany({ where: { attemptId: attempt.id } })).map((a) => [a.questionId, a]));
+
   let earned = 0;
   let total = 0;
-  const graded: Array<{ questionId: string; selectedOptionIds: string[]; correct: boolean; points: number }> = [];
+  let waitingForGrading = 0;
+  const results: Array<{ questionId: string; kind: string; correct: boolean | null; points: number; manual: boolean }> = [];
+
   for (const question of attempt.assessment.questions) {
     total += question.points ?? 1;
-    const answer = answers.find((a) => a?.questionId === question.id);
-    const selected = [...new Set((answer?.optionIds ?? []).map(String))];
-    const validIds = new Set(question.options.map((o) => o.id));
-    const selectedValid = selected.filter((id) => validIds.has(id));
-    if (question.kind === "recall" && selectedValid.length !== 1) { graded.push({ questionId: question.id, selectedOptionIds: selectedValid, correct: false, points: 0 }); continue; }
-    const correctIds = new Set(question.options.filter((o) => o.isCorrect).map((o) => o.id));
-    const correct = selectedValid.length === correctIds.size && selectedValid.every((id) => correctIds.has(id));
-    const points = correct ? question.points ?? 1 : 0;
-    earned += points;
-    graded.push({ questionId: question.id, selectedOptionIds: selectedValid, correct, points });
-  }
-  const percentage = total > 0 ? Math.round((earned / total) * 1000) / 10 : 0;
-  const passMark = attempt.assessment.passMark ?? 70;
-  const passed = percentage >= passMark;
-  const now = new Date();
-  const saved = await db.$transaction(async (tx) => {
-    for (const g of graded) {
-      await tx.attemptAnswer.upsert({
-        where: { attemptId_questionId: { attemptId: attempt.id, questionId: g.questionId } },
-        create: { attemptId: attempt.id, questionId: g.questionId, answer: JSON.stringify(g.selectedOptionIds), pointsAwarded: g.points, autoGraded: true },
-        update: { answer: JSON.stringify(g.selectedOptionIds), pointsAwarded: g.points, autoGraded: true },
-      }).catch(() => null);
+    const answer = stored.get(question.id);
+    if (!answer) {
+      results.push({ questionId: question.id, kind: question.kind, correct: null, points: 0, manual: isManual(question.kind) });
+      if (isManual(question.kind)) waitingForGrading++;
+      continue;
     }
-    return tx.assessmentAttempt.update({ where: { id: attempt.id }, data: { status: "submitted", submittedAt: now, score: percentage, maxScore: total, percent: percentage, passed } });
+    if (isObjective(question.kind)) {
+      const correctIds = question.options.filter((o) => o.isCorrect).map((o) => o.id);
+      const marked = gradeObjective(question.kind, question.points ?? 1, correctIds, parseOptionIds(answer.optionIds ?? null));
+      earned += marked.points;
+      await db.attemptAnswer.update({ where: { id: answer.id }, data: { pointsAwarded: marked.points, autoGraded: true } });
+      results.push({ questionId: question.id, kind: question.kind, correct: marked.correct, points: marked.points, manual: false });
+      continue;
+    }
+    // A short answer the question pre-agreed accepted forms for can be marked without a person.
+    let accepted: string[] = [];
+    try {
+      accepted = question.acceptedAnswers ? (JSON.parse(question.acceptedAnswers) as string[]) : [];
+    } catch {
+      accepted = [];
+    }
+    if (isManual(question.kind) && question.kind === "short_answer" && accepted.length) {
+      const marked = shortAnswerMatches(String(answer.answer ?? ""), accepted);
+      const points = marked ? question.points ?? 1 : 0;
+      earned += points;
+      await db.attemptAnswer.update({ where: { id: answer.id }, data: { pointsAwarded: points, autoGraded: true } });
+      results.push({ questionId: question.id, kind: question.kind, correct: marked, points, manual: false });
+      continue;
+    }
+    waitingForGrading++;
+    results.push({ questionId: question.id, kind: question.kind, correct: null, points: 0, manual: true });
+  }
+
+  const threshold = passMarkFor({ passMark: attempt.assessment.passMark, type: attempt.assessment.type }, attempt.assessment.module.course);
+  const percentage = percentOf(earned, total);
+  const now = new Date();
+  const nextStatus = waitingForGrading > 0 ? "grading" : "graded";
+  const updated = await db.assessmentAttempt.update({
+    where: { id: attempt.id },
+    data: {
+      status: nextStatus,
+      submittedAt: now,
+      // A partial score is not a result. Until the queue clears, the attempt carries no percent,
+      // so nothing downstream can read an unfinished attempt as a pass or a fail.
+      score: nextStatus === "graded" ? percentage : null,
+      maxScore: total,
+      percent: nextStatus === "graded" ? percentage : null,
+      passed: nextStatus === "graded" ? percentage >= threshold : null,
+      ...(nextStatus === "graded" ? { gradedAt: now, gradedBy: null } : {}),
+    },
   });
-  const competence = await computeCompetence(me.id, attempt.assessment.module.course.programmeId).catch(() => null);
+
+  let outcome: Awaited<ReturnType<typeof import("../services/assessment.js")["applyAttemptOutcome"]>> | null = null;
+  if (nextStatus === "graded") {
+    const { applyAttemptOutcome } = await import("../services/assessment.js");
+    outcome = await applyAttemptOutcome(updated.id).catch(() => null);
+    await db.auditLog.create({ data: { userId: me.id, action: "ATTEMPT_AUTO_GRADED", entity: "assessment_attempt", entityId: updated.id, details: `${percentage}% (${earned}/${total})` } }).catch(() => null);
+  } else {
+    // Round 8 / 2.3: tell the people who have to mark it, once per submission.
+    const { notify } = await import("../services/notify.js");
+    const trainerIds = await programmeTrainerIds(attempt.assessment.module.course.programmeId);
+    await Promise.all(
+      trainerIds.map((userId) =>
+        notify(userId, "grading_queued", {
+          title: "Assessment waiting for marking",
+          body: `A learner submitted ${attempt.assessment.title || "an assessment"} and it needs a person to mark it.`,
+          link: "/assessments/grading",
+        }),
+      ),
+    );
+  }
   return res.json({
-    attemptId: saved.id, attemptNumber: saved.attemptNumber, score: percentage, earnedPoints: earned, totalPoints: total,
-    passMark, passed, competenceMet: !!competence?.met,
-    competence: competence ?? undefined,
-    results: graded.map((g) => ({ questionId: g.questionId, correct: g.correct, points: g.points })),
+    attemptId: updated.id,
+    attemptNumber: updated.attemptNumber,
+    status: updated.status,
+    graded: nextStatus === "graded",
+    awaitingGrading: waitingForGrading,
+    score: nextStatus === "graded" ? percentage : null,
+    percent: nextStatus === "graded" ? percentage : null,
+    earnedPoints: earned,
+    totalPoints: total,
+    passMark: threshold,
+    passed: nextStatus === "graded" ? percentage >= threshold : null,
+    competenceMet: !!outcome?.competenceMet,
+    results,
+  });
+});
+
+// The review queue: attempts a person has to mark. Programme staff see their own programmes; org
+// staff see the organization. An attempt is never visible before it was submitted.
+router.get("/assessments/grading/queue", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const programmeId = req.query.programmeId ? String(req.query.programmeId) : undefined;
+  const staffEverywhere = await isOrgStaff(me.id);
+  if (!staffEverywhere && !(await hasAnyProgrammeStaffGrant(me.id))) return res.status(403).json({ error: "programme staff access required" });
+  const programmeIds = staffEverywhere
+    ? []
+    : (await db.userRole.findMany({ where: { userId: me.id, programmeId: { not: null }, role: { name: { in: ["admin", "owner", "trainer"] } } }, select: { programmeId: true } })).map((g) => g.programmeId).filter((id): id is string => !!id);
+  const attempts = await db.assessmentAttempt.findMany({
+    where: {
+      status: "grading",
+      assessment: {
+        module: {
+          course: {
+            programmeId: staffEverywhere ? undefined : { in: programmeIds },
+            programme: { orgId: scope.orgId, ...(programmeId ? { id: programmeId } : {}) },
+          },
+        },
+      },
+    },
+    orderBy: { submittedAt: "asc" },
+    take: 200,
+    include: {
+      learner: { select: { id: true, name: true, email: true } },
+      assessment: { select: { id: true, title: true, type: true, module: { select: { course: { select: { id: true, title: true, programmeId: true } } } } } },
+      answers: { select: { id: true, questionId: true, pointsAwarded: true, autoGraded: true } },
+    },
+  }).catch(() => [] as any[]);
+  return res.json(attempts.map((a: any) => ({
+    id: a.id,
+    attemptId: a.id,
+    attemptNumber: a.attemptNumber,
+    submittedAt: a.submittedAt,
+    learner: a.learner,
+    assessment: { id: a.assessment.id, title: a.assessment.title, type: a.assessment.type },
+    course: a.assessment.module.course,
+    answered: a.answers.filter((x: any) => x.pointsAwarded !== null).length,
+    answersStored: a.answers.length,
+  })));
+});
+
+// Mark a queued attempt. Only programme staff (or org staff) may, and never the learner it
+// belongs to: a learner grading their own work is the failure mode this route exists to prevent.
+// Round 8 / 2.3: accepts either { grades: [{ questionId, points, comment }] } or the builder's
+// { answers: [{ answerId, pointsAwarded, comment }] }.
+router.post("/attempts/:id/grade", assertNotGradingSelf, requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const attempt = await db.assessmentAttempt.findFirst({
+    where: { id: req.params.id },
+    include: {
+      answers: true,
+      assessment: { include: { module: { include: { course: { include: { programme: { select: { orgId: true } } } } } }, questions: { include: { options: true } } } },
+    },
+  }).catch(() => null);
+  if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found in your organization" });
+  if (attempt.learnerId === me.id) return res.status(403).json({ error: "you cannot grade your own attempt" });
+  if (attempt.status !== "grading") {
+    // A graded attempt is final. Re-marking would rewrite history that a certificate may already
+    // rest on; a correction is a new attempt, not an edit.
+    return res.status(409).json({ error: attempt.status === "graded" ? "this attempt was already graded" : `attempt is ${attempt.status}, not awaiting grading` });
+  }
+
+  const { isManual, percentOf, passMarkFor } = await import("../services/assessment.js");
+  const answerById = new Map(attempt.answers.map((a) => [a.id, a]));
+  const rawSubmissions: Array<{ questionId?: unknown; answerId?: unknown; points?: unknown; pointsAwarded?: unknown; comment?: unknown }> = Array.isArray(req.body?.grades)
+    ? (req.body.grades as any[])
+    : Array.isArray(req.body?.answers)
+      ? (req.body.answers as any[])
+      : [];
+  const submissions = rawSubmissions.map((s) => ({
+    questionId: s.questionId !== undefined ? String(s.questionId) : s.answerId ? answerById.get(String(s.answerId))?.questionId : undefined,
+    points: s.points !== undefined ? s.points : s.pointsAwarded,
+    comment: s.comment,
+  }));
+  const stored = new Map(attempt.answers.map((a) => [a.questionId, a]));
+  const manualQuestions = attempt.assessment.questions.filter((q) => isManual(q.kind));
+  const given = new Map(submissions.map((s) => [String(s?.questionId ?? ""), s]));
+
+  // Every manual question must be marked: a half-marked attempt would silently score zero for the
+  // rest, which is the same as failing someone for a trainer's oversight.
+  const missing = manualQuestions.filter((q) => !stored.get(q.id) || !given.has(q.id));
+  if (missing.length) return res.status(400).json({ error: `mark every answer before finishing: ${missing.map((q) => q.id).join(", ")}` });
+
+  let total = 0;
+  let earned = 0;
+  const breakdown: Array<{ questionId: string; points: number; max: number }> = [];
+  for (const question of attempt.assessment.questions) {
+    const max = question.points ?? 1;
+    total += max;
+    const answer = stored.get(question.id);
+    if (!isManual(question.kind)) {
+      earned += answer?.pointsAwarded ?? 0;
+      continue;
+    }
+    const entry = given.get(question.id)!;
+    const points = Number(entry.points);
+    if (!Number.isFinite(points) || points < 0 || points > max) return res.status(400).json({ error: `points for ${question.id} must be between 0 and ${max}` });
+    earned += points;
+    breakdown.push({ questionId: question.id, points, max });
+    await db.attemptAnswer.update({
+      where: { id: answer!.id },
+      data: { pointsAwarded: points, autoGraded: false, graderComment: entry.comment === undefined || entry.comment === null ? null : String(entry.comment).slice(0, 4000) },
+    });
+  }
+
+  const threshold = passMarkFor({ passMark: attempt.assessment.passMark, type: attempt.assessment.type }, attempt.assessment.module.course);
+  const percentage = percentOf(earned, total);
+  const graded = await db.assessmentAttempt.update({
+    where: { id: attempt.id },
+    data: { status: "graded", gradedBy: me.id, gradedAt: new Date(), score: percentage, maxScore: total, percent: percentage, passed: percentage >= threshold },
+  });
+  const { applyAttemptOutcome } = await import("../services/assessment.js");
+  const outcome = await applyAttemptOutcome(graded.id).catch(() => null);
+  await db.auditLog.create({ data: { userId: me.id, action: "ATTEMPT_GRADED", entity: "assessment_attempt", entityId: graded.id, details: `${percentage}% (${earned}/${total})` } }).catch(() => null);
+  const { notify } = await import("../services/notify.js");
+  await notify(attempt.learnerId, "attempt_graded", {
+    title: "Your assessment has been marked",
+    body: `${attempt.assessment.title || "Assessment"}: ${percentage}% — ${percentage >= threshold ? "passed" : "not passed"}.`,
+    link: "/my-learning",
+  });
+  return res.json({
+    attemptId: graded.id,
+    status: graded.status,
+    score: percentage,
+    percent: percentage,
+    earnedPoints: earned,
+    totalPoints: total,
+    passMark: threshold,
+    passed: percentage >= threshold,
+    competenceMet: !!outcome?.competenceMet,
+    appliedScore: outcome?.appliedScore ?? null,
+    certificateIssued: !!outcome?.certificateIssued,
+    graded: breakdown,
+  });
+});
+
+// Staff-only view of one attempt, with the key, the rubric and what the learner answered.
+router.get("/attempts/:id/answers", assertNotGradingSelf, requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const attempt = await db.assessmentAttempt.findFirst({
+    where: { id: req.params.id },
+    include: {
+      answers: true,
+      learner: { select: { id: true, name: true, email: true } },
+      assessment: { include: { module: { include: { course: { select: { programme: { select: { orgId: true } } } } } }, questions: { orderBy: { order: "asc" }, include: { options: { orderBy: { order: "asc" } } } } } },
+    },
+  }).catch(() => null);
+  if (!attempt || attempt.assessment.module.course.programme.orgId !== scope.orgId) return res.status(404).json({ error: "attempt not found in your organization" });
+  const { parseOptionIds } = await import("../services/assessment.js");
+  const answers = new Map(attempt.answers.map((a) => [a.questionId, a]));
+  return res.json({
+    attemptId: attempt.id,
+    status: attempt.status,
+    submittedAt: attempt.submittedAt,
+    learner: attempt.learner,
+    assessment: { id: attempt.assessment.id, title: attempt.assessment.title, type: attempt.assessment.type, version: attempt.assessment.version },
+    score: attempt.score,
+    percent: attempt.percent,
+    passed: attempt.passed,
+    questions: attempt.assessment.questions.map((q) => {
+      const answer = answers.get(q.id);
+      return {
+        id: q.id,
+        questionId: q.id,
+        kind: q.kind,
+        prompt: q.prompt,
+        scenarioContext: q.scenarioContext,
+        points: q.points,
+        rubric: q.rubric,
+        options: q.options.map((o) => ({ id: o.id, text: o.text, isCorrect: o.isCorrect })),
+        answer: answer
+          ? { id: answer.id, optionIds: parseOptionIds(answer.optionIds ?? null), text: answer.answer, pointsAwarded: answer.pointsAwarded, autoGraded: answer.autoGraded, graderComment: answer.graderComment }
+          : null,
+      };
+    }),
   });
 });
 
@@ -1459,6 +2270,8 @@ router.post("/modules/:moduleId/content", requireProgrammeRole("admin", "owner",
     const data = contentItemData({ ...req.body, __storedFile: storedFile });
     const item = await db.contentItem.create({ data: { ...data, orgId: scope.orgId, moduleId: mod.id } as any });
     await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "CONTENT_ITEM_CREATED", entity: "content_item", entityId: item.id, details: item.type } }).catch(() => null);
+    // Adding required content can make a previously complete course incomplete.
+    if (item.required) await evaluateCourseEnrolments(mod.courseId, "content_changed");
     return res.status(201).json(item);
   } catch (e) {
     return res.status((e as { status?: number }).status ?? 400).json({ error: (e as Error).message });
@@ -1491,7 +2304,13 @@ router.patch("/content/:id", requireProgrammeRole("admin", "owner", "trainer"), 
     data.sizeBytes = file.sizeBytes;
     data.checksum = file.checksum;
   }
-  return res.json(await db.contentItem.update({ where: { id: item.id }, data }));
+  const updated = await db.contentItem.update({ where: { id: item.id }, data });
+  // A required item that changes can make a complete course incomplete again.
+  const courseId = (await db.module.findUnique({ where: { id: item.moduleId }, select: { courseId: true } }))?.courseId;
+  if (courseId && (patch.required !== undefined || patch.isArchived !== undefined)) {
+    await evaluateCourseEnrolments(courseId, "content_changed");
+  }
+  return res.json(updated);
 });
 
 router.delete("/content/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
@@ -1499,7 +2318,10 @@ router.delete("/content/:id", requireProgrammeRole("admin", "owner", "trainer"),
   const item = await db.contentItem.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
   if (!item) return res.status(404).json({ error: "content item not found in your organization" });
   const now = new Date();
-  return res.json(await db.contentItem.update({ where: { id: item.id }, data: { isArchived: true, archivedAt: now } }));
+  const archived = await db.contentItem.update({ where: { id: item.id }, data: { isArchived: true, archivedAt: now } });
+  const courseId = (await db.module.findUnique({ where: { id: item.moduleId }, select: { courseId: true } }))?.courseId;
+  if (courseId) await evaluateCourseEnrolments(courseId, "content_changed");
+  return res.json(archived);
 });
 
 router.post("/modules/:moduleId/content/reorder", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
@@ -1521,7 +2343,7 @@ router.get("/courses/:id/content", async (req, res) => {
   const course = await db.course.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } }).catch(() => null);
   if (!course) return res.status(404).json({ error: "course not found in your organization" });
   const staff = (await isOrgStaff(me.id)) || (await isProgrammeStaff(me.id, course.programmeId));
-  const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: course.id } }).catch(() => null);
+  const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: course.id, status: { not: "withdrawn" }, withdrawnAt: null } }).catch(() => null);
   if (!staff && !enrolment) return res.status(403).json({ error: "enrolment required" });
   const modules = await db.module.findMany({ where: { courseId: course.id, isArchived: false, deletedAt: null }, orderBy: { order: "asc" } }).catch(() => [] as any[]);
   const items = await db.contentItem.findMany({ where: { moduleId: { in: modules.map((m) => m.id) }, isArchived: false }, orderBy: { order: "asc" } }).catch(() => [] as any[]);
@@ -1551,9 +2373,28 @@ router.post("/content/:id/progress", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const item = await db.contentItem.findFirst({ where: { id: req.params.id, orgId: scope.orgId }, include: { module: { select: { courseId: true, course: { select: { programmeId: true } } } } } }).catch(() => null);
   if (!item || item.isArchived) return res.status(404).json({ error: "content item not found" });
-  const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: item.module.courseId } }).catch(() => null);
+  // Round 8 / E.3: withdrawn learners are not eligible for progress writes.
+  const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, courseId: item.module.courseId, status: { not: "withdrawn" }, withdrawnAt: null } }).catch(() => null);
   if (!enrolment) return res.status(403).json({ error: "enrolment required" });
-  const requested = req.body?.status === "completed" ? "completed" : "in_progress";
+  const requested = req.body?.status === "completed" ? "completed" : req.body?.status === "not_started" ? "not_started" : "in_progress";
+  const existing = await db.contentProgress.findUnique({ where: { enrolmentId_contentItemId: { enrolmentId: enrolment.id, contentItemId: item.id } } }).catch(() => null);
+  // Round 8 / E.1: one forward state machine — not_started -> in_progress -> completed,
+  // and in_progress -> pending_verification -> completed for trainer-verified items.
+  // A learner may never move an item backwards, and may not edit one awaiting verification.
+  const currentStatus = existing?.status ?? "not_started";
+  if (currentStatus === "pending_verification") {
+    return res.status(409).json({ error: "this item is awaiting trainer verification and cannot be changed by the learner" });
+  }
+  if (currentStatus === "completed" && requested !== "completed") {
+    return res.status(409).json({
+      error: existing?.verifiedBy || existing?.verifiedAt
+        ? "a verified item cannot be moved backwards by the learner"
+        : "a completed item cannot be moved backwards",
+    });
+  }
+  if (currentStatus === "in_progress" && requested === "not_started") {
+    return res.status(409).json({ error: "progress cannot move from in progress back to not started" });
+  }
   let status = requested;
   let completedAt: Date | null = requested === "completed" ? new Date() : null;
   // A.3: an evidence attachment must be an upload of this organization. A bare key from the
@@ -1575,6 +2416,8 @@ router.post("/content/:id/progress", async (req, res) => {
     status = "pending_verification";
     completedAt = null;
   }
+  // Leaving "completed" always clears the verifier so stale sign-off cannot linger.
+  const clearVerification = status !== "completed";
   const now = new Date();
   const saved = await db.contentProgress.upsert({
     where: { enrolmentId_contentItemId: { enrolmentId: enrolment.id, contentItemId: item.id } },
@@ -1590,22 +2433,35 @@ router.post("/content/:id/progress", async (req, res) => {
       status,
       startedAt: undefined,
       completedAt,
+      ...(clearVerification ? { verifiedBy: null, verifiedAt: null } : {}),
       ...(req.body?.evidenceNote !== undefined ? { evidenceNote: String(req.body.evidenceNote) } : {}),
       ...(evidenceFileId ? { evidenceFileId, evidenceFileKey } : {}),
     },
   });
   const progress = await recomputeEnrolmentProgress(enrolment.id);
-  return res.json({ ...saved, enrolmentProgress: progress });
+  const outcome = await evaluateEnrolment(enrolment.id, "content_progress");
+  return res.json({ ...saved, enrolmentProgress: progress, enrolmentOutcome: outcome });
 });
 
-router.post("/content-progress/:id/verify", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+router.post("/content-progress/:id/verify", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
   const row = await db.contentProgress.findFirst({
     where: { id: req.params.id, contentItem: { orgId: scope.orgId } },
-    include: { contentItem: { select: { module: { select: { courseId: true } } } } },
+    include: {
+      contentItem: { select: { title: true, module: { select: { courseId: true, course: { select: { programmeId: true } } } } } },
+      enrolment: { select: { learnerId: true, programmeId: true } },
+    },
   }).catch(() => null);
   if (!row) return res.status(404).json({ error: "progress record not found in your organization" });
+  // Round 8 / E.2: the queue is scoped by grant, not by a role string in the token. A trainer
+  // may verify only inside a programme where they hold a trainer/admin grant.
+  const programmeId = row.contentItem.module.course.programmeId;
+  const mayVerify = (await isOrgStaff(me.id)) || (programmeId ? await isProgrammeStaff(me.id, programmeId) : false);
+  if (!mayVerify) return res.status(403).json({ error: "programme staff access required" });
+  if (row.status !== "pending_verification") {
+    return res.status(409).json({ error: "this item is not awaiting verification" });
+  }
   const verified = req.body?.verified !== false;
   // A.3: a trainer only sees the learner's evidence through the org-scoped download below.
   const evidenceFile = row.evidenceFileId
@@ -1622,8 +2478,51 @@ router.post("/content-progress/:id/verify", requireProgrammeRole("admin", "owner
     },
   });
   const progress = await recomputeEnrolmentProgress(row.enrolmentId);
+  const outcome = await evaluateEnrolment(row.enrolmentId, "content_verification");
   await db.auditLog.create({ data: { userId: me.id, action: verified ? "CONTENT_VERIFIED" : "CONTENT_VERIFICATION_REJECTED", entity: "content_progress", entityId: row.id, details: null } }).catch(() => null);
-  return res.json({ ...updated, evidenceFile, enrolmentProgress: progress });
+  const { notify } = await import("../services/notify.js");
+  await notify(row.enrolment.learnerId, verified ? "content_verified" : "content_rejected", {
+    title: verified ? "Content verified" : "Content needs another attempt",
+    body: verified
+      ? `Your evidence for "${row.contentItem.title}" was verified.`
+      : `Your evidence for "${row.contentItem.title}" was not accepted.${req.body?.note ? ` Note: ${String(req.body.note)}` : ""}`,
+    link: "/my-learning",
+  });
+  return res.json({ ...updated, evidenceFile, enrolmentProgress: progress, enrolmentOutcome: outcome });
+});
+
+// Round 8 / E.2: the trainer verification queue. Org staff see the whole organization; a
+// programme trainer/admin sees only the programmes where they hold that grant.
+const VERIFIER_ROLES = ["trainer", "admin"];
+router.get("/content-progress/pending", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const orgStaff = await isOrgStaff(me.id);
+  let programmeIds: string[] | null = null;
+  if (!orgStaff) {
+    const grants = await db.userRole.findMany({
+      where: { userId: me.id, programmeId: { not: null }, role: { name: { in: VERIFIER_ROLES } } },
+      select: { programmeId: true },
+    }).catch(() => [] as Array<{ programmeId: string | null }>);
+    programmeIds = grants.map((g) => g.programmeId).filter((id): id is string => !!id);
+    if (!programmeIds.length) return res.status(403).json({ error: "programme staff access required" });
+  }
+  const rows = await db.contentProgress.findMany({
+    where: {
+      status: "pending_verification",
+      contentItem: {
+        orgId: scope.orgId,
+        ...(programmeIds ? { module: { course: { programmeId: { in: programmeIds } } } } : {}),
+      },
+    },
+    include: {
+      contentItem: { select: { id: true, title: true, type: true, module: { select: { id: true, courseId: true, course: { select: { title: true, programmeId: true } } } } } },
+      enrolment: { select: { id: true, learnerId: true, learner: { select: { name: true, email: true } } } },
+    },
+    orderBy: { startedAt: "asc" },
+    take: 200,
+  }).catch(() => [] as any[]);
+  return res.json(rows);
 });
 
 // A.3: a learner's evidence attachment. Programme staff of the item's programme, or the
@@ -1682,9 +2581,28 @@ router.get("/content/:id/download", async (req, res) => {
  * an invited learner (an RSVP row), or a learner enrolled on the session's course.
  * Everyone else still sees that the session exists, with the link fields withheld.
  */
+// Round 8 / E.10: date/time are display strings. Derive them from startsAt in the session's
+// own timezone instead of slicing the UTC ISO string (which showed the wrong day near midnight).
+function sessionLocalDateAndTime(startsAt: Date, timeZone: string): { date: string; time: string } {
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: timeZone || "UTC",
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).formatToParts(startsAt);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    return { date: `${get("year")}-${get("month")}-${get("day")}`, time: `${get("hour")}:${get("minute")}` };
+  } catch {
+    return { date: startsAt.toISOString().slice(0, 10), time: startsAt.toISOString().slice(11, 16) };
+  }
+}
+
 router.get("/sessions", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
+  // Round 8 / E.11 [CONFIRM, decided 2026-11-21]: everyone in the organization keeps seeing the
+  // title and time of every session; only joinUrl and location are withheld from people who
+  // cannot join. Kept deliberately — a calendar is useful for planning, and the room/link is
+  // the sensitive part, not the fact that a class exists.
   const sessions = await db.session.findMany({ where: { orgId: scope.orgId }, orderBy: { startsAt: "asc" }, take: 200 }).catch(() => []);
   const staff = await isOrgStaff(me.id);
   const [rsvps, enrolments, staffGrants] = await Promise.all([
@@ -1755,8 +2673,10 @@ router.post("/sessions", async (req, res) => {
   if (endsAt && Number.isNaN(endsAt.getTime())) return res.status(400).json({ error: "invalid endsAt" });
   if (!startsAt && (!req.body.date || !req.body.time)) return res.status(400).json({ error: "startsAt or date+time required" });
   if (startsAt && endsAt && endsAt <= startsAt) return res.status(400).json({ error: "endsAt must be after startsAt" });
-  const date = startsAt ? startsAt.toISOString().slice(0, 10) : String(req.body.date);
-  const time = startsAt ? startsAt.toISOString().slice(11, 16) : String(req.body.time);
+  const timezone = req.body.timezone ? String(req.body.timezone) : "UTC";
+  const { date, time } = startsAt
+    ? sessionLocalDateAndTime(startsAt, timezone)
+    : { date: String(req.body.date), time: String(req.body.time) };
   let trainerId: string | null = null;
   if (req.body.trainerId) {
     const trainer = await db.user.findFirst({ where: { id: req.body.trainerId, orgId: scope.orgId } });
@@ -1782,6 +2702,15 @@ router.post("/sessions", async (req, res) => {
     }).catch(() => null);
     if (overlap) doubleBookingWarning = `Trainer is already booked for "${overlap.title}" in an overlapping window`;
   }
+  // Round 8 / E.7: capacity is a seat count, so it is a positive whole number or null (unlimited).
+  let capacity: number | null = null;
+  if (req.body.capacity !== undefined && req.body.capacity !== null && req.body.capacity !== "") {
+    const requestedCapacity = Number(req.body.capacity);
+    if (!Number.isInteger(requestedCapacity) || requestedCapacity <= 0) {
+      return res.status(400).json({ error: "capacity must be a positive whole number or null" });
+    }
+    capacity = requestedCapacity;
+  }
   const created = await db.session.create({
     data: {
       title: req.body.title,
@@ -1795,11 +2724,11 @@ router.post("/sessions", async (req, res) => {
       time,
       startsAt: startsAt ?? undefined,
       endsAt: endsAt ?? undefined,
-      timezone: req.body.timezone ? String(req.body.timezone) : "UTC",
+      timezone,
       joinUrl,
       location,
       mode,
-      capacity: req.body.capacity ?? null,
+      capacity,
     },
   });
   return res.status(201).json({ ...created, doubleBookingWarning });
@@ -1812,7 +2741,7 @@ router.post("/sessions/:id/invite", async (req, res) => {
     let invited = 0;
     const skipped: string[] = [];
     for (const learnerId of learnerIds) {
-      const learner = await db.user.findFirst({ where: { id: learnerId, orgId: scope.orgId, isActive: true }, select: { id: true, name: true } }).catch(() => null);
+      const learner = await db.user.findFirst({ where: { id: learnerId, orgId: scope.orgId, isActive: true }, select: { id: true, name: true, email: true } }).catch(() => null);
       if (!learner) { skipped.push(learnerId); continue; }
       // Only people connected to the session's course/programme may be invited.
       const eligible = session.courseId
@@ -1821,6 +2750,7 @@ router.post("/sessions/:id/invite", async (req, res) => {
           ? await db.enrolment.findFirst({ where: { learnerId, programmeId: session.programmeId } }).catch(() => null)
           : true;
       if (!eligible) { skipped.push(learnerId); continue; }
+      const existing = await db.sessionRSVP.findFirst({ where: { sessionId: session.id, learnerId }, select: { id: true } }).catch(() => null);
       const r = await db.sessionRSVP.upsert({
         where: { sessionId_learnerId: { sessionId: session.id, learnerId } },
         create: { sessionId: session.id, learnerId, status: "invited" },
@@ -1828,7 +2758,19 @@ router.post("/sessions/:id/invite", async (req, res) => {
       }).catch(() => null);
       if (r) {
         invited += 1;
-        await db.notification.create({ data: { userId: learnerId, orgId: scope.orgId, type: "session_invite", title: `Invitation: ${session.title}`, body: `${session.date} at ${session.time}`, link: "/calendar" } }).catch(() => null);
+        // Round 8 / D.2: the invitation carries the calendar file, so accepting it is one click
+        // instead of retyping the details. A re-invite of someone already on the list does not
+        // send the mail again.
+        if (!existing) {
+          const { notify } = await import("../services/notify.js");
+          const { icsAttachment } = await import("../services/ical.js");
+          await notify(learnerId, "session_invite", {
+            title: `Invitation: ${session.title}`,
+            body: `${session.date} at ${session.time}`,
+            link: "/calendar",
+            attachments: [icsAttachment(session, { attendeeEmail: learner.email })],
+          });
+        }
       }
     }
     return res.json({ sessionId: session.id, invited, skipped });
@@ -1858,12 +2800,190 @@ router.post("/sessions/:id/rsvp", async (req, res) => {
   }
   try {
     if (req.body?.status === "declined") return res.json(await declineRsvp(req.params.id, learnerId, rsvpOrg));
-    return res.json(await confirmRsvp(req.params.id, learnerId, rsvpOrg));
+    const rsvp = await confirmRsvp(req.params.id, learnerId, rsvpOrg);
+    // Round 8 / D.2: a confirmation carries the calendar file once. Re-confirming an existing
+    // seat is a no-op and must not mail the learner again.
+    if (rsvp.newlyConfirmed) {
+      const session = await db.session.findFirst({ where: { id: req.params.id, orgId: rsvpOrg } }).catch(() => null);
+      if (session) {
+        const learner = await db.user.findUnique({ where: { id: learnerId }, select: { email: true } }).catch(() => null);
+        const { notify } = await import("../services/notify.js");
+        const { icsAttachment } = await import("../services/ical.js");
+        await notify(learnerId, "session_confirmed", {
+          title: `Confirmed: ${session.title}`,
+          body: `${session.date} at ${session.time}. The calendar file is attached.`,
+          link: "/calendar",
+          attachments: [icsAttachment(session, { attendeeEmail: learner?.email })],
+        });
+      }
+    }
+    return res.json(rsvp);
   } catch (e) {
     const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
     return res.status(status).json({ error: (e as Error).message });
   }
 });
+/**
+ * Round 8 / D.2: the single-session calendar file. It is a join link and a room, so it is only
+ * for people with a right to be there: an invitation or confirmation of their own, the
+ * session's trainer, or staff of the session's programme/organization.
+ */
+router.get("/sessions/:id/ics", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const session = await db.session.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
+  if (!session) return res.status(404).json({ error: "session not found in your organization" });
+  const rsvp = await db.sessionRSVP.findFirst({
+    where: { sessionId: session.id, learnerId: me.id, status: { in: ["invited", "confirmed", "waitlisted"] } },
+    select: { id: true },
+  }).catch(() => null);
+  const staff = (await isOrgStaff(me.id))
+    || session.trainerId === me.id
+    || (await canManageSessionProgramme(me.id, session.programmeId));
+  if (!rsvp && !staff) return res.status(403).json({ error: "you are not invited to this session" });
+  const { buildSessionIcs } = await import("../services/ical.js");
+  res.setHeader("Content-Type", "text/calendar; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${session.id}.ics"`);
+  // A cancelled session's file is a cancellation, even when fetched after the fact.
+  return res.send(buildSessionIcs(session, { method: session.status === "cancelled" ? "CANCEL" : "REQUEST" }));
+});
+
+const SESSION_PATCH_FIELDS = ["title", "mode", "capacity", "trainerId"] as const;
+function sessionPatchProblem(message: string): Error & { status: number } {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
+/**
+ * Round 8 / D.2: editing a scheduled session is a normal correction, not a cancellation and
+ * re-invite. Every edit bumps `sequence`, because a calendar client ignores an update whose
+ * SEQUENCE did not increase, and mails the new .ics to confirmed attendees.
+ */
+router.patch("/sessions/:id", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  let session: Awaited<ReturnType<typeof loadSessionForStaff>>;
+  try {
+    session = await loadSessionForStaff(req as AuthedRequest, scope.orgId);
+  } catch (e) {
+    const status = (e as { status?: number }).status ?? 500;
+    return res.status(status).json({ error: (e as Error).message });
+  }
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const data: Record<string, unknown> = {};
+  try {
+    for (const field of SESSION_PATCH_FIELDS) {
+      if (body[field] !== undefined) data[field] = body[field];
+    }
+    if (body.title !== undefined && !String(body.title).trim()) throw sessionPatchProblem("title cannot be empty");
+    if (body.capacity !== undefined) {
+      if (body.capacity !== null && (!Number.isInteger(Number(body.capacity)) || Number(body.capacity) <= 0)) {
+        throw sessionPatchProblem("capacity must be a positive whole number or null");
+      }
+      data.capacity = body.capacity === null ? null : Number(body.capacity);
+    }
+    if (body.trainerId !== undefined) {
+      if (body.trainerId === null || body.trainerId === "") {
+        data.trainerId = null;
+      } else {
+        const trainer = await db.user.findFirst({ where: { id: String(body.trainerId), orgId: scope.orgId }, select: { id: true } }).catch(() => null);
+        if (!trainer) return res.status(404).json({ error: "trainer not found in your organization" });
+        data.trainerId = trainer.id;
+      }
+    }
+    let startsAt = session.startsAt;
+    let endsAt = session.endsAt;
+    if (body.startsAt !== undefined) {
+      startsAt = body.startsAt ? new Date(String(body.startsAt)) : null;
+      if (startsAt && Number.isNaN(startsAt.getTime())) throw sessionPatchProblem("invalid startsAt");
+      data.startsAt = startsAt;
+      if (startsAt) {
+        const local = sessionLocalDateAndTime(startsAt, (session as { timezone?: string | null }).timezone ?? "UTC");
+        data.date = local.date;
+        data.time = local.time;
+      }
+    }
+    if (body.endsAt !== undefined) {
+      endsAt = body.endsAt ? new Date(String(body.endsAt)) : null;
+      if (endsAt && Number.isNaN(endsAt.getTime())) throw sessionPatchProblem("invalid endsAt");
+      data.endsAt = endsAt;
+    }
+    if (body.date !== undefined || body.time !== undefined) {
+      const date = body.date !== undefined ? String(body.date) : String(data.date ?? session.date);
+      const time = body.time !== undefined ? String(body.time) : String(data.time ?? session.time);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time)) throw sessionPatchProblem("date and time must be YYYY-MM-DD and HH:MM");
+      data.date = date;
+      data.time = time;
+      if (session.startsAt) {
+        const derived = new Date(`${date}T${time}:00Z`);
+        if (Number.isNaN(derived.getTime())) throw sessionPatchProblem("invalid date and time");
+        startsAt = derived;
+        data.startsAt = derived;
+      }
+    }
+    if (startsAt && endsAt && endsAt <= startsAt) throw sessionPatchProblem("endsAt must be after startsAt");
+    const mode = body.mode !== undefined ? String(body.mode) : session.mode;
+    const joinUrl = body.joinUrl !== undefined ? (body.joinUrl ? String(body.joinUrl) : null) : session.joinUrl;
+    const location = body.location !== undefined ? (body.location ? String(body.location) : null) : session.location;
+    if (mode !== "online" && mode !== "offline") throw sessionPatchProblem("mode must be online or offline");
+    if (mode === "online" && (!joinUrl || !isValidHttpsUrl(joinUrl))) throw sessionPatchProblem("online sessions require an https joinUrl");
+    if (mode === "offline" && !location) throw sessionPatchProblem("offline sessions require a location");
+    data.mode = mode;
+    if (body.joinUrl !== undefined) data.joinUrl = joinUrl;
+    if (body.location !== undefined) data.location = location;
+  } catch (e) {
+    return res.status((e as { status?: number }).status ?? 400).json({ error: (e as Error).message });
+  }
+  const updated = await db.session.update({
+    where: { id: session.id },
+    data: { ...data, sequence: session.sequence + 1 },
+  });
+  const { notify } = await import("../services/notify.js");
+  const { icsAttachment } = await import("../services/ical.js");
+  const attendees = await db.sessionRSVP.findMany({ where: { sessionId: session.id, status: "confirmed" }, select: { learnerId: true, learner: { select: { email: true } } } }).catch(() => []);
+  for (const attendee of attendees) {
+    await notify(attendee.learnerId, "session_updated", {
+      title: `Updated: ${updated.title}`,
+      body: "The session details changed. The updated calendar file is attached.",
+      link: "/calendar",
+      attachments: [icsAttachment(updated, { attendeeEmail: attendee.learner.email })],
+    });
+  }
+  return res.json(updated);
+});
+
+router.post("/sessions/:id/cancel", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  let session: Awaited<ReturnType<typeof loadSessionForStaff>>;
+  try {
+    session = await loadSessionForStaff(req as AuthedRequest, scope.orgId);
+  } catch (e) {
+    const status = (e as { status?: number }).status ?? 500;
+    return res.status(status).json({ error: (e as Error).message });
+  }
+  if (session.status === "cancelled") return res.json(session);
+  const updated = await db.session.update({
+    where: { id: session.id },
+    data: { status: "cancelled", sequence: session.sequence + 1 },
+  });
+  const { notify } = await import("../services/notify.js");
+  const { icsAttachment } = await import("../services/ical.js");
+  const attendees = await db.sessionRSVP.findMany({ where: { sessionId: session.id, status: "confirmed" }, select: { learnerId: true, learner: { select: { email: true } } } }).catch(() => []);
+  for (const attendee of attendees) {
+    await notify(attendee.learnerId, "session_cancelled", {
+      title: `Cancelled: ${updated.title}`,
+      body: "This session has been cancelled. The cancellation is attached for your calendar.",
+      link: "/calendar",
+      attachments: [icsAttachment(updated, { method: "CANCEL", attendeeEmail: attendee.learner.email })],
+    });
+  }
+  return res.json(updated);
+});
+
+router.post("/reminders/run", requireOrgStaff(), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const { runReminders } = await import("../services/reminderCadence.js");
+  return res.json(await runReminders(new Date(), { orgId: scope.orgId }));
+});
+
 async function isStakeholder(userId: string): Promise<boolean> {
   const grant = await db.userRole.findFirst({ where: { userId, role: { name: "stakeholder" } } }).catch(() => null);
   return !!grant;
@@ -1884,28 +3004,36 @@ async function programmeRoleFor(userId: string, programmeId: string): Promise<st
 async function threadAccess(userId: string, threadId: string, orgId: string) {
   const thread = await db.messageThread.findFirst({ where: { id: threadId, orgId } });
   if (!thread) return { thread: null, participant: null, programmeAdmin: false } as const;
-  const participant = await db.threadParticipant.findFirst({ where: { threadId, userId } }).catch(() => null);
+  const participant = await db.threadParticipant.findFirst({ where: { threadId, userId, leftAt: null } }).catch(() => null);
   const programmeAdmin = thread.programmeId ? await isProgrammeAdmin(userId, thread.programmeId).catch(() => false) : false;
   return { thread, participant, programmeAdmin } as const;
 }
 
 /**
- * Round 6 / M1: a ThreadParticipant row used to outlive the reason for it, so someone removed
- * from a programme — or withdrawn from their enrolment — kept reading and posting in its
- * threads. This revokes those rows. It runs on every thread read and write (cheap: only the
- * caller's own rows, one query) and whenever members are removed.
+ * Round 6 / M1 + Round 8 / E.5: participation is revoked, not deleted. A removed member's row
+ * stays with leftAt/leftReason for audit, and is restored when a current grant (or a live
+ * enrolment, for a learner grant) makes them eligible again. It runs on every thread read and
+ * write (cheap: only the caller's own rows, one query) and whenever members are removed.
  *
- * Returns the number of rows revoked. Org staff are never revoked: they administer every
+ * Returns the number of rows newly revoked. Org staff are never revoked: they administer every
  * programme in the organization.
  */
 export async function revokeStaleThreadAccess(userId: string, orgId: string): Promise<number> {
   const rows = await db.threadParticipant.findMany({
     where: { userId, thread: { orgId } },
-    select: { id: true, thread: { select: { id: true, programmeId: true } } },
-  }).catch(() => [] as Array<{ id: string; thread: { id: string; programmeId: string | null } }>);
-  if (!rows.length) return 0;
-  if (await isOrgStaff(userId)) return 0;
-  const programmeIds = [...new Set(rows.map((r) => r.thread.programmeId).filter((v): v is string => !!v))];
+    select: { id: true, leftAt: true, thread: { select: { id: true, programmeId: true } } },
+  }).catch(() => [] as Array<{ id: string; leftAt: Date | null; thread: { id: string; programmeId: string | null } }>);
+  const scoped = rows.filter((r) => r.thread.programmeId);
+  if (!scoped.length) return 0;
+  const restore = async (ids: string[]) => {
+    if (!ids.length) return;
+    await db.threadParticipant.updateMany({ where: { id: { in: ids } }, data: { leftAt: null, leftReason: null } }).catch(() => null);
+  };
+  if (await isOrgStaff(userId)) {
+    await restore(scoped.filter((r) => r.leftAt).map((r) => r.id));
+    return 0;
+  }
+  const programmeIds = [...new Set(scoped.map((r) => r.thread.programmeId).filter((v): v is string => !!v))];
   const grants = programmeIds.length
     ? await db.userRole.findMany({ where: { userId, programmeId: { in: programmeIds } }, select: { programmeId: true } }).catch(() => [] as Array<{ programmeId: string | null }>)
     : [];
@@ -1924,24 +3052,23 @@ export async function revokeStaleThreadAccess(userId: string, orgId: string): Pr
       }).catch(() => [] as Array<{ programmeId: string | null }>)
     : [];
   const staffSet = new Set(staffGrants.map((g) => g.programmeId));
-  const stale = rows
-    .filter((r) => r.thread.programmeId)
-    .filter((r) => {
-      const programmeId = r.thread.programmeId!;
-      if (staffSet.has(programmeId)) return false;
-      if (granted.has(programmeId)) {
-        // Learner grant: access lasts while an enrolment is live.
-        return !enrolledSet.has(programmeId);
-      }
-      return true;
-    })
-    .map((r) => r.id);
+  const hasAccess = (programmeId: string) => {
+    if (staffSet.has(programmeId)) return true;
+    return granted.has(programmeId) && enrolledSet.has(programmeId);
+  };
+  const stale = scoped.filter((r) => !r.leftAt && !hasAccess(r.thread.programmeId!)).map((r) => r.id);
+  const regained = scoped.filter((r) => r.leftAt && hasAccess(r.thread.programmeId!)).map((r) => r.id);
+  await restore(regained);
   if (!stale.length) return 0;
-  const deleted = await db.threadParticipant.deleteMany({ where: { id: { in: stale } } }).catch(() => ({ count: 0 }));
-  if (deleted.count) {
-    await db.auditLog.create({ data: { userId, action: "THREAD_ACCESS_REVOKED", entity: "thread_participant", entityId: userId, details: `${deleted.count} thread(s)` } }).catch(() => null);
+  const now = new Date();
+  const revoked = await db.threadParticipant.updateMany({
+    where: { id: { in: stale } },
+    data: { leftAt: now, leftReason: "programme access ended" },
+  }).catch(() => ({ count: 0 }));
+  if (revoked.count) {
+    await db.auditLog.create({ data: { userId, action: "THREAD_ACCESS_REVOKED", entity: "thread_participant", entityId: userId, details: `${revoked.count} thread(s)` } }).catch(() => null);
   }
-  return deleted.count;
+  return revoked.count;
 }
 
 router.get("/threads", async (req, res) => {
@@ -1949,11 +3076,10 @@ router.get("/threads", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   if (await isStakeholder(me.id)) return res.status(403).json({ error: "stakeholders do not have access to direct messages" });
   await revokeStaleThreadAccess(me.id, scope.orgId);
-  const [participations, adminIds, orgStaff] = await Promise.all([adminProgrammeIds(me.id), adminProgrammeIds(me.id), isOrgStaff(me.id)]);
-  const participantThreads = await db.threadParticipant.findMany({ where: { userId: me.id }, select: { threadId: true } }).catch(() => [] as Array<{ threadId: string }>);
+  const [adminIds, orgStaff] = await Promise.all([adminProgrammeIds(me.id), isOrgStaff(me.id)]);
+  const participantThreads = await db.threadParticipant.findMany({ where: { userId: me.id, leftAt: null }, select: { threadId: true } }).catch(() => [] as Array<{ threadId: string }>);
   const participantIds = new Set(participantThreads.map((p) => p.threadId));
   const adminIdsSet = new Set(adminIds);
-  void participations;
   const where = participantIds.size || adminIds.length || orgStaff
     ? {
         orgId: scope.orgId,
@@ -2020,6 +3146,9 @@ router.post("/threads", async (req, res) => {
     }
   }
   const now = new Date();
+  // Round 8 / E.10: the first message stored the author's role ("trainer") instead of the
+  // person's name, unlike every message sent afterwards.
+  const authorName = (await db.user.findUnique({ where: { id: me.id }, select: { name: true } }).catch(() => null))?.name ?? me.id;
   const created = await db.$transaction(async (tx) => {
     const thread = await tx.messageThread.create({
       data: {
@@ -2037,7 +3166,7 @@ router.post("/threads", async (req, res) => {
       await tx.threadParticipant.create({ data: { threadId: thread.id, userId: m.userId, role: m.role } }).catch(() => null);
     }
     await tx.message.create({
-      data: { threadId: thread.id, authorId: me.id, author: me.role, body: bodyText, urgent: Boolean(req.body?.urgent) },
+      data: { threadId: thread.id, authorId: me.id, author: authorName, body: bodyText, urgent: Boolean(req.body?.urgent) },
     });
     await tx.auditLog.create({ data: { userId: me.id, action: "THREAD_CREATED", entity: "message_thread", entityId: thread.id, details: JSON.stringify({ programmeId, participantIds, courseId }) } }).catch(() => null);
     return thread;
@@ -2088,7 +3217,7 @@ router.post("/threads/:id/messages", async (req, res) => {
     data.escalatedAt = null;
   }
   await db.messageThread.update({ where: { id: thread.id }, data }).catch(() => null);
-  const participants = await db.threadParticipant.findMany({ where: { threadId: thread.id }, select: { userId: true } }).catch(() => [] as Array<{ userId: string }>);
+  const participants = await db.threadParticipant.findMany({ where: { threadId: thread.id, leftAt: null }, select: { userId: true } }).catch(() => [] as Array<{ userId: string }>);
   const { notifyMany } = await import("../services/notify.js");
   await notifyMany(participants.map((p) => p.userId).filter((id) => id !== me.id), "message", {
     title: `New message: ${thread.subject}`,
@@ -2101,29 +3230,76 @@ router.get("/bookings", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   res.json(await db.booking.findMany({ where: { orgId: scope.orgId }, take: 200 }).catch(() => []));
 });
+// Round 8 / B.1: the bookable trainers for the caller. Org staff see every trainer; a learner
+// sees only trainers who hold a grant in a programme they are currently enrolled on.
+router.get("/bookings/trainers", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const orgStaff = await isOrgStaff(me.id);
+  let programmeIds: string[] | null = null;
+  if (!orgStaff) {
+    const enrolments = await db.enrolment.findMany({
+      where: { learnerId: me.id, status: { not: "withdrawn" }, withdrawnAt: null, programme: { orgId: scope.orgId } },
+      select: { programmeId: true },
+    }).catch(() => [] as Array<{ programmeId: string | null }>);
+    programmeIds = enrolments.map((e) => e.programmeId).filter((id): id is string => !!id);
+    if (!programmeIds.length) return res.json([]);
+  }
+  const grants = await db.userRole.findMany({
+    where: {
+      role: { name: "trainer" },
+      programmeId: programmeIds ? { in: programmeIds } : { not: null },
+      user: { orgId: scope.orgId, isActive: true },
+    },
+    select: { userId: true, user: { select: { name: true, email: true } } },
+    take: 500,
+  }).catch(() => [] as Array<{ userId: string; user: { name: string; email: string } }>);
+  const seen = new Map<string, { id: string; name: string; email: string }>();
+  for (const g of grants) if (!seen.has(g.userId)) seen.set(g.userId, { id: g.userId, name: g.user.name, email: g.user.email });
+  return res.json([...seen.values()].sort((a, b) => a.name.localeCompare(b.name)));
+});
 router.post("/bookings", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  if (me.role === "learner") {
-    const enrolled = await db.enrolment.findFirst({ where: { learnerId: me.id, programme: { orgId: scope.orgId } } }).catch(() => null);
-    if (!enrolled) return res.status(403).json({ error: "only enrolled learners may book sessions" });
-  }
-  let trainerId: string | null = null;
-  if (req.body.trainer) {
-    const trainers = await db.user.findMany({ where: { name: req.body.trainer, orgId: scope.orgId }, select: { id: true } }).catch(() => []);
-    if (trainers.length === 1) trainerId = trainers[0].id;
+  // Round 8 / B.1: identities, not name matching. A rename used to re-point a booking at a
+  // different person, and two people who share a name were indistinguishable.
+  const trainerId = String(req.body?.trainerId ?? "").trim();
+  if (!trainerId) return res.status(400).json({ error: "trainerId is required" });
+  const grant = await db.userRole.findFirst({
+    where: { userId: trainerId, role: { name: "trainer" }, programmeId: { not: null }, user: { orgId: scope.orgId, isActive: true } },
+    select: { userId: true, programmeId: true, user: { select: { name: true } } },
+  }).catch(() => null);
+  if (!grant) return res.status(404).json({ error: "trainer not found in your organization" });
+  const programmeId = grant.programmeId!;
+  if (!(await isOrgStaff(me.id))) {
+    const myGrant = await db.userRole.findFirst({ where: { userId: me.id, programmeId }, select: { id: true } }).catch(() => null);
+    if (!myGrant) {
+      const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, programmeId, status: { not: "withdrawn" }, withdrawnAt: null }, select: { id: true } }).catch(() => null);
+      if (!enrolment) return res.status(403).json({ error: "this trainer is not in a programme you are enrolled on" });
+    }
   }
   let courseId: string | null = null;
-  if (req.body.course) {
-    const course = await db.course.findFirst({ where: { title: req.body.course, programme: { orgId: scope.orgId } } }).catch(() => null);
-    if (course) courseId = course.id;
+  let courseTitle = "";
+  if (req.body?.courseId) {
+    const course = await db.course.findFirst({ where: { id: String(req.body.courseId), programme: { orgId: scope.orgId } }, select: { id: true, title: true } }).catch(() => null);
+    if (!course) return res.status(404).json({ error: "course not found in your organization" });
+    courseId = course.id;
+    courseTitle = course.title;
   }
-  return res.status(201).json(await db.booking.create({ data: { trainer: req.body.trainer, trainerId, course: req.body.course ?? "", courseId, orgId: scope.orgId, date: req.body.date, time: req.body.time } }));
+  return res.status(201).json(await db.booking.create({
+    data: { trainer: grant.user.name, trainerId: grant.userId, course: courseTitle, courseId, orgId: scope.orgId, date: String(req.body?.date ?? ""), time: String(req.body?.time ?? "") },
+  }));
 });
+// Round 8 / D.2: a feed token is a bearer credential in a URL, so the database keeps only its
+// SHA-256. The plaintext exists once, in the response to the rotation call.
+function hashFeedToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
 router.get("/calendar/feed.ics", async (req, res) => {
   const token = String(req.query.token ?? "");
   if (!token) return res.status(401).json({ error: "token required" });
-  const user = await db.user.findFirst({ where: { icalFeedToken: token }, select: { id: true, name: true, orgId: true } }).catch(() => null);
+  const user = await db.user.findFirst({ where: { icalFeedToken: hashFeedToken(token) }, select: { id: true, name: true, orgId: true } }).catch(() => null);
   if (!user) return res.status(401).json({ error: "invalid calendar token" });
   const sessions = await sessionsForUser(user.id);
   const ics = buildIcsCalendar({ name: `${user.name} - TrainHub360 sessions`, sessions: sessions as any[] });
@@ -2135,7 +3311,9 @@ router.get("/calendar/feed.ics", async (req, res) => {
 router.get("/me/ical-token", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const user = await db.user.findUnique({ where: { id: me.id }, select: { icalFeedToken: true } }).catch(() => null);
-  return res.json({ token: user?.icalFeedToken ?? null, url: user?.icalFeedToken ? `/api/calendar/feed.ics?token=${user.icalFeedToken}` : null });
+  // The stored value is a hash, so there is no URL to return. Rotating is how a client obtains
+  // a usable one; this endpoint only says whether a feed has been set up.
+  return res.json({ configured: !!user?.icalFeedToken });
 });
 
 router.post("/users/:id/ical-token", async (req, res) => {
@@ -2145,7 +3323,8 @@ router.post("/users/:id/ical-token", async (req, res) => {
   const user = await db.user.findFirst({ where: { id: req.params.id, orgId: scope.orgId }, select: { id: true } }).catch(() => null);
   if (!user) return res.status(404).json({ error: "user not found in your organization" });
   const token = crypto.randomBytes(32).toString("hex");
-  await db.user.update({ where: { id: user.id }, data: { icalFeedToken: token } });
+  await db.user.update({ where: { id: user.id }, data: { icalFeedToken: hashFeedToken(token) } });
+  // Shown once; rotating replaces the hash, which invalidates the previous subscription.
   return res.status(201).json({ token, url: `/api/calendar/feed.ics?token=${token}` });
 });
 
@@ -2323,6 +3502,13 @@ router.patch("/organizations/:id", requireOrgStaff(), async (req, res) => {
     data.webhookUrls = JSON.stringify(patch.webhookUrls);
   }
   if (patch.maxWeighting !== undefined) data.reviewCreditMaxWeighting = Number(patch.maxWeighting);
+  if (patch.reminderCadence !== undefined) {
+    // Round 8 / D.1: validated here, because the job must never meet a cadence it cannot read.
+    const { validateReminderCadence } = await import("../services/reminderCadence.js");
+    const cadence = validateReminderCadence(patch.reminderCadence);
+    if (!cadence.ok) return res.status(400).json({ error: cadence.error });
+    data.reminderCadenceJson = JSON.stringify(cadence.value);
+  }
   if (patch.samlEnabled !== undefined) data.samlEnabled = Boolean(patch.samlEnabled);
   if (patch.samlIdpCert !== undefined) data.samlIdpCert = patch.samlIdpCert || null;
   if (patch.samlIdpIssuer !== undefined) data.samlIdpIssuer = patch.samlIdpIssuer || null;
