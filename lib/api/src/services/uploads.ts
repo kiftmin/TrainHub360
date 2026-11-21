@@ -54,6 +54,55 @@ export class UploadRejected extends Error {
 }
 
 /**
+ * Round 8 / E.8: the declared mime type is a claim by the client (and the extension is just a
+ * name). The first bytes are the file's own type, so a renamed executable cannot pass as a PDF.
+ */
+type FileFamily = "pdf" | "png" | "jpeg" | "gif" | "webp" | "zip" | "mp4" | "webm" | "ole" | "unknown";
+
+export function sniffFileFamily(data: Buffer): FileFamily {
+  const startsWith = (bytes: number[], offset = 0) =>
+    data.length >= offset + bytes.length && bytes.every((b, i) => data[offset + i] === b);
+  const ascii = (text: string, offset = 0) =>
+    data.length >= offset + text.length && data.toString("latin1", offset, offset + text.length) === text;
+  if (ascii("%PDF-")) return "pdf";
+  if (startsWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "png";
+  if (startsWith([0xff, 0xd8, 0xff])) return "jpeg";
+  if (ascii("GIF87a") || ascii("GIF89a")) return "gif";
+  if (ascii("RIFF") && ascii("WEBP", 8)) return "webp";
+  if (ascii("PK")) return "zip";
+  if (ascii("ftyp", 4)) return "mp4";
+  if (startsWith([0x1a, 0x45, 0xdf, 0xa3])) return "webm";
+  if (startsWith([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])) return "ole";
+  return "unknown";
+}
+
+const MIME_FAMILY: Record<string, FileFamily> = {
+  "application/pdf": "pdf",
+  "image/png": "png",
+  "image/jpeg": "jpeg",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "application/zip": "zip",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "zip",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "zip",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation": "zip",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "application/msword": "ole",
+  "application/vnd.ms-excel": "ole",
+  "application/vnd.ms-powerpoint": "ole",
+};
+
+/** A mismatch is a 400, not a 422: the request itself claims a type the bytes contradict. */
+export function assertFileSignature(mimeType: string, data: Buffer): void {
+  const expected = MIME_FAMILY[mimeType];
+  if (!expected) return;
+  if (sniffFileFamily(data) !== expected) {
+    throw new UploadRejected(`the file contents do not match the declared type ${mimeType}`);
+  }
+}
+
+/**
  * Validates an uploaded file against the allowlist and the size cap, then stores it through
  * the StorageProvider and records the StoredFile row. Throws UploadRejected with the status
  * the route should answer.
@@ -77,6 +126,7 @@ export async function storeUpload(input: {
   if (input.data.length > maxBytes) {
     throw new UploadRejected(`file exceeds the ${Math.round(maxBytes / (1024 * 1024))}MB limit`, 413);
   }
+  assertFileSignature(mimeType, input.data);
   const key = newStorageKey(ext);
   const stored = await getStorageProvider().put(key, input.data);
   const scan = await scanUpload({ key, mimeType, sizeBytes: stored.sizeBytes });
