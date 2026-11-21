@@ -460,7 +460,11 @@ async function runEvaluation(
 }
 
 /** Re-evaluate every enrolment of a course (content changed, assessment published, etc.). */
-export async function evaluateCourseEnrolments(courseId: string, trigger: EnrolmentTrigger): Promise<number> {
+export async function evaluateCourseEnrolments(
+  courseId: string,
+  trigger: EnrolmentTrigger,
+  onBatch?: (processed: number, total: number) => Promise<void> | void,
+): Promise<number> {
   const total = await db.enrolment.count({ where: { courseId, status: { not: "withdrawn" }, withdrawnAt: null } }).catch(() => 0);
   let processed = 0;
   let lastId: string | null = null;
@@ -479,6 +483,7 @@ export async function evaluateCourseEnrolments(courseId: string, trigger: Enrolm
       processed++;
     }
     lastId = batch[batch.length - 1].id;
+    if (onBatch) await onBatch(processed, total);
   }
   return total || processed;
 }

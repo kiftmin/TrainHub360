@@ -240,13 +240,16 @@ model EvaluationJob {
   status      String    @default("pending")
   createdAt   DateTime  @default(now()) @map("created_at")
   startedAt   DateTime? @map("started_at")
+  heartbeatAt DateTime? @map("heartbeat_at")
   finishedAt  DateTime? @map("finished_at")
   processed   Int       @default(0)
   total       Int       @default(0)
+  attempts    Int       @default(0)
   lastError   String?   @map("last_error") @db.NVarChar(Max)
 
   @@index([courseId, status])
   @@index([status, createdAt])
+  @@index([status, heartbeatAt])
   @@map("evaluation_jobs")
 }
 
