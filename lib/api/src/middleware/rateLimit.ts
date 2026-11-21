@@ -40,7 +40,17 @@ function fromEnv(env: NodeJS.ProcessEnv): Partial<LoginThrottleConfig> {
   if (window !== undefined) out.windowMs = window;
   if (account !== undefined) out.accountLimit = account;
   if (ip !== undefined) out.ipLimit = ip;
-  if (env.LOGIN_THROTTLE_ENABLED !== undefined) out.enabled = String(env.LOGIN_THROTTLE_ENABLED).toLowerCase() !== "false";
+  if (env.LOGIN_THROTTLE_ENABLED !== undefined) {
+    const wanted = String(env.LOGIN_THROTTLE_ENABLED).toLowerCase() !== "false";
+    // Round 8 / 3.2: a production deployment cannot switch the throttle off by accident. The
+    // explicit opt-out exists for a test environment that insists on NODE_ENV=production.
+    const allowDisable = String(env.LOGIN_THROTTLE_ALLOW_DISABLE ?? "").toLowerCase() === "true";
+    if (!wanted && env.NODE_ENV === "production" && !allowDisable) {
+      console.warn("[rate-limit] LOGIN_THROTTLE_ENABLED=false is ignored in production; set LOGIN_THROTTLE_ALLOW_DISABLE=true to opt out deliberately.");
+    } else {
+      out.enabled = wanted;
+    }
+  }
   return out;
 }
 

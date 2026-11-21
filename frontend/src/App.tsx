@@ -18,7 +18,6 @@ import {
   useProgrammes,
   useCourses,
   useCreateCourse,
-  useSubmitAttempt,
   useModules,
   useSessions,
   useThreads,
@@ -48,7 +47,7 @@ import { NotificationBell } from '@/components/NotificationBell';
 import { initials } from '@/components/shared';
 import {
   Activity, ArrowUpRight, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown,
-  CircleAlert, Clock3, Download, FileCheck2, Gauge, GraduationCap, LayoutDashboard,
+  CircleAlert, ClipboardCheck, Clock3, Download, FileCheck2, Gauge, GraduationCap, LayoutDashboard,
   Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings2,
   ShieldCheck, SlidersHorizontal, Target, Users, X, Zap,
 } from 'lucide-react';
@@ -62,6 +61,7 @@ const nav = [
   { href: '/people', label: 'People', icon: Users },
   { href: '/my-learning', label: 'My learning', icon: Target },
   { href: '/assessments', label: 'Assessments', icon: FileCheck2 },
+  { href: '/verification', label: 'Verification', icon: ClipboardCheck },
   { href: '/calendar', label: 'Calendar', icon: CalendarDays },
   { href: '/messages', label: 'Messages', icon: MessageSquare },
 ];
@@ -77,6 +77,8 @@ import { Programmes, ProgrammeDetail } from '@/pages/Programmes';
 import { People } from '@/pages/People';
 import { MyLearning } from '@/pages/MyLearning';
 import { Assessments } from '@/pages/Assessments';
+import { GradingQueuePage, GradingAttemptPage } from '@/pages/Grading';
+import { VerificationPage } from '@/pages/Verification';
 import { CalendarPage } from '@/pages/Calendar';
 import { Messages } from '@/pages/Messages';
 import { Reports } from '@/pages/Reports';
@@ -89,7 +91,9 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
   const go = (href: string) => { setMobileOpen(false); setLocation(href); };
   const isStakeholder = getSessionUser()?.role === 'stakeholder';
   const canSeeDirectory = ['owner', 'admin'].includes(getSessionUser()?.role ?? '');
-  const visibleNav = isStakeholder ? [] : nav.filter((n) => n.href !== '/people' || canSeeDirectory);
+  const canVerify = ['owner', 'admin', 'trainer'].includes(getSessionUser()?.role ?? '');
+  const visibleNav = isStakeholder ? [] : nav.filter((n) =>
+    (n.href !== '/people' || canSeeDirectory) && (n.href !== '/verification' || canVerify));
   const visibleAdminNav = isStakeholder ? [] : adminNav;
   const allNav = [...visibleNav, ...visibleAdminNav];
   const active = allNav.find((n) => n.href === location) ?? (location.startsWith('/programmes') ? { href: '/programmes', label: 'Programmes' } : null);
@@ -162,6 +166,9 @@ function Router() {
     <Route path="/people" component={People} />
     <Route path="/my-learning" component={MyLearning} />
     <Route path="/assessments" component={Assessments} />
+    <Route path="/assessments/grading" component={GradingQueuePage} />
+    <Route path="/assessments/grading/:attemptId">{(params) => <GradingAttemptPage attemptId={params.attemptId} />}</Route>
+    <Route path="/verification" component={VerificationPage} />
     <Route path="/calendar" component={CalendarPage} />
     <Route path="/messages" component={Messages} />
     <Route path="/reports" component={Reports} />

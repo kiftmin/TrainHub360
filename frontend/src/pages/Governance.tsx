@@ -18,7 +18,6 @@ import {
   useProgrammes,
   useCourses,
   useCreateCourse,
-  useSubmitAttempt,
   useModules,
   useSessions,
   useThreads,

@@ -36,13 +36,19 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let message = `API ${res.status}`;
+    let body: unknown = null;
     try {
-      const body = await res.json();
-      if (body && typeof body.error === "string") message = body.error;
+      body = await res.json();
+      if (body && typeof (body as { error?: unknown }).error === "string") message = String((body as { error: string }).error);
     } catch {
       // non-JSON error body — keep the status-based message
     }
-    throw new Error(message);
+    // The status and parsed body let callers distinguish 409 (new version, already graded),
+    // 403 (own attempt) and 404 (another organization) from a generic failure.
+    const error = new Error(message) as Error & { status?: number; body?: unknown };
+    error.status = res.status;
+    error.body = body;
+    throw error;
   }
   const ct = res.headers.get("content-type") ?? "";
   if (ct.includes("text/csv")) return (await res.text()) as T;
