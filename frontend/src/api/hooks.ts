@@ -167,10 +167,20 @@ export interface SessionInvitableLearner {
 
 export interface SessionInvitableResponse {
   sessionId: string;
+  q: string;
+  limit: number;
+  total: number;
+  nextCursor: string | null;
   learners: SessionInvitableLearner[];
   invitable: SessionInvitableLearner[];
   invitableLearners: SessionInvitableLearner[];
   skipped: { learnerId: string; name: string; email: string; reason: string }[];
+}
+
+export interface SessionInvitableOptions {
+  q?: string;
+  cursor?: string | null;
+  enabled?: boolean;
 }
 
 export interface SessionInviteResultRow {
@@ -181,9 +191,12 @@ export interface SessionInviteResultRow {
 
 export interface SessionInviteResult {
   sessionId: string;
+  allEnrolled: boolean;
+  selectedCount: number;
   invited: number;
   newlyInvited: number;
   skipped: string[];
+  skippedCount: number;
   skippedReasons: Record<string, string>;
   rejected: SessionInviteResultRow[];
   results: SessionInviteResultRow[];
@@ -340,7 +353,7 @@ export const qk = {
   courses: (programmeId?: string) => ['courses', programmeId ?? 'all'] as const,
   sessions: ['sessions'] as const,
   sessionAttendees: (sessionId: string) => ['sessions', sessionId, 'attendees'] as const,
-  sessionInvitable: (sessionId: string) => ['sessions', sessionId, 'invitable'] as const,
+  sessionInvitable: (sessionId: string, options?: { q?: string; cursor?: string | null }) => ['sessions', sessionId, 'invitable', options?.q ?? '', options?.cursor ?? null] as const,
   threads: ['threads'] as const,
   threadList: (filters: ThreadFilters = {}) => ['threads', 'list', filters.programmeId ?? null, filters.courseId ?? null, filters.slaStatus ?? null] as const,
   threadMessages: (threadId: string) => ['threads', threadId, 'messages'] as const,
@@ -1373,14 +1386,22 @@ export function useSessionAttendees(sessionId: string, enabled = true) {
   return useQuery(queryOpts(qk.sessionAttendees(sessionId), () => api<SessionAttendeesResponse>(`/sessions/${sessionId}/attendees`), enabled));
 }
 
-export function useSessionInvitable(sessionId: string, enabled = true) {
-  return useQuery(queryOpts(qk.sessionInvitable(sessionId), () => api<SessionInvitableResponse>(`/sessions/${sessionId}/invitable`), enabled));
+export function useSessionInvitable(sessionId: string, options: SessionInvitableOptions = {}) {
+  const { q = '', cursor = null, enabled = true } = options;
+  const search = new URLSearchParams();
+  if (q) search.set('q', q);
+  if (cursor) search.set('cursor', cursor);
+  const query = search.toString();
+  return useQuery(queryOpts(qk.sessionInvitable(sessionId, { q, cursor }), () => api<SessionInvitableResponse>(`/sessions/${sessionId}/invitable${query ? `?${query}` : ''}`), enabled));
 }
 
 export function useInviteSession(sessionId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (learnerIds: string[]) => api<SessionInviteResult>(`/sessions/${sessionId}/invite`, { method: 'POST', body: JSON.stringify({ learnerIds }) }),
+    mutationFn: (input: { learnerIds?: string[]; allEnrolled?: boolean } | string[]) => {
+      const body = Array.isArray(input) ? { learnerIds: input } : input;
+      return api<SessionInviteResult>(`/sessions/${sessionId}/invite`, { method: 'POST', body: JSON.stringify(body) });
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.sessionAttendees(sessionId) });
       qc.invalidateQueries({ queryKey: qk.sessionInvitable(sessionId) });

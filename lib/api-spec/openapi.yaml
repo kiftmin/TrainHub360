@@ -1279,6 +1279,9 @@ paths:
       operationId: inviteSessionParticipants
       tags: [engagement]
       summary: Invite learners (validates org and course/programme enrolment)
+      description: >
+        Programme/organization staff only. Pass learnerIds for a targeted batch (max 500)
+        or allEnrolled=true to scan and invite every currently eligible learner server-side.
       parameters:
         - name: sessionId
           in: path
@@ -1290,11 +1293,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [learnerIds]
               properties:
                 learnerIds:
                   type: array
                   items: { type: string }
+                allEnrolled: { type: boolean, default: false }
       responses:
         "200":
           description: Invite results
@@ -1329,18 +1332,36 @@ paths:
       operationId: listSessionInvitableLearners
       tags: [engagement]
       summary: List active organization learners who can still be invited to a session
+      description: >
+        Query-side filtering over all eligible learners. Results are ordered by name then id;
+        pass the returned nextCursor to fetch the next page. q must be at least 2 characters.
       parameters:
         - name: sessionId
           in: path
           required: true
           schema: { type: string }
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive name/email substring; minimum 2 characters when present.
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor returned by a previous page.
+          schema: { type: string }
       responses:
         "200":
-          description: Invitable learners and skip reasons
+          description: Invitable learners, total count, next cursor and skip reasons
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionInvitableResponse"
+        "400": { description: Invalid q, limit or cursor }
         "403": { description: Caller cannot manage this session's programme }
         "404": { description: Session not found in the caller's organization }
   /sessions/{sessionId}/remove:
@@ -3270,9 +3291,13 @@ components:
         reason: { type: ["null"] }
     SessionInvitableResponse:
       type: object
-      required: [sessionId, learners, invitable, invitableLearners, skipped]
+      required: [sessionId, q, limit, total, nextCursor, learners, invitable, invitableLearners, skipped]
       properties:
         sessionId: { type: string }
+        q: { type: string }
+        limit: { type: integer, maximum: 200 }
+        total: { type: integer }
+        nextCursor: { type: ["string", "null"] }
         learners:
           type: array
           items: { $ref: "#/components/schemas/SessionInvitableLearner" }
@@ -3294,14 +3319,17 @@ components:
               reason: { type: string }
     SessionInviteResult:
       type: object
-      required: [sessionId, invited, newlyInvited, skipped, skippedReasons, rejected, results]
+      required: [sessionId, allEnrolled, selectedCount, invited, newlyInvited, skipped, skippedCount, skippedReasons, rejected, results]
       properties:
         sessionId: { type: string }
+        allEnrolled: { type: boolean }
+        selectedCount: { type: integer }
         invited: { type: integer }
         newlyInvited: { type: integer }
         skipped:
           type: array
           items: { type: string }
+        skippedCount: { type: integer }
         skippedReasons:
           type: object
           additionalProperties: { type: string }

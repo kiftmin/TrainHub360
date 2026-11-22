@@ -289,9 +289,17 @@ capacity/seat summary), `GET /api/sessions/:id/invitable`, `POST /api/sessions/:
 skip reasons), and `POST /api/sessions/:id/remove`. Removal records a declined RSVP, audits the staff
 action and reuses the race-safe decline path so a freed confirmed seat promotes the earliest
 waitlisted learner. `PATCH /api/sessions/:id` and `POST /api/sessions/:id/cancel` accept an optional
-`reason` that is included in attendee notifications and emails. The Calendar page exposes these
-tools to programme staff as a roster panel with capacity counts, status groups, eligible learners,
-skip reasons, removal, title edits and cancellation.
+`reason` that is included in attendee notifications and emails. `GET /api/sessions/:id/invitable`
+now filters in the database across the whole organization: only active learners enrolled (not
+withdrawn) in the session's course, else programme, else any active org user for a session with
+neither, and never people already invited. It accepts `q` (case-insensitive name/email substring,
+minimum 2 characters), `limit` (default 50, maximum 200) and an opaque `cursor`, and returns `total`,
+`nextCursor`, a page of `learners` and already-invited skip reasons. `POST /api/sessions/:id/invite`
+also accepts `{ allEnrolled: true }` to scan and invite every eligible learner server-side in batches,
+returning selected, invited and skipped counts so it works for thousands of people. The Calendar
+page exposes these tools to programme staff as a roster panel with capacity counts, status groups,
+a debounced search, load-more paging, selected counts, "invite all eligible", skip reasons, removal,
+title edits and cancellation.
 
 ### Direct messaging and response SLA
 

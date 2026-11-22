@@ -49,24 +49,56 @@ const roster = {
   summary: { sessionId: "s1", capacity: 1, attendeeCount: 1, seatsTaken: 1, seatsRemaining: 0, invited: 1, confirmed: 1, waitlisted: 1, declined: 0 },
 };
 
+const learner3 = { learnerId: "l3", id: "u3", name: "Cleo Learner", email: "cleo@example.com", eligible: true, reason: null };
 const invitable = {
   sessionId: "s1",
-  learners: [{ learnerId: "l3", id: "u3", name: "Cleo Learner", email: "cleo@example.com", eligible: true, reason: null }],
-  invitable: [{ learnerId: "l3", id: "u3", name: "Cleo Learner", email: "cleo@example.com", eligible: true, reason: null }],
-  invitableLearners: [{ learnerId: "l3", id: "u3", name: "Cleo Learner", email: "cleo@example.com", eligible: true, reason: null }],
+  q: "",
+  limit: 50,
+  total: 1,
+  nextCursor: null,
+  learners: [learner3],
+  invitable: [learner3],
+  invitableLearners: [learner3],
   skipped: [{ learnerId: "l9", name: "Skip Learner", email: "skip@example.com", reason: "already_invited" }],
 };
 
-function harness(options: { roster?: unknown } = {}) {
+const pageOne = {
+  ...invitable,
+  total: 2,
+  nextCursor: "cursor-2",
+};
+
+const pageTwo = {
+  ...invitable,
+  total: 2,
+  nextCursor: null,
+  learners: [{ learnerId: "l4", id: "u4", name: "Dana Learner", email: "dana@example.com", eligible: true, reason: null }],
+  invitable: [{ learnerId: "l4", id: "u4", name: "Dana Learner", email: "dana@example.com", eligible: true, reason: null }],
+  invitableLearners: [{ learnerId: "l4", id: "u4", name: "Dana Learner", email: "dana@example.com", eligible: true, reason: null }],
+  skipped: [],
+};
+
+const searchPage = {
+  ...invitable,
+  q: "dee",
+  total: 1,
+  nextCursor: null,
+  learners: [{ learnerId: "l5", id: "u5", name: "Deep Learner", email: "deep@example.com", eligible: true, reason: null }],
+  invitable: [{ learnerId: "l5", id: "u5", name: "Deep Learner", email: "deep@example.com", eligible: true, reason: null }],
+  invitableLearners: [{ learnerId: "l5", id: "u5", name: "Deep Learner", email: "deep@example.com", eligible: true, reason: null }],
+  skipped: [],
+};
+
+function harness(options: { roster?: unknown; invitable?: (url: string) => unknown } = {}) {
   const calls: Call[] = [];
   let currentRoster = options.roster ?? roster;
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     calls.push({ url: String(url), method: init?.method ?? "GET", body: bodyOf(init) });
     const path = String(url);
     if (path.includes("/sessions/s1/attendees") && (init?.method ?? "GET") === "GET") return jsonResponse(currentRoster);
-    if (path.includes("/sessions/s1/invitable")) return jsonResponse(invitable);
+    if (path.includes("/sessions/s1/invitable")) return jsonResponse(options.invitable?.(path) ?? invitable);
     if (path.includes("/sessions/s1/invite")) {
-      return jsonResponse({ sessionId: "s1", invited: 1, newlyInvited: 1, skipped: ["l9"], skippedReasons: { l9: "already_invited" }, rejected: [], results: [] });
+      return jsonResponse({ sessionId: "s1", allEnrolled: false, selectedCount: 1, invited: 1, newlyInvited: 1, skipped: ["l9"], skippedCount: 1, skippedReasons: { l9: "already_invited" }, rejected: [], results: [] });
     }
     if (path.includes("/sessions/s1/remove")) {
       currentRoster = {
@@ -144,6 +176,47 @@ describe("session roster UI", () => {
     await waitFor(() => expect(calls.some((call) => call.url.includes("/sessions/s1/cancel"))).toBe(true));
     const cancelCall = calls.find((call) => call.url.includes("/sessions/s1/cancel"));
     expect(cancelCall?.body).toEqual({ reason: "Room changed" });
+  });
+
+  test("debounces search, loads more pages and shows the selected count", async () => {
+    const { calls } = harness({
+      invitable: (url) => {
+        if (url.includes("q=dee")) return searchPage;
+        if (url.includes("cursor=cursor-2")) return pageTwo;
+        return pageOne;
+      },
+    });
+    render(<Providers><SessionRosterPanel sessionId="s1" sessionTitle="Safety briefing" /></Providers>);
+
+    await waitFor(() => expect(screen.getByTestId("invitable-total").textContent).toContain("2 eligible"));
+    expect((await screen.findByTestId("invitable-selected-count")).textContent).toContain("0 selected");
+    const learner = await screen.findByTestId("invitable-l3");
+    fireEvent.click(within(learner).getByRole("checkbox"));
+    expect((await screen.findByTestId("invitable-selected-count")).textContent).toContain("1 selected");
+
+    fireEvent.click(await screen.findByTestId("button-invitable-more"));
+    expect(await screen.findByTestId("invitable-l4")).toBeTruthy();
+    expect((await screen.findByTestId("invitable-selected-count")).textContent).toContain("1 selected");
+    await waitFor(() => expect(calls.some((call) => call.url.includes("cursor=cursor-2"))).toBe(true));
+
+    fireEvent.change(screen.getByTestId("input-invitable-search"), { target: { value: "dee" } });
+    await waitFor(() => expect(calls.some((call) => call.url.includes("q=dee"))).toBe(true));
+    expect(await screen.findByTestId("invitable-l5")).toBeTruthy();
+    expect(screen.queryByTestId("invitable-l3")).toBeNull();
+    expect((await screen.findByTestId("invitable-selected-count")).textContent).toContain("0 selected");
+  });
+
+  test("invites all eligible learners in one batched request", async () => {
+    const { calls } = harness();
+    render(<Providers><SessionRosterPanel sessionId="s1" sessionTitle="Safety briefing" /></Providers>);
+
+    await screen.findByTestId("invitable-l3");
+    fireEvent.click(screen.getByTestId("button-invite-all"));
+
+    await waitFor(() => expect(calls.some((call) => call.url.includes("/sessions/s1/invite"))).toBe(true));
+    const inviteCall = calls.find((call) => call.url.includes("/sessions/s1/invite"));
+    expect(inviteCall?.body).toEqual({ allEnrolled: true });
+    expect((await screen.findByTestId("roster-message")).textContent).toContain("1 invited");
   });
 
   test("only exposes roster controls to programme staff", () => {
