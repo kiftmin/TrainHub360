@@ -2871,7 +2871,7 @@ function sessionEligibleUserWhere(session: SessionForStaff, orgId: string, q?: s
   return {
     orgId,
     isActive: true,
-    rsvps: { none: { sessionId: session.id } },
+    rsvps: { none: { sessionId: session.id, status: { not: "removed" } } },
     ...enrolment,
     ...(q ? { AND: [{ OR: [{ name: { contains: q } }, { email: { contains: q } }] }] } : {}),
   };
@@ -2905,7 +2905,7 @@ async function sessionInviteDecision(session: SessionForStaff, learnerId: string
     where: { sessionId: session.id, learnerId },
     select: { id: true, status: true },
   }).catch(() => null);
-  if (existing) return { eligible: false, reason: "already_invited", learner, existing };
+  if (existing && existing.status !== "removed") return { eligible: false, reason: "already_invited", learner, existing };
   if (session.courseId) {
     const enrolled = await db.enrolment.findFirst({
       where: { learnerId, courseId: session.courseId, status: { not: "withdrawn" }, withdrawnAt: null },
@@ -2923,7 +2923,7 @@ async function sessionInviteDecision(session: SessionForStaff, learnerId: string
 }
 
 function sessionRosterSummary(session: SessionForStaff, rsvps: Array<{ status: string }>) {
-  const counts = { invited: 0, confirmed: 0, waitlisted: 0, declined: 0 };
+  const counts = { invited: 0, confirmed: 0, waitlisted: 0, declined: 0, removed: 0 };
   for (const rsvp of rsvps) {
     if (rsvp.status in counts) counts[rsvp.status as keyof typeof counts] += 1;
   }
@@ -2938,11 +2938,12 @@ function sessionRosterSummary(session: SessionForStaff, rsvps: Array<{ status: s
     confirmed: counts.confirmed,
     waitlisted: counts.waitlisted,
     declined: counts.declined,
+    removed: counts.removed,
   };
 }
 
 function sessionRosterRows(sessionId: string) {
-  const order: Record<string, number> = { confirmed: 0, waitlisted: 1, invited: 2, declined: 3 };
+  const order: Record<string, number> = { confirmed: 0, waitlisted: 1, invited: 2, declined: 3, removed: 4 };
   return db.sessionRSVP.findMany({
     where: { sessionId },
     include: { learner: { select: { id: true, name: true, email: true, isActive: true } } },
@@ -2963,6 +2964,9 @@ function formatSessionAttendee(rsvp: SessionRosterRow) {
     status: rsvp.status,
     respondedAt: rsvp.respondedAt,
     waitlistedAt: rsvp.waitlistedAt,
+    removalReason: rsvp.removalReason,
+    removedAt: rsvp.removedAt,
+    removedBy: rsvp.removedBy,
     createdAt: rsvp.createdAt,
   };
 }
@@ -3008,7 +3012,7 @@ router.get("/sessions/:id/invitable", async (req, res) => {
         where: {
           orgId: scope.orgId,
           isActive: true,
-          rsvps: { some: { sessionId: session.id } },
+          rsvps: { some: { sessionId: session.id, status: { not: "removed" } } },
           ...(q ? { AND: [{ OR: [{ name: { contains: q } }, { email: { contains: q } }] }] } : {}),
         },
         select: { id: true, name: true, email: true },
@@ -3172,11 +3176,13 @@ router.post("/sessions/:id/invite", async (req, res) => {
       const r = await db.sessionRSVP.upsert({
         where: { sessionId_learnerId: { sessionId: session.id, learnerId } },
         create: { sessionId: session.id, learnerId, status: "invited" },
-        update: {},
+        update: decision.existing?.status === "removed"
+          ? { status: "invited", respondedAt: null, waitlistedAt: null, removedBy: null, removedAt: null, removalReason: null }
+          : {},
       }).catch(() => null);
       if (r) {
         invited += 1;
-        const isNew = !decision.existing;
+        const isNew = !decision.existing || decision.existing.status === "removed";
         if (isNew) {
           newlyInvited += 1;
           const { notify } = await import("../services/notify.js");
@@ -3222,8 +3228,8 @@ router.post("/sessions/:id/remove", async (req, res) => {
       select: { id: true, status: true },
     });
     if (!existing) return res.status(404).json({ error: "attendee not found on this session" });
-    const { declineRsvp } = await import("../services/rsvp.js");
-    const updated = await declineRsvp(session.id, learnerId, scope.orgId);
+    const { removeRsvp } = await import("../services/rsvp.js");
+    const updated = await removeRsvp(session.id, learnerId, scope.orgId, me.id, reason);
     await db.auditLog.create({
       data: {
         userId: me.id,
@@ -3782,6 +3788,16 @@ async function requireMessageTemplateStaff(req: Parameters<typeof orgScope>[0]):
   return allowed ? scope.orgId : null;
 }
 
+async function canManageMessageTemplate(userId: string, row: { createdBy: string }, orgId: string): Promise<boolean> {
+  if (row.createdBy === userId || await isOrgStaff(userId)) return true;
+  const programmes = await db.programme.findMany({ where: { orgId }, select: { id: true } });
+  const grant = await db.userRole.findFirst({
+    where: { userId, programmeId: { in: programmes.map((row) => row.id) }, role: { name: { in: ["admin", "owner"] } } },
+    select: { id: true },
+  }).catch(() => null);
+  return !!grant;
+}
+
 router.get("/message-templates", async (req, res) => {
   const orgId = await requireMessageTemplateStaff(req as AuthedRequest);
   if (!orgId) return res.status(403).json({ error: "programme staff access required" });
@@ -3795,7 +3811,7 @@ router.post("/message-templates", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const title = String(req.body?.title ?? "").trim();
   const body = String(req.body?.body ?? "").trim();
-  if (!title || !body || title.length > 256) return res.status(400).json({ error: "title and body required" });
+  if (!title || !body || title.length > 256 || body.length > 5000) return res.status(400).json({ error: "title and body required (body max 5000 characters)" });
   const row = await db.messageTemplate.create({ data: { orgId, title, body, createdBy: me.id } });
   await db.auditLog.create({ data: { userId: me.id, action: "MESSAGE_TEMPLATE_CREATED", entity: "message_template", entityId: row.id, details: null } }).catch(() => null);
   return res.status(201).json(row);
@@ -3807,6 +3823,7 @@ router.patch("/message-templates/:id", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const row = await db.messageTemplate.findFirst({ where: { id: req.params.id, orgId } });
   if (!row) return res.status(404).json({ error: "template not found" });
+  if (!(await canManageMessageTemplate(me.id, row, orgId))) return res.status(403).json({ error: "only the author, programme admins and org staff can edit this template" });
   const data: Prisma.MessageTemplateUpdateInput = {};
   if (req.body?.title !== undefined) {
     const title = String(req.body.title).trim();
@@ -3815,7 +3832,7 @@ router.patch("/message-templates/:id", async (req, res) => {
   }
   if (req.body?.body !== undefined) {
     const body = String(req.body.body).trim();
-    if (!body) return res.status(400).json({ error: "body required" });
+    if (!body || body.length > 5000) return res.status(400).json({ error: "body must be 1-5000 characters" });
     data.body = body;
   }
   if (req.body?.isActive !== undefined) data.isActive = Boolean(req.body.isActive);
@@ -3830,6 +3847,7 @@ router.delete("/message-templates/:id", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const row = await db.messageTemplate.findFirst({ where: { id: req.params.id, orgId, isActive: true } });
   if (!row) return res.status(404).json({ error: "template not found" });
+  if (!(await canManageMessageTemplate(me.id, row, orgId))) return res.status(403).json({ error: "only the author, programme admins and org staff can delete this template" });
   await db.messageTemplate.update({ where: { id: row.id }, data: { isActive: false } });
   await db.auditLog.create({ data: { userId: me.id, action: "MESSAGE_TEMPLATE_DELETED", entity: "message_template", entityId: row.id, details: null } }).catch(() => null);
   return res.status(204).end();

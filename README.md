@@ -286,9 +286,11 @@ rotated by org admins. Real Outlook/Google API sync is **not built** and stays o
 
 Programme staff can manage a roster through `GET /api/sessions/:id/attendees` (statuses plus a
 capacity/seat summary), `GET /api/sessions/:id/invitable`, `POST /api/sessions/:id/invite` (returns
-skip reasons), and `POST /api/sessions/:id/remove`. Removal records a declined RSVP, audits the staff
-action and reuses the race-safe decline path so a freed confirmed seat promotes the earliest
-waitlisted learner. `PATCH /api/sessions/:id` and `POST /api/sessions/:id/cancel` accept an optional
+skip reasons), and `POST /api/sessions/:id/remove`. Removal writes a distinct `removed` RSVP with
+the actor, time and reason, audits the staff action and reuses the race-safe promotion path so a
+freed confirmed seat promotes exactly one waitlisted learner. Removed people appear in their own
+roster group, never count toward seats, and cannot confirm again until staff re-invites them.
+`PATCH /api/sessions/:id` and `POST /api/sessions/:id/cancel` accept an optional
 `reason` that is included in attendee notifications and emails. `GET /api/sessions/:id/invitable`
 now filters in the database across the whole organization: only active learners enrolled (not
 withdrawn) in the session's course, else programme, else any active org user for a session with
@@ -316,8 +318,10 @@ are audited (`ORGANIZATION_DEFAULT_SLA_UPDATED`, `PROGRAMME_SLA_UPDATED`), as is
 (`THREAD_SLA_UPDATED`). Overdue threads are
 escalated once to programme admins and trainers, either manually with `POST /api/sla/run` or by the
 background job (`SLA_INTERVAL_MS`, default 10 minutes, `0` disables it). Programme staff can also
-manage org-scoped canned responses through `/api/message-templates`; deleting a template deactivates
-it rather than losing the audit trail. The Messages page exposes course creation and inbox filters,
+manage org-scoped canned responses through `/api/message-templates`; any programme staff can read
+and use them, but only the author, programme admins (owners included) and org staff can edit or
+delete one. Template bodies are limited to 5,000 characters. Deleting a template deactivates it
+rather than losing the audit trail. The Messages page exposes course creation and inbox filters,
 learner-facing "usually responds within" indicators, admin-only SLA editing and canned-response
 management, a manual SLA check for org staff, and a metadata-only notice when messages are withheld.
 

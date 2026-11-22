@@ -3252,13 +3252,16 @@ components:
         name: { type: string }
         email: { type: string }
         isActive: { type: boolean }
-        status: { type: string, enum: [invited, confirmed, waitlisted, declined] }
+        status: { type: string, enum: [invited, confirmed, waitlisted, declined, removed] }
         respondedAt: { type: ["string", "null"], format: date-time }
         waitlistedAt: { type: ["string", "null"], format: date-time }
+        removalReason: { type: ["string", "null"], maxLength: 1000 }
+        removedAt: { type: ["string", "null"], format: date-time }
+        removedBy: { type: ["string", "null"] }
         createdAt: { type: string, format: date-time }
     SessionRosterSummary:
       type: object
-      required: [sessionId, capacity, attendeeCount, seatsTaken, invited, confirmed, waitlisted, declined]
+      required: [sessionId, capacity, attendeeCount, seatsTaken, invited, confirmed, waitlisted, declined, removed]
       properties:
         sessionId: { type: string }
         capacity: { type: ["integer", "null"], description: Null means unlimited }
@@ -3269,6 +3272,7 @@ components:
         confirmed: { type: integer }
         waitlisted: { type: integer }
         declined: { type: integer }
+        removed: { type: integer, description: Removed people are shown on the roster but never count toward seats }
     SessionAttendeesResponse:
       allOf:
         - $ref: "#/components/schemas/SessionRosterSummary"
@@ -3397,7 +3401,7 @@ components:
       required: [title, body]
       properties:
         title: { type: string, maxLength: 256 }
-        body: { type: string }
+        body: { type: string, minLength: 1, maxLength: 5000 }
         isActive: { type: boolean }
     MessageTemplate:
       type: object

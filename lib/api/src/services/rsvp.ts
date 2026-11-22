@@ -46,6 +46,9 @@ export async function confirmRsvp(sessionId: string, learnerId: string, orgId?: 
       throw Object.assign(new Error(`this session is ${locked.status} and cannot be answered`), { status: 409 });
     }
     const existing = await tx.sessionRSVP.findUnique({ where: { sessionId_learnerId: { sessionId, learnerId } } });
+    if (existing?.status === "removed") {
+      throw Object.assign(new Error("removed from this session by staff"), { status: 403 });
+    }
     // Already confirmed: keep the seat. A decline is the only way out of it.
     if (existing?.status === "confirmed") return { ...existing, newlyConfirmed: false };
     const confirmed = await tx.sessionRSVP.count({ where: { sessionId, status: "confirmed" } });
@@ -64,35 +67,64 @@ export async function confirmRsvp(sessionId: string, learnerId: string, orgId?: 
   });
 }
 
+async function promoteNextWaitlisted(sessionId: string) {
+  return db.$transaction(async (tx) => {
+    // Promotion takes the session lock too, so a promotion and a new confirmation cannot both
+    // take the same freed seat.
+    await tx.$queryRaw`SELECT id FROM sessions WITH (UPDLOCK, HOLDLOCK) WHERE id = ${sessionId}`;
+    const waiting = await tx.sessionRSVP.findMany({ where: { sessionId, status: "waitlisted" } });
+    // Round 8 / E.7: promote by waitlistedAt. Rows written before the column existed fall
+    // back to respondedAt/createdAt so they keep their original place.
+    const joinedAt = (r: { waitlistedAt: Date | null; respondedAt: Date | null; createdAt: Date }) =>
+      (r.waitlistedAt ?? r.respondedAt ?? r.createdAt).getTime();
+    const next = waiting.sort((a, b) => joinedAt(a) - joinedAt(b) || a.createdAt.getTime() - b.createdAt.getTime())[0];
+    if (!next) return null;
+    return tx.sessionRSVP.update({ where: { id: next.id }, data: { status: "confirmed", waitlistedAt: null } });
+  }).catch(() => null);
+}
+
+async function notifyPromotion(sessionId: string) {
+  const promoted = await promoteNextWaitlisted(sessionId);
+  if (!promoted) return null;
+  const { notify } = await import("./notify.js");
+  await notify(promoted.learnerId, "session_waitlist_promoted", {
+    title: "You are confirmed for a session",
+    body: "A seat opened up and your RSVP was promoted from the waitlist.",
+    link: "/calendar",
+  });
+  return promoted;
+}
+
 export async function declineRsvp(sessionId: string, learnerId: string, orgId?: string) {
   if (orgId) await assertSessionInOrg(sessionId, orgId);
   const rsvp = await db.sessionRSVP.findFirst({ where: { sessionId, learnerId } });
   if (!rsvp) throw Object.assign(new Error("rsvp not found"), { status: 404 });
+  if (rsvp.status === "removed") {
+    throw Object.assign(new Error("removed from this session by staff"), { status: 403 });
+  }
   const wasConfirmed = rsvp.status === "confirmed";
   const updated = await db.sessionRSVP.update({ where: { id: rsvp.id }, data: { status: "declined", respondedAt: new Date() } });
-  if (wasConfirmed) {
-    // Promotion takes the session lock too, so a promotion and a new confirmation cannot both
-    // take the same freed seat.
-    const promoted = await db.$transaction(async (tx) => {
-      await tx.$queryRaw`SELECT id FROM sessions WITH (UPDLOCK, HOLDLOCK) WHERE id = ${sessionId}`;
-      const waiting = await tx.sessionRSVP.findMany({ where: { sessionId, status: "waitlisted" } });
-      // Round 8 / E.7: promote by waitlistedAt. Rows written before the column existed fall
-      // back to respondedAt/createdAt so they keep their original place.
-      const joinedAt = (r: { waitlistedAt: Date | null; respondedAt: Date | null; createdAt: Date }) =>
-        (r.waitlistedAt ?? r.respondedAt ?? r.createdAt).getTime();
-      const next = waiting.sort((a, b) => joinedAt(a) - joinedAt(b) || a.createdAt.getTime() - b.createdAt.getTime())[0];
-      if (!next) return null;
-      return tx.sessionRSVP.update({ where: { id: next.id }, data: { status: "confirmed", waitlistedAt: null } });
-    }).catch(() => null);
-    if (promoted) {
-      const { notify } = await import("./notify.js");
-      await notify(promoted.learnerId, "session_waitlist_promoted", {
-        title: "You are confirmed for a session",
-        body: "A seat opened up and your RSVP was promoted from the waitlist.",
-        link: "/calendar",
-      });
-    }
-  }
+  if (wasConfirmed) await notifyPromotion(sessionId);
+  return updated;
+}
+
+export async function removeRsvp(sessionId: string, learnerId: string, orgId: string, removedBy: string, removalReason: string | null) {
+  await assertSessionInOrg(sessionId, orgId);
+  const rsvp = await db.sessionRSVP.findFirst({ where: { sessionId, learnerId } });
+  if (!rsvp) throw Object.assign(new Error("attendee not found on this session"), { status: 404 });
+  const wasConfirmed = rsvp.status === "confirmed";
+  const updated = await db.sessionRSVP.update({
+    where: { id: rsvp.id },
+    data: {
+      status: "removed",
+      respondedAt: new Date(),
+      waitlistedAt: null,
+      removedBy,
+      removedAt: new Date(),
+      removalReason,
+    },
+  });
+  if (wasConfirmed) await notifyPromotion(sessionId);
   return updated;
 }
 
