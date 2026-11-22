@@ -2853,23 +2853,58 @@ router.get("/sessions", async (req, res) => {
   // the sensitive part, not the fact that a class exists.
   const sessions = await db.session.findMany({ where: { orgId: scope.orgId }, orderBy: { startsAt: "asc" }, take: 200 }).catch(() => []);
   const staff = await isOrgStaff(me.id);
-  const [rsvps, enrolments, staffGrants] = await Promise.all([
-    db.sessionRSVP.findMany({ where: { learnerId: me.id }, select: { sessionId: true } }).catch(() => [] as Array<{ sessionId: string }>),
+  const [rsvps, enrolments, staffGrants, waitlisted] = await Promise.all([
+    db.sessionRSVP.findMany({
+      where: { learnerId: me.id },
+      select: { sessionId: true, status: true, waitlistedAt: true, respondedAt: true, createdAt: true },
+    }).catch(() => [] as Array<{ sessionId: string; status: string; waitlistedAt: Date | null; respondedAt: Date | null; createdAt: Date }>),
     db.enrolment.findMany({ where: { learnerId: me.id, status: { not: "withdrawn" } }, select: { courseId: true } }).catch(() => [] as Array<{ courseId: string }>),
     db.userRole.findMany({ where: { userId: me.id, programmeId: { not: null }, role: { name: { in: ["admin", "trainer"] } } }, select: { programmeId: true } }).catch(() => [] as Array<{ programmeId: string | null }>),
+    db.sessionRSVP.findMany({
+      where: { status: "waitlisted", session: { orgId: scope.orgId } },
+      select: { sessionId: true, learnerId: true, waitlistedAt: true, respondedAt: true, createdAt: true },
+    }).catch(() => [] as Array<{ sessionId: string; learnerId: string; waitlistedAt: Date | null; respondedAt: Date | null; createdAt: Date }>),
   ]);
-  const invited = new Set(rsvps.map((r) => r.sessionId));
+  const rsvpBySession = new Map(rsvps.map((r) => [r.sessionId, r]));
+  const invited = new Set(rsvps.filter((r) => ["invited", "confirmed", "waitlisted"].includes(r.status)).map((r) => r.sessionId));
   const enrolledCourses = new Set(enrolments.map((e) => e.courseId));
   const staffProgrammes = new Set(staffGrants.map((g) => g.programmeId));
+  const waitlistRows = new Map<string, Array<{ learnerId: string; waitlistedAt: Date | null; respondedAt: Date | null; createdAt: Date }>>();
+  for (const row of waitlisted) {
+    const rows = waitlistRows.get(row.sessionId) ?? [];
+    rows.push(row);
+    waitlistRows.set(row.sessionId, rows);
+  }
+  const waitlistOrder = new Map<string, string[]>();
+  for (const [sessionId, rows] of waitlistRows) {
+    rows.sort((a, b) => {
+      const leftTime = (a.waitlistedAt ?? a.respondedAt ?? a.createdAt).getTime();
+      const rightTime = (b.waitlistedAt ?? b.respondedAt ?? b.createdAt).getTime();
+      return leftTime - rightTime || a.createdAt.getTime() - b.createdAt.getTime();
+    });
+    waitlistOrder.set(sessionId, rows.map((r) => r.learnerId));
+  }
   return res.json(sessions.map((session) => {
+    const myRsvp = rsvpBySession.get(session.id);
+    const enrolled = session.courseId ? enrolledCourses.has(session.courseId) : false;
     const canJoin = staff
       || session.trainerId === me.id
       || invited.has(session.id)
-      || (session.courseId ? enrolledCourses.has(session.courseId) : false)
+      || enrolled
       || (session.programmeId ? staffProgrammes.has(session.programmeId) : false);
-    if (canJoin) return { ...session, canJoin: true };
-    const { joinUrl: _joinUrl, location: _location, ...visible } = session;
-    return { ...visible, joinUrl: null, location: null, canJoin: false };
+    const positionIndex = waitlistOrder.get(session.id)?.indexOf(me.id) ?? -1;
+    const base = {
+      ...session,
+      canJoin,
+      myRsvpStatus: myRsvp?.status ?? null,
+      myWaitlistPosition: positionIndex >= 0 ? positionIndex + 1 : null,
+      icsUrl: `/api/sessions/${session.id}/ics`,
+      cancellationReason: session.cancellationReason ?? null,
+      enrolled,
+    };
+    if (canJoin) return { ...base, joinUrl: session.joinUrl ?? null, location: session.location ?? null };
+    const { joinUrl: _joinUrl, location: _location, ...visible } = base;
+    return { ...visible, joinUrl: null, location: null };
   }));
 });
 async function canManageSessionProgramme(userId: string, programmeId: string | null | undefined): Promise<boolean> {
@@ -3481,7 +3516,7 @@ router.post("/sessions/:id/cancel", async (req, res) => {
   const notificationReason = sessionNotificationReason((req.body ?? {}).reason);
   const updated = await db.session.update({
     where: { id: session.id },
-    data: { status: "cancelled", sequence: session.sequence + 1 },
+    data: { status: "cancelled", sequence: session.sequence + 1, cancellationReason: notificationReason },
   });
   const { notify } = await import("../services/notify.js");
   const { icsAttachment } = await import("../services/ical.js");

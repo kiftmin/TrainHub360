@@ -3251,7 +3251,7 @@ components:
         status: { type: string }
     TrainingSession:
       type: object
-      required: [id, title, programme, date, time, mode, attendees, status, sequence, canJoin]
+      required: [id, title, programme, date, time, mode, attendees, status, sequence, canJoin, myRsvpStatus, myWaitlistPosition, icsUrl, cancellationReason, enrolled]
       properties:
         id: { type: string }
         title: { type: string }
@@ -3274,6 +3274,11 @@ components:
         sequence: { type: integer, description: Bumped on every edit or cancellation for calendar clients }
         canJoin: { type: boolean, description: Whether this caller may see the join details }
         status: { type: string }
+        myRsvpStatus: { type: ["string", "null"], enum: [invited, confirmed, waitlisted, declined, removed, null] }
+        myWaitlistPosition: { type: ["integer", "null"], description: One-based position in the session waitlist }
+        icsUrl: { type: string, description: Authenticated per-session .ics download }
+        cancellationReason: { type: ["string", "null"] }
+        enrolled: { type: boolean }
     SessionAttendee:
       type: object
       required: [id, rsvpId, learnerId, name, email, isActive, status, createdAt]

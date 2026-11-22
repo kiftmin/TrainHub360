@@ -124,6 +124,11 @@ export interface TrainingSession {
   sequence?: number;
   canJoin?: boolean;
   status: string;
+  myRsvpStatus?: 'invited' | 'confirmed' | 'waitlisted' | 'declined' | 'removed' | null;
+  myWaitlistPosition?: number | null;
+  icsUrl?: string;
+  cancellationReason?: string | null;
+  enrolled?: boolean;
 }
 
 export interface SessionRosterSummary {

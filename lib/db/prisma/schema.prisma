@@ -681,6 +681,7 @@ model Session {
   mode      String @default("online")
   attendees Int    @default(0)
   status    String @default("scheduled")
+  cancellationReason String? @map("cancellation_reason") @db.NVarChar(1000)
   capacity  Int?
   // Round 8 / D.2: bumped whenever the event changes so calendar clients update.
   sequence  Int    @default(0)
