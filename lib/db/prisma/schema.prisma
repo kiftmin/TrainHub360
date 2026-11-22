@@ -700,6 +700,10 @@ model SessionRSVP {
   respondedAt DateTime? @map("responded_at")
   // Round 8 / E.7: promotion must follow when the learner joined the waitlist.
   waitlistedAt DateTime? @map("waitlisted_at")
+  // Round 13 / 4.1: staff removal is distinct from a learner's decline. Only a staff invite clears it.
+  removedBy    String?   @map("removed_by")
+  removedAt    DateTime? @map("removed_at")
+  removalReason String?  @map("removal_reason")
   createdAt   DateTime  @default(now()) @map("created_at")
 
   @@unique([sessionId, learnerId])
