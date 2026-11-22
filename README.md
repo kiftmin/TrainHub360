@@ -307,6 +307,16 @@ page exposes these tools to programme staff as a roster panel with capacity coun
 a debounced search, load-more paging, selected counts, "invite all eligible", skip reasons, removal,
 title edits and cancellation.
 
+### Trainer tools
+
+- Calendar: supported — `.ics` invitations, a per-session `.ics` download and a personal
+  `feed.ics` subscription; not built — Outlook/Google API sync (`POST /sessions/:id/sync-calendar`
+  returns 501).
+- Sessions: supported — roster, invitations, removals, waitlist promotion and cancellations with
+  a reason; not built — direct writes into an attendee's external calendar.
+- Storage: supported — local-disk uploads under a persistent volume; not built — S3/Azure cloud
+  storage and virus scanning.
+
 ### Direct messaging and response SLA
 
 Message threads may be scoped to a programme or a single course; `POST /api/threads` persists
