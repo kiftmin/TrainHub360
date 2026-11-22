@@ -1,14 +1,15 @@
 # Round 10 — report
 
-Branches/PRs: one PR per phase, stacked from the Round 9 tip `deaf58d`.
+Integration: PR **#13** merged the Round 10 tip into `main` as `fc89cf3`, tagged **round10**.
+Stacked PRs #8–#12 were closed as superseded, as were the older overlapping PRs #1–#7.
 
-| Phase | PR | Head branch |
-| --- | --- | --- |
-| 1 | #8 | `round10-phase1` |
-| 2 | #9 | `round10-phase2` |
-| 3 | #10 | `round10-phase3` |
-| 4 | #11 | `round10-phase4` |
-| 5 | #12 | `round10-phase5` |
+| Phase | PR | Head branch | Status |
+| --- | --- | --- | --- |
+| 1 | #8 | `round10-phase1` | closed, superseded by #13 |
+| 2 | #9 | `round10-phase2` | closed, superseded by #13 |
+| 3 | #10 | `round10-phase3` | closed, superseded by #13 |
+| 4 | #11 | `round10-phase4` | closed, superseded by #13 |
+| 5 | #12 | `round10-phase5` | closed, superseded by #13 |
 
 ## What ran, against what
 
@@ -96,18 +97,19 @@ Logs: `$env:TEMP\round10-api-baseline.log`, `$env:TEMP\round10-frontend-baseline
 
 - Un-completing revokes certificates: accepted.
 - Stale job timeout default 10 minutes: accepted.
-- Delete fully contained old `fix/*` and `phase/*` branches after the Round 10 merge: accepted;
-  record completion below after merge.
+- Delete fully contained old `fix/*` and `phase/*` branches after the Round 10 merge: accepted.
+  Only `phase/a1-async-errors` was fully contained in `main`; it was deleted. Other `fix/*` and
+  `phase/*` branches remain because `git branch -r --merged origin/main` did not list them.
 
 ## Audit
 
 Mass-assignment audit research found 0 vulnerabilities. All spread/`Object.assign` uses in
 `lib/api/src` are whitelisted, derived from trusted request context, or attach status to `Error`.
 
-## Open items
+## Completion
 
-- Merge/tag was not performed: the pre-existing PR stack has unrelated conflicts in PR #5
-  (`phase/a3-b-1.7`) and PR #7 (`round9-phases-1-3`), which is the base of Round 10 PR #8. Merging
-  Round 10 into that branch would alter another open PR.
-- After the earlier conflicts are resolved: merge #8–#12 in order, tag the final state, then delete
-  the confirmed old `fix/*` and `phase/*` branches.
+- PR #13 CI passed with the real SQL Server service (`build`) and frontend job before merge.
+- PR #13 merged as `fc89cf3` and tagged `round10`.
+- PRs #1–#7 and #8–#12 were closed with a comment pointing to PR #13.
+- Branch cleanup used `git branch -r --merged origin/main`; only `phase/a1-async-errors` was fully
+  contained and was deleted. Nothing else was removed.
