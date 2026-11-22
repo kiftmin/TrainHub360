@@ -20,12 +20,12 @@ export function canManageSessionRoster(user: { role?: string; isOrgStaff?: boole
   return ['owner', 'admin', 'trainer'].includes(user.role ?? '');
 }
 
-const statuses: SessionAttendee['status'][] = ['confirmed', 'waitlisted', 'invited', 'declined'];
+const statuses: SessionAttendee['status'][] = ['confirmed', 'waitlisted', 'invited', 'declined', 'removed'];
 
 function toneFor(status: SessionAttendee['status']): 'good' | 'warn' | 'bad' | 'neutral' {
   if (status === 'confirmed') return 'good';
   if (status === 'waitlisted') return 'warn';
-  if (status === 'declined') return 'bad';
+  if (status === 'declined' || status === 'removed') return 'bad';
   return 'neutral';
 }
 
@@ -223,9 +223,9 @@ export function SessionRosterPanel({ sessionId, sessionTitle }: { sessionId: str
             <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{group.status} ({group.rows.length})</p>
             <div className="space-y-1">
               {group.rows.map((row) => <div key={row.rsvpId} className="flex items-center gap-3 rounded-md border border-border/60 p-2" data-testid={`attendee-${row.learnerId}`}>
-                <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{row.name}</p><p className="truncate text-[11px] text-muted-foreground">{row.email}</p></div>
+                <div className="min-w-0 flex-1"><p className="truncate text-xs font-semibold">{row.name}</p><p className="truncate text-[11px] text-muted-foreground">{row.email}</p>{row.status === 'removed' && row.removalReason && <p className="truncate text-[11px] text-destructive" data-testid={`attendee-removal-reason-${row.learnerId}`}>{row.removalReason}</p>}</div>
                 <Status tone={toneFor(row.status)}>{row.status}</Status>
-                {row.status !== 'declined' && <Button size="sm" variant="outline" disabled={busy} onClick={() => removeAttendee(row)} data-testid={`remove-attendee-${row.learnerId}`}>Remove</Button>}
+                {['invited', 'confirmed', 'waitlisted'].includes(row.status) && <Button size="sm" variant="outline" disabled={busy} onClick={() => removeAttendee(row)} data-testid={`remove-attendee-${row.learnerId}`}>Remove</Button>}
               </div>)}
               {!group.rows.length && <p className="text-[11px] text-muted-foreground">None</p>}
             </div>

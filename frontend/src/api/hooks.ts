@@ -136,6 +136,7 @@ export interface SessionRosterSummary {
   confirmed: number;
   waitlisted: number;
   declined: number;
+  removed: number;
 }
 
 export interface SessionAttendee {
@@ -145,9 +146,12 @@ export interface SessionAttendee {
   name: string;
   email: string;
   isActive: boolean;
-  status: 'invited' | 'confirmed' | 'waitlisted' | 'declined';
+  status: 'invited' | 'confirmed' | 'waitlisted' | 'declined' | 'removed';
   respondedAt: string | null;
   waitlistedAt: string | null;
+  removalReason: string | null;
+  removedAt: string | null;
+  removedBy: string | null;
   createdAt: string;
 }
 
