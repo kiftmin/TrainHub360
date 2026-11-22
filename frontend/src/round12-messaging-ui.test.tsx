@@ -61,7 +61,7 @@ const baseThread = {
   metadataOnly: false,
   averageResponseTimeHours: 2.5,
   slaStatus: "Usually responds within 24 hours.",
-  slaState: "ok",
+  slaState: "ok" as const,
 };
 
 const template = {
