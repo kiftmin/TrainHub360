@@ -206,8 +206,8 @@ export interface SessionInviteResult {
   results: SessionInviteResultRow[];
 }
 
-export interface SessionRemoveAttendeeResult extends SessionAttendeesResponse {
-  removed: string;
+export interface SessionRemoveAttendeeResult extends Omit<SessionAttendeesResponse, 'removed'> {
+  removed: number;
   learnerId: string;
   previousStatus: string;
   reason: string | null;
