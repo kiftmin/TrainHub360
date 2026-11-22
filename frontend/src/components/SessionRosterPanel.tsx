@@ -10,6 +10,7 @@ import {
   useSessionInvitable,
   useUpdateSession,
   type SessionAttendee,
+  type SessionInvitableLearner,
   type SessionInviteResult,
 } from '@/api/hooks';
 
@@ -30,7 +31,13 @@ function toneFor(status: SessionAttendee['status']): 'good' | 'warn' | 'bad' | '
 
 export function SessionRosterPanel({ sessionId, sessionTitle }: { sessionId: string; sessionTitle: string }) {
   const attendees = useSessionAttendees(sessionId);
-  const invitable = useSessionInvitable(sessionId);
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [learners, setLearners] = useState<SessionInvitableLearner[]>([]);
+  const [skipped, setSkipped] = useState<Array<{ learnerId: string; name: string; email: string; reason: string }>>([]);
+  const [total, setTotal] = useState(0);
+  const invitable = useSessionInvitable(sessionId, { q: debouncedSearch, cursor });
   const invite = useInviteSession(sessionId);
   const remove = useRemoveSessionAttendee(sessionId);
   const update = useUpdateSession();
@@ -43,11 +50,53 @@ export function SessionRosterPanel({ sessionId, sessionTitle }: { sessionId: str
 
   useEffect(() => setTitle(sessionTitle), [sessionTitle]);
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const next = search.trim();
+      setDebouncedSearch(next.length >= 2 ? next : '');
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+
+  useEffect(() => {
+    setCursor(null);
+    setLearners([]);
+    setSkipped([]);
+    setSelected([]);
+    setTotal(0);
+  }, [sessionId, debouncedSearch]);
+
+  useEffect(() => {
+    if (!invitable.data) return;
+    const incoming = invitable.data.learners;
+    setTotal(invitable.data.total);
+    setLearners((current) => {
+      if (!cursor) return incoming;
+      const known = new Set(current.map((row) => row.learnerId));
+      return [...current, ...incoming.filter((row) => !known.has(row.learnerId))];
+    });
+    setSkipped((current) => {
+      if (!cursor) return invitable.data.skipped;
+      const known = new Set(current.map((row) => row.learnerId));
+      return [...current, ...invitable.data.skipped.filter((row) => !known.has(row.learnerId))];
+    });
+  }, [invitable.data, cursor]);
+
   const summary = attendees.data?.summary;
   const grouped = useMemo(
     () => statuses.map((status) => ({ status, rows: (attendees.data?.attendees ?? []).filter((row) => row.status === status) })),
     [attendees.data],
   );
+
+  const inviteMessage = (result: SessionInviteResult) => {
+    const reasons = Object.entries(result.skippedReasons).map(([id, value]) => `${id}: ${value}`).join(', ');
+    return `${result.newlyInvited} invited, ${result.skipped.length} skipped${reasons ? ` (${reasons})` : ''}.`;
+  };
+
+  const onInviteSuccess = (result: SessionInviteResult) => {
+    setMessage(inviteMessage(result));
+    setSelected([]);
+  };
 
   const inviteSelected = () => {
     if (!selected.length) {
@@ -57,11 +106,16 @@ export function SessionRosterPanel({ sessionId, sessionTitle }: { sessionId: str
     setError(null);
     setMessage(null);
     invite.mutate(selected, {
-      onSuccess: (result: SessionInviteResult) => {
-        const reasons = Object.entries(result.skippedReasons).map(([id, value]) => `${id}: ${value}`).join(', ');
-        setMessage(`${result.newlyInvited} invited, ${result.skipped.length} skipped${reasons ? ` (${reasons})` : ''}.`);
-        setSelected([]);
-      },
+      onSuccess: onInviteSuccess,
+      onError: (cause) => setError((cause as Error).message),
+    });
+  };
+
+  const inviteAll = () => {
+    setError(null);
+    setMessage(null);
+    invite.mutate({ allEnrolled: true }, {
+      onSuccess: onInviteSuccess,
       onError: (cause) => setError((cause as Error).message),
     });
   };
@@ -137,17 +191,27 @@ export function SessionRosterPanel({ sessionId, sessionTitle }: { sessionId: str
     </div>
 
     <div className="mt-5 rounded-lg border border-border/70 p-3">
-      <div className="flex items-center justify-between"><h3 className="text-sm font-bold">Invite learners</h3><Button size="sm" disabled={busy || !selected.length} onClick={inviteSelected} data-testid="button-invite-selected">Invite selected</Button></div>
-      {invitable.isLoading ? <p className="mt-3 text-xs text-muted-foreground">Loading learners…</p>
-        : <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {(invitable.data?.learners ?? []).map((learner) => <label key={learner.learnerId} className="flex items-center gap-2 rounded-md bg-secondary/40 p-2 text-xs" data-testid={`invitable-${learner.learnerId}`}>
-            <input type="checkbox" checked={selected.includes(learner.learnerId)} onChange={(event) => setSelected(event.target.checked ? [...selected, learner.learnerId] : selected.filter((id) => id !== learner.learnerId))} />
-            <span className="min-w-0"><span className="block truncate font-semibold">{learner.name}</span><span className="block truncate text-muted-foreground">{learner.email}</span></span>
-          </label>)}
-          {!(invitable.data?.learners ?? []).length && <p className="text-xs text-muted-foreground">No eligible learners are left to invite.</p>}
-        </div>}
-      {!!invitable.data?.skipped.length && <div className="mt-3 space-y-1" data-testid="invitable-skipped">
-        {invitable.data.skipped.map((row) => <p key={row.learnerId} className="text-[11px] text-muted-foreground">{row.name}: {row.reason.replace(/_/g, ' ')}</p>)}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div><h3 className="text-sm font-bold">Invite learners</h3><p className="text-[11px] text-muted-foreground" data-testid="invitable-total">{total} eligible</p></div>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] font-semibold text-muted-foreground" data-testid="invitable-selected-count">{selected.length} selected</span>
+          <Button size="sm" variant="outline" disabled={busy} onClick={inviteAll} data-testid="button-invite-all">Invite all eligible</Button>
+          <Button size="sm" disabled={busy || !selected.length} onClick={inviteSelected} data-testid="button-invite-selected">Invite selected</Button>
+        </div>
+      </div>
+      <Input className="mt-3" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search by name or email (2+ characters)" data-testid="input-invitable-search" />
+      {invitable.isError ? <div className="mt-3"><ErrorState retry={() => invitable.refetch()} /></div>
+        : invitable.isLoading && !learners.length ? <p className="mt-3 text-xs text-muted-foreground">Loading learners…</p>
+          : <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {learners.map((learner) => <label key={learner.learnerId} className="flex items-center gap-2 rounded-md bg-secondary/40 p-2 text-xs" data-testid={`invitable-${learner.learnerId}`}>
+              <input type="checkbox" checked={selected.includes(learner.learnerId)} onChange={(event) => setSelected(event.target.checked ? [...selected, learner.learnerId] : selected.filter((id) => id !== learner.learnerId))} />
+              <span className="min-w-0"><span className="block truncate font-semibold">{learner.name}</span><span className="block truncate text-muted-foreground">{learner.email}</span></span>
+            </label>)}
+            {!learners.length && <p className="text-xs text-muted-foreground">No eligible learners are left to invite.</p>}
+          </div>}
+      {invitable.data?.nextCursor && <div className="mt-3"><Button size="sm" variant="ghost" disabled={invitable.isFetching || busy} onClick={() => setCursor(invitable.data?.nextCursor ?? null)} data-testid="button-invitable-more">Load more</Button></div>}
+      {!!skipped.length && <div className="mt-3 space-y-1" data-testid="invitable-skipped">
+        {skipped.map((row) => <p key={row.learnerId} className="text-[11px] text-muted-foreground">{row.name}: {row.reason.replace(/_/g, ' ')}</p>)}
       </div>}
     </div>
 
