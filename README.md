@@ -7,9 +7,11 @@ Corporate training platform proving training worked, not just that it happened.
 
 1. Copy env template: `cp .env.example .env` and set the real SA password in `DATABASE_URL`:
    `sqlserver://69.30.247.60:1433;database=TrainHub360;user=sa;password=<SECRET>;trustServerCertificate=true`
-2. Generate + push schema:
-   `pnpm --filter @workspace/db run prisma:generate`
-   `pnpm --filter @workspace/db run prisma:push`
+ 2. Generate the client, push the base schema, then apply migration SQL:
+    `pnpm --filter @workspace/db run prisma:generate`
+    `pnpm --filter @workspace/db run prisma:push`
+    `pnpm --filter @workspace/db run prisma:baseline`
+
 3. Run API: `PORT=4000 pnpm --filter @workspace/api run dev`
 4. Health: `GET /api/healthz` (liveness) � `GET /api/readyz` (includes MSSQL `SELECT 1` check)
 
@@ -24,7 +26,8 @@ DATABASE_URL="sqlserver://localhost:1433;database=TrainHub360_Test;user=trainhub
 ```bash
 pnpm install
 pnpm --filter @workspace/db run prisma:generate
-pnpm --filter @workspace/db run prisma:push        # creates the schema in that database
+pnpm --filter @workspace/db run prisma:push        # creates the base schema in that database
+pnpm --filter @workspace/db run prisma:baseline    # applies migration-only indexes/backfills
 pnpm --filter @workspace/api run build             # tests import from dist/
 pnpm --filter @workspace/api run test
 ```
@@ -34,7 +37,8 @@ with a single warning; with `CI=true` a missing `DATABASE_URL` is a hard failure
 never go green while most of the suite never ran.
 
 CI does this automatically: `.github/workflows/ci.yml` starts a SQL Server 2022 service
-container, pushes the schema and runs the same suite (`DATABASE_URL` is set in the job env).
+container, pushes the base schema, applies every migration with the same baseline runner,
+verifies `prisma migrate status`, and runs the suite (`DATABASE_URL` is set in the job env).
 
 Never commit `.env` or the SA password � it is gitignored. CI uses a placeholder URL.
 
@@ -45,32 +49,39 @@ Spec: `lib/api-spec/openapi.yaml`. Regenerate clients:
 ### Schema migrations
 
 **Until 2026-11-20** this repository deployed with `prisma db push` and had no migration
-history. That is no longer the whole story: there is now a baseline migration,
-`lib/db/prisma/migrations/20261120_baseline_user_role_primary_key/`, and a runner that switches
-an existing database over to it. `db push` still creates the schema in a fresh development or CI
-database; `prisma migrate deploy` is what an existing deployment should use from now on.
+history. `db push` never ran the SQL migrations, so objects Prisma cannot express — the filtered
+`UX_evaluation_jobs_one_pending_per_course` index and the data backfills — were missing. The
+migration directory is now the source of truth for those objects, and `db push` alone is not a
+complete schema setup.
+
+Use this sequence for a fresh development, test, or CI database:
+
+```sh
+set -a && . ./.env && set +a
+pnpm --filter @workspace/db run prisma:generate
+pnpm --filter @workspace/db run prisma:push
+pnpm --filter @workspace/db run prisma:baseline
+pnpm --filter @workspace/db run prisma:migrate:status
+```
+
+`prisma:baseline` runs `lib/db/scripts/migrate-baseline.cjs --all`: it records the baseline and
+applies every unrecorded migration in name order. It is safe to re-run because the migrations are
+guarded on the current shape. CI runs exactly this sequence.
 
 **Existing deployment (has data, no `_prisma_migrations` table)** — one time, with `DATABASE_URL`
 loaded:
 
 ```sh
 set -a && . ./.env && set +a
-node lib/db/scripts/migrate-baseline.cjs --dry-run   # shows what it would do
-node lib/db/scripts/migrate-baseline.cjs             # runs the baseline, records it as applied
-pnpm --filter @workspace/db exec prisma migrate status
+node lib/db/scripts/migrate-baseline.cjs --dry-run --all
+pnpm --filter @workspace/db run prisma:baseline
+pnpm --filter @workspace/db run prisma:migrate:status
 ```
 
-The runner is safe to re-run: every step in the baseline is guarded on the current shape, so on
-a database that already matches `schema.prisma` it changes nothing and only records the baseline.
-It refuses to run if the baseline is already recorded, and it does not run if `_prisma_migrations`
-holds other history it would have to pretend not to see.
-
-**Fresh database** — `prisma migrate deploy` creates the schema and records the baseline in one
-step.
-
-**After the switch** — change `schema.prisma`, then `prisma migrate dev --name <what changed>`
-locally and `prisma migrate deploy` in deployment. Apply every schema change to a
-backup-restored copy first and read the data-loss warnings.
+After that, `prisma migrate deploy` applies future migrations (`pnpm --filter @workspace/db run
+prisma:deploy`). Change `schema.prisma` with `prisma migrate dev --name <what changed>` locally,
+then deploy the generated migration. Apply every schema change to a backup-restored copy first
+and read the data-loss warnings.
 
 **What the baseline does.** It replaces the old composite primary key on `user_roles`
 (`user_id`, `role_id`) with a surrogate `id`, backfills the ids deterministically from each row's
@@ -79,7 +90,7 @@ with the old shape by `lib/api/tests/migrations.test.js`, which is part of the A
 constraint it leaves behind is still the old pair, not `(userId, roleId, programmeId)` — the same
 role in two programmes is a separate schema change, and `schema.prisma` says so.
 
-Backfills (run after `db push`, idempotent):
+Standalone backfills (for data repair; normal setup applies the migration SQL above):
 - `pnpm --filter @workspace/db exec tsx scripts/backfill-session-booking-org.ts`
 - `pnpm --filter @workspace/db exec tsx scripts/backfill-course-trainer-id.ts`
 
@@ -300,7 +311,8 @@ with a resend-invitation shortcut.
 
 ```sh
 set -a && . ./.env && set +a
-pnpm --filter @workspace/db run prisma:push        # or prisma migrate deploy
+pnpm --filter @workspace/db run prisma:push
+pnpm --filter @workspace/db run prisma:baseline
 pnpm --filter @workspace/api run build             # the tests import dist/
 pnpm --filter @workspace/api run test
 cd frontend && pnpm install --ignore-workspace && pnpm run typecheck && pnpm run test:ui

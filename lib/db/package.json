@@ -16,7 +16,10 @@
   "scripts": {
     "prisma:generate": "prisma generate --schema ./prisma/schema.prisma",
     "prisma:migrate": "prisma migrate dev --schema ./prisma/schema.prisma",
+    "prisma:deploy": "prisma migrate deploy --schema ./prisma/schema.prisma",
+    "prisma:migrate:status": "prisma migrate status --schema ./prisma/schema.prisma",
     "prisma:push": "prisma db push --schema ./prisma/schema.prisma",
+    "prisma:baseline": "node scripts/migrate-baseline.cjs --all",
     "prisma:studio": "prisma studio --schema ./prisma/schema.prisma",
     "prisma:seed": "tsx prisma/seed.ts"
   },

@@ -39,7 +39,8 @@ Remove-Item lib\db\tsconfig.tsbuildinfo, lib\api\tsconfig.tsbuildinfo -ErrorActi
 
 pnpm install
 pnpm --filter @workspace/db run prisma:generate
-pnpm --filter @workspace/db run prisma:push        # applies the schema to TrainHub360_Test
+pnpm --filter @workspace/db run prisma:push        # applies the base schema to TrainHub360_Test
+pnpm --filter @workspace/db run prisma:baseline    # applies migration-only indexes/backfills
 pnpm --filter @workspace/api run build
 pnpm --filter @workspace/api run test
 ```

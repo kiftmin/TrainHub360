@@ -43,8 +43,12 @@ jobs:
       - run: pnpm --filter @workspace/db run prisma:generate
       - run: pnpm run typecheck
       - run: pnpm --filter @workspace/api run build
-      - name: Apply schema to the CI database
-        run: pnpm --filter @workspace/db run prisma:push
+      - name: Apply schema and migrations to the CI database
+        run: |
+          pnpm --filter @workspace/db run prisma:push
+          pnpm --filter @workspace/db run prisma:baseline
+      - name: Verify migration history
+        run: pnpm --filter @workspace/db run prisma:migrate:status
       # Round 8 / Phase 6.2: a route added without a spec entry used to be noticed only by
       # whoever regenerated the client, so the check is part of the build now.
       - name: Check the OpenAPI spec against the routes
