@@ -4014,10 +4014,11 @@ router.delete("/calendar/connections/:id", async (req, res) => {
 });
 router.post("/sessions/:id/sync-calendar", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
-  const { syncSessionToCalendars } = await import("../services/calendarSync.js");
   try {
     await loadSessionForStaff(req as AuthedRequest, scope.orgId);
-    return res.json(await syncSessionToCalendars(req.params.id, undefined, scope.orgId));
+    return res.status(501).json({
+      error: "Outlook/Google API sync is not built. Use GET /api/sessions/:id/ics or the personal feed at GET /api/calendar/feed.ics?token=… instead.",
+    });
   } catch (e) {
     const status = typeof e === "object" && e !== null && "status" in e ? (e as { status: number }).status : 500;
     return res.status(status).json({ error: (e as Error).message });

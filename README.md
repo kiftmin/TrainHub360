@@ -265,9 +265,13 @@ A field that exists on the endpoint but not for your role is refused with `403`;
 does not have at all is a `400`. The score is recomputed from the stored row plus the validated
 fields, so a `deadlineDate` in the body can no longer change a stored `timelinessScore`.
 
-### Reminders and calendar
+### Calendar
 
-The reminder job (`jobs/sessionReminderJob.ts` → `services/reminderCadence.ts`) follows each
+Supported calendar access is file-based: `.ics` invitations, a per-session `.ics` download and a
+personal feed. Outlook/Google API sync is **not built**; `POST /api/sessions/:id/sync-calendar`
+answers `501` with that message and the supported alternatives.
+
+Reminders are separate from calendar sync. The reminder job (`jobs/sessionReminderJob.ts` → `services/reminderCadence.ts`) follows each
 organisation's `reminderCadenceJson`: `unansweredHours` offsets after an unanswered invitation (up to
 `maxUnanswered`) and `confirmedBeforeStartHours` offsets before a confirmed session starts. The
 cadence is validated on save (arrays of positive integers, bounded length) and is editable in

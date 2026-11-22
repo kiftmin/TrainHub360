@@ -2168,15 +2168,18 @@ paths:
     post:
       operationId: syncSessionCalendar
       tags: [engagement]
-      summary: Push the session to connected calendars
+      summary: Not implemented — use .ics invitations or the personal feed
+      description: >
+        Outlook/Google API sync is not built. This route answers 501 even for programme staff;
+        the supported calendar approach is GET /sessions/{sessionId}/ics and GET /calendar/feed.ics.
       parameters:
         - name: sessionId
           in: path
           required: true
           schema: { type: string }
       responses:
-        "200":
-          description: Sync result
+        "501":
+          description: Calendar API sync is not implemented
   /nudge/dispatch:
     post:
       operationId: dispatchNudges
