@@ -1647,6 +1647,40 @@ router.put("/assessments/:id/questions/order", requireProgrammeRole("admin", "ow
   return res.json({ assessmentId: assessment.id, order: ids });
 });
 
+router.get("/assessments/:id/publish-impact", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const draft = await db.assessment.findFirst({
+    where: { id: req.params.id, isPublished: false, supersedesId: { not: null }, module: { course: { programme: { orgId: scope.orgId } } } },
+    select: { id: true, supersedesId: true, module: { select: { courseId: true } } },
+  }).catch(() => null);
+  if (!draft || !draft.supersedesId) return res.status(404).json({ error: "draft not found in your organization" });
+  const previous = await db.assessment.findFirst({
+    where: { id: draft.supersedesId, module: { course: { programme: { orgId: scope.orgId } } } },
+    select: { id: true, supersedesId: true, changeKind: true, supersededAt: true },
+  }).catch(() => null);
+  if (!previous || previous.supersededAt) return res.status(400).json({ error: "this draft does not replace a live paper" });
+
+  const enrolments = await db.enrolment.findMany({
+    where: { courseId: draft.module.courseId, status: { not: "withdrawn" }, withdrawnAt: null },
+    select: { learnerId: true, status: true },
+  }).catch(() => [] as Array<{ learnerId: string; status: string }>);
+  const learnerIds = enrolments.map((e) => e.learnerId);
+  const chain = await versionChain(db, previous);
+  const attempts = learnerIds.length
+    ? await db.assessmentAttempt.findMany({
+        where: { assessmentId: { in: chain.map((node) => node.id) }, learnerId: { in: learnerIds } },
+        select: { learnerId: true },
+        distinct: ["learnerId"],
+      }).catch(() => [] as Array<{ learnerId: string }>)
+    : [];
+  return res.json({
+    enrolled: enrolments.length,
+    completed: enrolments.filter((e) => e.status === "completed").length,
+    notCompleted: enrolments.filter((e) => e.status !== "completed").length,
+    withAttempts: attempts.length,
+  });
+});
+
 router.post("/assessments/:id/publish", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);

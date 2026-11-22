@@ -1097,6 +1097,17 @@ export interface CourseAssessment {
   locked: boolean;
 }
 
+export interface PublishImpact {
+  enrolled: number;
+  completed: number;
+  notCompleted: number;
+  withAttempts: number;
+}
+
+export function usePublishImpact(assessmentId: string, enabled = true) {
+  return useQuery(queryOpts(['publish-impact', assessmentId] as const, () => api<PublishImpact>(`/assessments/${assessmentId}/publish-impact`), enabled && !!assessmentId));
+}
+
 export interface EvaluationStatus {
   pending: boolean;
   job: { id?: string; status?: string; attempts?: number; lastError?: string | null } | null;

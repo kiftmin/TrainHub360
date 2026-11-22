@@ -382,6 +382,35 @@ paths:
       responses:
         "204":
           description: Deleted
+  /assessments/{assessmentId}/publish-impact:
+    get:
+      operationId: getAssessmentPublishImpact
+      tags: [learning]
+      summary: Count the learners affected by publishing a replacement draft
+      description: >
+        Programme staff only. Answers for a draft that replaces a live paper in the caller's
+        organization. Withdrawn enrolments are excluded.
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Course-wide impact counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enrolled, completed, notCompleted, withAttempts]
+                properties:
+                  enrolled: { type: integer }
+                  completed: { type: integer }
+                  notCompleted: { type: integer }
+                  withAttempts: { type: integer }
+        "400": { description: The draft does not replace a live paper }
+        "403": { description: Forbidden for this programme }
+        "404": { description: Draft not found in your organization }
   /assessments/{assessmentId}/publish:
     post:
       operationId: publishAssessment

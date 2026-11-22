@@ -113,6 +113,9 @@ function staffHarness(options: {
     if (url.startsWith("/api/assessments/") && call.method === "POST" && url.endsWith("/publish")) {
       return options.publish?.(url, init) ?? jsonResponse({ ...draftPaper, isPublished: true, publishedAt: "2026-11-21T12:00:00.000Z" });
     }
+    if (url.endsWith("/publish-impact") && call.method === "GET") {
+      return jsonResponse({ enrolled: 12, completed: 4, notCompleted: 8, withAttempts: 5 });
+    }
     if (url.startsWith("/api/assessments/") && call.method === "GET") {
       const id = url.split("/").pop() ?? "unknown";
       const found = versions.find((v) => v.id === id);
@@ -172,7 +175,7 @@ describe("Round 10 — versioned assessment builder", () => {
     expect((patch?.body as { confirmNewVersion?: boolean }).confirmNewVersion).toBe(true);
   });
 
-  test("publishing an empty draft shows the backend problem and sends the change kind", async () => {
+  test("a replacement publish waits for a deliberate choice, shows real counts and sends that choice", async () => {
     staffSession();
     const { calls } = staffHarness({
       publish: () => jsonResponse({ error: "an assessment needs at least one question", problems: ["an assessment needs at least one question"] }, 400),
@@ -181,10 +184,16 @@ describe("Round 10 — versioned assessment builder", () => {
     await openCourse();
     await selectModule();
     fireEvent.change(await screen.findByTestId("assessment-version-select"), { target: { value: "as_draft" } });
-    fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
+    const publishButton = await screen.findByRole("button", { name: "Publish" });
+    expect((publishButton as HTMLButtonElement).disabled).toBe(true);
+    expect((await screen.findByTestId("publish-change-kind-minor")).textContent).toContain("5 learners' results stand");
+    expect(screen.getByTestId("publish-change-kind-new_paper").textContent).toContain("8 learners who haven't completed must retake it");
+    fireEvent.click(screen.getByTestId("publish-change-kind-new_paper"));
+    expect((publishButton as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(publishButton);
     expect(await screen.findByText("an assessment needs at least one question")).toBeTruthy();
     const publish = calls.find((c) => c.url === "/api/assessments/as_draft/publish");
-    expect((publish?.body as { changeKind?: string }).changeKind).toBe("minor");
+    expect((publish?.body as { changeKind?: string }).changeKind).toBe("new_paper");
   });
 
   test("saving a draft with no questions is allowed and discarding it leaves the live paper alone", async () => {
@@ -268,6 +277,7 @@ describe("Round 10 — recalculation feedback", () => {
     await openCourse();
     await selectModule();
     fireEvent.change(await screen.findByTestId("assessment-version-select"), { target: { value: "as_draft" } });
+    fireEvent.click(await screen.findByTestId("publish-change-kind-minor"));
     fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
     expect(await screen.findByTestId("recalculation-status")).toBeTruthy();
     expect(screen.getByTestId("recalculation-status").textContent).toContain("Recalculating");
@@ -282,6 +292,7 @@ describe("Round 10 — recalculation feedback", () => {
     await openCourse();
     await selectModule();
     fireEvent.change(await screen.findByTestId("assessment-version-select"), { target: { value: "as_draft" } });
+    fireEvent.click(await screen.findByTestId("publish-change-kind-minor"));
     fireEvent.click(await screen.findByRole("button", { name: "Publish" }));
     await waitFor(() => expect(screen.getByTestId("recalculation-status").textContent).toContain("Recalculation stalled"));
     expect(screen.getByTestId("recalculation-status").textContent).toContain("evaluation worker stopped");
@@ -333,10 +344,11 @@ describe("Round 10 — learner notices", () => {
     localStorage.setItem("th360_user", JSON.stringify({ id: "u1", role: "learner", name: "Learner" }));
     const learnerCourse = { ...course };
     const newPaper = assessment({ id: "as_new", version: 3, isPublished: true, publishedAt: "2026-11-21T10:00:00.000Z", changeKind: "new_paper" });
+    const minor = assessment({ id: "as_minor", version: 4, isPublished: true, publishedAt: "2026-11-22T10:00:00.000Z", changeKind: "minor" });
     const superseded = assessment({ id: "as_old", version: 2, isPublished: false, supersededAt: "2026-11-21T10:00:00.000Z", changeKind: "minor" });
     vi.stubGlobal("fetch", (url: string) => {
       if (url === "/api/courses") return jsonResponse([learnerCourse]);
-      if (url === "/api/courses/c1/assessments") return jsonResponse([newPaper, superseded].map((a) => ({ ...a, questions: [] })));
+      if (url === "/api/courses/c1/assessments") return jsonResponse([newPaper, minor, superseded].map((a) => ({ ...a, questions: [] })));
       if (url === "/api/enrolments") return jsonResponse([{ id: "en1", learnerId: "u1", courseId: "c1", status: "enrolled", pendingAssessmentScore: 88 }]);
       return jsonResponse([]);
     });
@@ -344,6 +356,7 @@ describe("Round 10 — learner notices", () => {
     await openCourse();
     expect(await screen.findByTestId("new-paper-note-as_new")).toBeTruthy();
     expect(screen.getByTestId("new-paper-note-as_new").textContent).toContain("please retake it");
+    expect((await screen.findByTestId("minor-note-as_minor")).textContent).toContain("minor correction, your result stands");
     expect((await screen.findByTestId("pending-score-notice")).textContent).toContain("staff review");
     const oldRow = screen.getByTestId("assessment-row-as_old");
     expect(oldRow.textContent).toContain("Superseded");
