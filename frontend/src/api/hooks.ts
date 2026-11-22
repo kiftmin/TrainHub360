@@ -27,6 +27,7 @@ export interface CurrentUser {
   email: string;
   role: string;
   initials: string;
+  isOrgStaff?: boolean;
 }
 
 export interface Workspace {
@@ -194,6 +195,8 @@ export interface SessionRemoveAttendeeResult extends SessionAttendeesResponse {
   rsvp: Record<string, unknown>;
 }
 
+export type ThreadSlaState = 'ok' | 'reply_pending' | 'escalated';
+
 export interface MessageThread {
   id: string;
   subject: string;
@@ -203,6 +206,42 @@ export interface MessageThread {
   updatedAt: string;
   unread: boolean;
   urgent: boolean;
+  orgId?: string;
+  programmeId?: string | null;
+  courseId?: string | null;
+  course?: { id: string; title: string } | null;
+  slaHours?: number;
+  isEscalated?: boolean;
+  escalatedAt?: string | null;
+  lastLearnerMessageAt?: string | null;
+  lastTrainerResponseAt?: string | null;
+  metadataOnly?: boolean;
+  averageResponseTimeHours?: number | null;
+  slaStatus?: string;
+  slaState?: ThreadSlaState;
+}
+
+export interface ThreadFilters {
+  programmeId?: string;
+  courseId?: string;
+  slaStatus?: ThreadSlaState;
+}
+
+export interface MessageTemplate {
+  id: string;
+  orgId: string;
+  title: string;
+  body: string;
+  createdBy: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MessageTemplateInput {
+  title: string;
+  body: string;
+  isActive?: boolean;
 }
 
 export interface ThreadMessage {
@@ -300,7 +339,9 @@ export const qk = {
   sessionAttendees: (sessionId: string) => ['sessions', sessionId, 'attendees'] as const,
   sessionInvitable: (sessionId: string) => ['sessions', sessionId, 'invitable'] as const,
   threads: ['threads'] as const,
+  threadList: (filters: ThreadFilters = {}) => ['threads', 'list', filters.programmeId ?? null, filters.courseId ?? null, filters.slaStatus ?? null] as const,
   threadMessages: (threadId: string) => ['threads', threadId, 'messages'] as const,
+  messageTemplates: ['message-templates'] as const,
   bookings: ['bookings'] as const,
   calendar: ['calendar'] as const,
   reviewCreditSettings: ['review-credit', 'settings'] as const,
@@ -425,9 +466,9 @@ export function useUpdateModule() {
 }
 
 
-export function useCourses(programmeId?: string) {
+export function useCourses(programmeId?: string, enabled = true) {
   const qs = programmeId ? `?programmeId=${encodeURIComponent(programmeId)}` : '';
-  return useQuery(queryOpts(qk.courses(programmeId), () => api<Course[]>(`/courses${qs}`)));
+  return useQuery(queryOpts(qk.courses(programmeId), () => api<Course[]>(`/courses${qs}`), enabled));
 }
 
 export function useCreateCourse() {
@@ -616,8 +657,13 @@ export function useSessions() {
   return useQuery(queryOpts(qk.sessions, () => api<TrainingSession[]>('/sessions')));
 }
 
-export function useThreads() {
-  return useQuery(queryOpts(qk.threads, () => api<MessageThread[]>('/threads')));
+export function useThreads(filters: ThreadFilters = {}) {
+  const params = new URLSearchParams();
+  if (filters.programmeId) params.set('programmeId', filters.programmeId);
+  if (filters.courseId) params.set('courseId', filters.courseId);
+  if (filters.slaStatus) params.set('slaStatus', filters.slaStatus);
+  const qs = params.toString();
+  return useQuery(queryOpts(qk.threadList(filters), () => api<MessageThread[]>(`/threads${qs ? `?${qs}` : ''}`)));
 }
 
 export function useThreadMessages(threadId: string, enabled = true) {
@@ -635,6 +681,53 @@ export function useSendMessage(threadId: string) {
       qc.invalidateQueries({ queryKey: qk.threadMessages(threadId) });
       qc.invalidateQueries({ queryKey: qk.threads });
     },
+  });
+}
+
+export function useUpdateThreadSla() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ threadId, slaHours }: { threadId: string; slaHours: number }) =>
+      api<MessageThread>(`/threads/${threadId}/sla`, { method: 'PATCH', body: JSON.stringify({ slaHours }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.threads }),
+  });
+}
+
+export function useRunSla() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api<{ escalated: number }>('/sla/run', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.threads }),
+  });
+}
+
+export function useMessageTemplates(enabled = true) {
+  return useQuery(queryOpts(qk.messageTemplates, () => api<MessageTemplate[]>('/message-templates'), enabled));
+}
+
+export function useCreateMessageTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: MessageTemplateInput) =>
+      api<MessageTemplate>('/message-templates', { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.messageTemplates }),
+  });
+}
+
+export function useUpdateMessageTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<MessageTemplateInput> }) =>
+      api<MessageTemplate>(`/message-templates/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.messageTemplates }),
+  });
+}
+
+export function useDeactivateMessageTemplate() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api<void>(`/message-templates/${id}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: qk.messageTemplates }),
   });
 }
 
@@ -790,6 +883,7 @@ export interface NewThreadInput {
   participantIds: string[];
   body: string;
   urgent?: boolean;
+  slaHours?: number;
 }
 
 export function useCreateThread() {

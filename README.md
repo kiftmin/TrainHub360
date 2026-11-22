@@ -281,7 +281,9 @@ a thread's response window with `PATCH /api/threads/:id/sla` (1–720 hours). Ov
 escalated once to programme admins and trainers, either manually with `POST /api/sla/run` or by the
 background job (`SLA_INTERVAL_MS`, default 10 minutes, `0` disables it). Programme staff can also
 manage org-scoped canned responses through `/api/message-templates`; deleting a template deactivates
-it rather than losing the audit trail.
+it rather than losing the audit trail. The Messages page exposes course creation and inbox filters,
+learner-facing "usually responds within" indicators, staff-only SLA editing and canned-response
+management, a manual SLA check for org staff, and a metadata-only notice when messages are withheld.
 
 ### Running behind a proxy
 
