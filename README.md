@@ -267,7 +267,9 @@ capacity/seat summary), `GET /api/sessions/:id/invitable`, `POST /api/sessions/:
 skip reasons), and `POST /api/sessions/:id/remove`. Removal records a declined RSVP, audits the staff
 action and reuses the race-safe decline path so a freed confirmed seat promotes the earliest
 waitlisted learner. `PATCH /api/sessions/:id` and `POST /api/sessions/:id/cancel` accept an optional
-`reason` that is included in attendee notifications and emails.
+`reason` that is included in attendee notifications and emails. The Calendar page exposes these
+tools to programme staff as a roster panel with capacity counts, status groups, eligible learners,
+skip reasons, removal, title edits and cancellation.
 
 ### Running behind a proxy
 

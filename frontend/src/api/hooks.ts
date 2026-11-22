@@ -114,9 +114,84 @@ export interface TrainingSession {
   time: string;
   mode: string;
   location?: string | null;
+  joinUrl?: string | null;
   videoLink?: string | null;
   attendees: number;
+  capacity?: number | null;
+  sequence?: number;
+  canJoin?: boolean;
   status: string;
+}
+
+export interface SessionRosterSummary {
+  sessionId: string;
+  capacity: number | null;
+  attendeeCount: number;
+  seatsTaken: number;
+  seatsRemaining: number | null;
+  invited: number;
+  confirmed: number;
+  waitlisted: number;
+  declined: number;
+}
+
+export interface SessionAttendee {
+  id: string;
+  rsvpId: string;
+  learnerId: string;
+  name: string;
+  email: string;
+  isActive: boolean;
+  status: 'invited' | 'confirmed' | 'waitlisted' | 'declined';
+  respondedAt: string | null;
+  waitlistedAt: string | null;
+  createdAt: string;
+}
+
+export interface SessionAttendeesResponse extends SessionRosterSummary {
+  attendees: SessionAttendee[];
+  summary: SessionRosterSummary;
+}
+
+export interface SessionInvitableLearner {
+  learnerId: string;
+  id: string;
+  name: string;
+  email: string;
+  eligible: true;
+  reason: null;
+}
+
+export interface SessionInvitableResponse {
+  sessionId: string;
+  learners: SessionInvitableLearner[];
+  invitable: SessionInvitableLearner[];
+  invitableLearners: SessionInvitableLearner[];
+  skipped: { learnerId: string; name: string; email: string; reason: string }[];
+}
+
+export interface SessionInviteResultRow {
+  learnerId: string;
+  outcome: 'invited' | 'already_invited' | 'skipped';
+  reason: string | null;
+}
+
+export interface SessionInviteResult {
+  sessionId: string;
+  invited: number;
+  newlyInvited: number;
+  skipped: string[];
+  skippedReasons: Record<string, string>;
+  rejected: SessionInviteResultRow[];
+  results: SessionInviteResultRow[];
+}
+
+export interface SessionRemoveAttendeeResult extends SessionAttendeesResponse {
+  removed: string;
+  learnerId: string;
+  previousStatus: string;
+  reason: string | null;
+  rsvp: Record<string, unknown>;
 }
 
 export interface MessageThread {
@@ -222,6 +297,8 @@ export const qk = {
   programmes: ['programmes'] as const,
   courses: (programmeId?: string) => ['courses', programmeId ?? 'all'] as const,
   sessions: ['sessions'] as const,
+  sessionAttendees: (sessionId: string) => ['sessions', sessionId, 'attendees'] as const,
+  sessionInvitable: (sessionId: string) => ['sessions', sessionId, 'invitable'] as const,
   threads: ['threads'] as const,
   threadMessages: (threadId: string) => ['threads', threadId, 'messages'] as const,
   bookings: ['bookings'] as const,
@@ -1194,11 +1271,74 @@ export function useCreateSession() {
   });
 }
 
+export function useSessionAttendees(sessionId: string, enabled = true) {
+  return useQuery(queryOpts(qk.sessionAttendees(sessionId), () => api<SessionAttendeesResponse>(`/sessions/${sessionId}/attendees`), enabled));
+}
+
+export function useSessionInvitable(sessionId: string, enabled = true) {
+  return useQuery(queryOpts(qk.sessionInvitable(sessionId), () => api<SessionInvitableResponse>(`/sessions/${sessionId}/invitable`), enabled));
+}
+
 export function useInviteSession(sessionId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (learnerIds: string[]) => api<{ invited: number; skipped: string[] }>(`/sessions/${sessionId}/invite`, { method: 'POST', body: JSON.stringify({ learnerIds }) }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.sessions }),
+    mutationFn: (learnerIds: string[]) => api<SessionInviteResult>(`/sessions/${sessionId}/invite`, { method: 'POST', body: JSON.stringify({ learnerIds }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.sessionAttendees(sessionId) });
+      qc.invalidateQueries({ queryKey: qk.sessionInvitable(sessionId) });
+      qc.invalidateQueries({ queryKey: qk.sessions });
+      qc.invalidateQueries({ queryKey: qk.calendar });
+    },
+  });
+}
+
+export function useRemoveSessionAttendee(sessionId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ learnerId, reason }: { learnerId: string; reason?: string }) =>
+      api<SessionRemoveAttendeeResult>(`/sessions/${sessionId}/remove`, {
+        method: 'POST',
+        body: JSON.stringify({ learnerId, ...(reason ? { reason } : {}) }),
+      }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.sessionAttendees(sessionId) });
+      qc.invalidateQueries({ queryKey: qk.sessionInvitable(sessionId) });
+      qc.invalidateQueries({ queryKey: qk.sessions });
+      qc.invalidateQueries({ queryKey: qk.calendar });
+    },
+  });
+}
+
+export interface SessionUpdateInput extends Partial<SessionInput> {
+  reason?: string;
+}
+
+export function useUpdateSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, input }: { sessionId: string; input: SessionUpdateInput }) =>
+      api(`/sessions/${sessionId}`, { method: 'PATCH', body: JSON.stringify(input) }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: qk.sessionAttendees(variables.sessionId) });
+      qc.invalidateQueries({ queryKey: qk.sessions });
+      qc.invalidateQueries({ queryKey: qk.calendar });
+    },
+  });
+}
+
+export function useCancelSession() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ sessionId, reason }: { sessionId: string; reason?: string }) =>
+      api(`/sessions/${sessionId}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify(reason ? { reason } : {}),
+      }),
+    onSuccess: (_data, variables) => {
+      qc.invalidateQueries({ queryKey: qk.sessionAttendees(variables.sessionId) });
+      qc.invalidateQueries({ queryKey: qk.sessions });
+      qc.invalidateQueries({ queryKey: qk.calendar });
+    },
   });
 }
 
