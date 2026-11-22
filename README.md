@@ -113,8 +113,8 @@ message, links included, is printed to the API log).
 - The login throttle is always live (`LOGIN_THROTTLE_*`), and a lockout answers with the same
   generic 401 as a wrong password.
 
-### Content storage and uploads
-Learning content files go through `lib/api/src/services/storage.ts` (`StorageProvider`). The default local-disk provider writes under `STORAGE_DIR` (default `.storage/` relative to the API process); mount a persistent volume in production. S3/Azure providers are reserved but not implemented. `scanUpload` is a no-op hook today.
+### File storage and uploads
+Learning content files go through `lib/api/src/services/storage.ts` (`StorageProvider`). With no `STORAGE_PROVIDER` set — the default, and warned about at production startup — files are written to local disk under `STORAGE_DIR` (default `.storage/` relative to the API process). A local-disk deployment needs a persistent volume and backups; files on an ephemeral container filesystem will be lost. S3/Azure providers and virus scanning are **not built**; `scanUpload` is a no-op hook today.
 
 Uploads (A.3) are **multipart**, not base64 in JSON — `express.json()` caps a JSON body at 100 KB, so a real PDF or video used to fail with 413:
 

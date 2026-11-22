@@ -110,6 +110,12 @@ if (process.env.NODE_ENV !== "test") {
         "proxy's address for every request. Set TRUST_PROXY to the hop count, loopback, or the proxy CIDRs.",
     );
   }
+  if (process.env.NODE_ENV === "production" && !process.env.STORAGE_PROVIDER) {
+    console.warn(
+      "[api] STORAGE_PROVIDER is not set. Uploads use the local disk provider under STORAGE_DIR; " +
+        "mount a persistent volume and back it up in production.",
+    );
+  }
   app.listen(port, () => console.log(`TrainHub360 API on :${port}`));
   scheduleKpiJob();
   scheduleContentLifecycleJob();
