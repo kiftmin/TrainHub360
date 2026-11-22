@@ -8,6 +8,7 @@ export interface Organization {
   plan: string;
   learnerCount: number;
   programmeCount: number;
+  defaultSlaHours?: number;
   samlEnabled?: boolean;
   samlIdpIssuer?: string;
   samlEntityId?: string;
@@ -46,6 +47,7 @@ export interface Programme {
   courseCount: number;
   progress: number;
   owner: string;
+  slaHours?: number | null;
 }
 
 export interface Course {
@@ -211,6 +213,7 @@ export interface MessageThread {
   courseId?: string | null;
   course?: { id: string; title: string } | null;
   slaHours?: number;
+  participants?: Array<{ userId: string; role: string }>;
   isEscalated?: boolean;
   escalatedAt?: string | null;
   lastLearnerMessageAt?: string | null;
@@ -392,6 +395,7 @@ export interface ProgrammeInput {
   name: string;
   type?: string;
   owner?: string;
+  slaHours?: number | null;
 }
 
 export function useCreateProgramme() {
@@ -445,7 +449,7 @@ export function useRequestContentDeletion() {
 export function useUpdateOrganization() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: { name?: string; plan?: string; domain?: string; webhookUrls?: string[]; samlEnabled?: boolean; samlIdpCert?: string; samlIdpIssuer?: string; samlEntityId?: string; reminderCadence?: ReminderCadence } }) =>
+    mutationFn: ({ id, patch }: { id: string; patch: { name?: string; plan?: string; domain?: string; defaultSlaHours?: number; webhookUrls?: string[]; samlEnabled?: boolean; samlIdpCert?: string; samlIdpIssuer?: string; samlEntityId?: string; reminderCadence?: ReminderCadence } }) =>
       api<Organization>(`/organizations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: qk.workspace });

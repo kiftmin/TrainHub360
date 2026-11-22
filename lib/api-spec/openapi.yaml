@@ -655,6 +655,10 @@ paths:
       operationId: createThread
       tags: [engagement]
       summary: Start a message thread
+      description: >
+        slaHours is honoured only for programme admins (including owners) and org staff. For
+        everyone else the value is ignored and the thread uses the programme override, then the
+        organization default, then 24 hours.
       requestBody:
         required: true
         content:
@@ -738,6 +742,9 @@ paths:
       operationId: updateThreadSla
       tags: [engagement]
       summary: Set the response window for a thread
+      description: >
+        Programme admins of the thread's programme and org staff only. A participant who is not
+        an admin gets 403; a non-participant gets 404 so thread existence is not leaked.
       parameters:
         - name: threadId
           in: path
@@ -760,7 +767,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/MessageThread"
         "400":
-          description: slaHours outside 1-720
+          description: slaHours not an integer between 1 and 720
+        "403":
+          description: Participant is not a programme admin or org staff
         "404":
           description: Thread not found
   /message-templates:
@@ -2177,9 +2186,23 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                defaultSlaHours: { type: integer, minimum: 1, maximum: 720, default: 24 }
       responses:
         "200":
           description: Updated organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Organization"
+        "400":
+          description: defaultSlaHours not an integer between 1 and 720
   /organizations/{orgId}/verify-domain:
     post:
       operationId: verifyOrganizationDomain
@@ -2473,14 +2496,29 @@ paths:
       operationId: updateProgramme
       tags: [learning]
       summary: Edit a programme
+      description: slaHours is a nullable override; null uses the organization default.
       parameters:
         - name: programmeId
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                slaHours: { type: ["integer", "null"], minimum: 1, maximum: 720 }
       responses:
         "200":
           description: Updated programme
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Programme"
+        "400":
+          description: slaHours not an integer between 1 and 720
   /modules/{moduleId}:
     patch:
       operationId: updateModule
@@ -3066,6 +3104,7 @@ components:
         plan: { type: string }
         learnerCount: { type: integer }
         programmeCount: { type: integer }
+        defaultSlaHours: { type: integer, minimum: 1, maximum: 720, default: 24 }
     CurrentUser:
       type: object
       required: [id, name, email, role, initials]
@@ -3087,6 +3126,7 @@ components:
         courseCount: { type: integer }
         progress: { type: number }
         owner: { type: string }
+        slaHours: { type: ["integer", "null"], minimum: 1, maximum: 720 }
     Course:
       type: object
       required: [id, title, programmeId, programmeName, category, progress, status, appliedThreshold, appliedScore, dueDate, trainer]
@@ -3299,6 +3339,13 @@ components:
         unread: { type: boolean }
         urgent: { type: boolean }
         slaHours: { type: integer }
+        participants:
+          type: array
+          items:
+            type: object
+            properties:
+              userId: { type: string }
+              role: { type: string }
         isEscalated: { type: boolean }
         escalatedAt: { type: ["string", "null"], format: date-time }
         lastLearnerMessageAt: { type: ["string", "null"], format: date-time }

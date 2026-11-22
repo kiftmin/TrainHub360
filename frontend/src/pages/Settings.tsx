@@ -59,7 +59,7 @@ export function SettingsPage() {
   const sqc = useQueryClient();
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [form, setForm] = useState<{ name: string; plan: string; domain: string } | null>(null);
+  const [form, setForm] = useState<{ name: string; plan: string; domain: string; defaultSlaHours: string } | null>(null);
   const [samlForm, setSamlForm] = useState<{ samlEnabled: boolean; samlIdpIssuer: string; samlEntityId: string; samlIdpCert: string } | null>(null);
   const [samlSaved, setSamlSaved] = useState(false);
   const [cadenceForm, setCadenceForm] = useState<{ unanswered: string; confirmed: string; maxUnanswered: string } | null>(null);
@@ -67,7 +67,7 @@ export function SettingsPage() {
   const user = workspace.data?.user;
   const org = workspace.data?.organization;
   const canEditOrg = ['admin', 'owner'].includes(user?.role ?? '');
-  const values = form ?? { name: org?.name || '', plan: org?.plan || '', domain: (org as { domain?: string })?.domain || '' };
+  const values = form ?? { name: org?.name || '', plan: org?.plan || '', domain: (org as { domain?: string })?.domain || '', defaultSlaHours: String(org?.defaultSlaHours ?? 24) };
   const samlValues = samlForm ?? {
     samlEnabled: (org as { samlEnabled?: boolean })?.samlEnabled ?? false,
     samlIdpIssuer: (org as { samlIdpIssuer?: string })?.samlIdpIssuer ?? '',
@@ -77,7 +77,12 @@ export function SettingsPage() {
   const save = () => {
     if (!org || !form) return;
     setSaveError(null);
-    updateOrg.mutate({ id: org.id, patch: { name: form.name, plan: form.plan, domain: form.domain || undefined } }, {
+    const defaultSlaHours = Number(form.defaultSlaHours);
+    if (!Number.isInteger(defaultSlaHours) || defaultSlaHours < 1 || defaultSlaHours > 720) {
+      setSaveError('Default response window must be between 1 and 720 hours.');
+      return;
+    }
+    updateOrg.mutate({ id: org.id, patch: { name: form.name, plan: form.plan, domain: form.domain || undefined, defaultSlaHours } }, {
       onSuccess: () => { sqc.invalidateQueries({ queryKey: ['workspace'] }); setForm(null); setSaved(true); window.setTimeout(() => setSaved(false), 2200); },
       onError: (e) => setSaveError((e as Error).message),
     });
@@ -130,7 +135,7 @@ export function SettingsPage() {
     : <div className="grid gap-4 xl:grid-cols-[1.1fr_.9fr]">
       <section className="rounded-lg border border-border/80 bg-card p-4"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Identity</p><h2 className="mt-1 text-base font-bold">Workspace details</h2>
         {saveError && <p className="mt-2 text-sm text-destructive">Save failed ({saveError})</p>}
-        <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-xs font-semibold">Organisation<Input className="mt-2" value={values.name} readOnly={!canEditOrg} onChange={(e) => setForm({ ...values, name: e.target.value })} /></label><label className="text-xs font-semibold">Plan<Input className="mt-2" value={values.plan} readOnly={!canEditOrg} onChange={(e) => setForm({ ...values, plan: e.target.value })} /></label><label className="text-xs font-semibold">Domain<Input className="mt-2" value={values.domain} readOnly={!canEditOrg} placeholder="company.com" onChange={(e) => setForm({ ...values, domain: e.target.value })} /></label><label className="text-xs font-semibold">Workspace ID<Input className="mt-2 font-mono text-xs" value={org?.id || ''} readOnly /></label></div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-xs font-semibold">Organisation<Input className="mt-2" value={values.name} readOnly={!canEditOrg} onChange={(e) => setForm({ ...values, name: e.target.value })} /></label><label className="text-xs font-semibold">Plan<Input className="mt-2" value={values.plan} readOnly={!canEditOrg} onChange={(e) => setForm({ ...values, plan: e.target.value })} /></label><label className="text-xs font-semibold">Domain<Input className="mt-2" value={values.domain} readOnly={!canEditOrg} placeholder="company.com" onChange={(e) => setForm({ ...values, domain: e.target.value })} /></label><label className="text-xs font-semibold">Default response window (hours)<Input className="mt-2" type="number" min={1} max={720} value={values.defaultSlaHours} readOnly={!canEditOrg} onChange={(e) => setForm({ ...values, defaultSlaHours: e.target.value })} data-testid="input-default-sla-hours" /></label><label className="text-xs font-semibold">Workspace ID<Input className="mt-2 font-mono text-xs" value={org?.id || ''} readOnly /></label></div>
         <div className="mt-4 rounded-lg bg-secondary/55 p-3"><div className="flex items-center gap-3"><div className="grid size-8 place-items-center rounded-full bg-primary text-xs font-bold text-primary-foreground">{user?.initials}</div><div><p className="text-sm font-semibold">{user?.name}</p><p className="text-xs text-muted-foreground">{user?.email}</p></div><Status tone="good">{user?.role}</Status></div></div>
       </section>
       <div className="space-y-4">

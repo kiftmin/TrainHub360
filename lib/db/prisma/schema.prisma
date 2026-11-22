@@ -23,6 +23,8 @@ model Organization {
   reviewCreditEligibleProgrammeTypes   String    @default("[]") @map("review_credit_eligible_programme_types")
   reviewCreditRequireManagerSignoff    Boolean   @default(true) @map("review_credit_require_manager_signoff")
   reviewCreditCollectApplicationScores Boolean   @default(true) @map("review_credit_collect_application_scores")
+  // Round 13 / 2.3: default response window for new threads (1-720 hours).
+  defaultSlaHours Int      @default(24) @map("default_sla_hours")
   bulkRemovalThreshold Int      @default(5) @map("bulk_removal_threshold")
   reminderCadenceJson  String   @default("{\"unansweredHours\":[48,120],\"confirmedBeforeStartHours\":[24,1],\"maxUnanswered\":2}") @map("reminder_cadence_json") @db.NVarChar(Max)
   webhookUrls  String    @default("[]") @map("webhook_urls") @db.NVarChar(Max)
@@ -61,6 +63,8 @@ model Programme {
   courseCount  Float        @default(0) @map("course_count")
   progress     Float        @default(0)
   owner        String
+  // Round 13 / 2.3: nullable override; null means use the organization default.
+  slaHours     Int?         @map("sla_hours")
   budget       Float        @default(0)
   courses      Course[]
   enrolments   Enrolment[]

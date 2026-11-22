@@ -634,13 +634,28 @@ router.get("/programmes", async (req, res) => {
 });
 router.patch("/programmes/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
+  const me = (req as AuthedRequest).user!;
   await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const current = await db.programme.findFirst({ where: { id: req.params.id, orgId: scope.orgId }, select: { slaHours: true } }).catch(() => null);
   const patch = req.body ?? {};
   const data: Record<string, unknown> = {};
   for (const k of ["name", "type", "status", "owner"]) if (patch[k] !== undefined) data[k] = patch[k];
   if (patch.budget !== undefined) data.budget = Number(patch.budget);
   if (patch.progress !== undefined) data.progress = Number(patch.progress);
-  return res.json(await db.programme.update({ where: { id: req.params.id }, data }));
+  if (patch.slaHours !== undefined) {
+    if (patch.slaHours === null || patch.slaHours === "") {
+      data.slaHours = null;
+    } else {
+      const parsed = parseSlaHours(patch.slaHours);
+      if (parsed === null) return res.status(400).json({ error: "slaHours must be an integer between 1 and 720" });
+      data.slaHours = parsed;
+    }
+  }
+  const updated = await db.programme.update({ where: { id: req.params.id }, data });
+  if (data.slaHours !== undefined && data.slaHours !== (current?.slaHours ?? null)) {
+    await db.auditLog.create({ data: { userId: me.id, action: "PROGRAMME_SLA_UPDATED", entity: "programme", entityId: req.params.id, details: JSON.stringify({ from: current?.slaHours ?? null, slaHours: data.slaHours }) } }).catch(() => null);
+  }
+  return res.json(updated);
 });
 async function resolveDeletionTarget(targetType: string, targetId: string, orgId: string): Promise<{ id: string; name: string } | null> {
   if (targetType === "programme") {
@@ -3402,6 +3417,30 @@ async function programmeRoleFor(userId: string, programmeId: string): Promise<st
   return enrolment ? "learner" : null;
 }
 
+async function canSetThreadSla(userId: string, programmeId: string | null): Promise<boolean> {
+  if (await isOrgStaff(userId)) return true;
+  if (!programmeId) return false;
+  const grant = await db.userRole.findFirst({
+    where: { userId, programmeId, role: { name: { in: ["admin", "owner"] } } },
+    select: { id: true },
+  }).catch(() => null);
+  return !!grant;
+}
+
+async function resolveThreadSlaHours(programmeId: string, orgId: string): Promise<number> {
+  const [programme, organization] = await Promise.all([
+    db.programme.findFirst({ where: { id: programmeId, orgId }, select: { slaHours: true } }).catch(() => null),
+    db.organization.findFirst({ where: { id: orgId }, select: { defaultSlaHours: true } }).catch(() => null),
+  ]);
+  return programme?.slaHours ?? organization?.defaultSlaHours ?? 24;
+}
+
+function parseSlaHours(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const raw = Number(value);
+  return Number.isInteger(raw) && raw >= 1 && raw <= 720 ? raw : null;
+}
+
 async function threadAccess(userId: string, threadId: string, orgId: string) {
   const thread = await db.messageThread.findFirst({ where: { id: threadId, orgId } });
   if (!thread) return { thread: null, participant: null, programmeAdmin: false } as const;
@@ -3549,6 +3588,13 @@ router.post("/threads", async (req, res) => {
   await assertProgrammeInOrg(programmeId, scope.orgId);
   const callerRole = (await programmeRoleFor(me.id, programmeId)) ?? ((await isOrgStaff(me.id)) ? "admin" : null);
   if (!callerRole || callerRole === "stakeholder") return res.status(403).json({ error: "you are not a staff member or learner of this programme" });
+  const maySetSla = await canSetThreadSla(me.id, programmeId);
+  let slaHours = await resolveThreadSlaHours(programmeId, scope.orgId);
+  if (maySetSla && req.body?.slaHours !== undefined && req.body?.slaHours !== null && req.body.slaHours !== "") {
+    const parsed = parseSlaHours(req.body.slaHours);
+    if (parsed === null) return res.status(400).json({ error: "slaHours must be an integer between 1 and 720" });
+    slaHours = parsed;
+  }
   let courseId: string | null = null;
   if (req.body?.courseId) {
     const course = await assertCourseInOrg(req.body.courseId, scope.orgId);
@@ -3580,7 +3626,7 @@ router.post("/threads", async (req, res) => {
         courseId,
         orgId: scope.orgId,
         urgent: Boolean(req.body?.urgent),
-        slaHours: Number.isFinite(Number(req.body?.slaHours)) ? Math.min(Math.max(Math.round(Number(req.body.slaHours)), 1), 720) : 24,
+        slaHours,
         lastLearnerMessageAt: callerRole === "learner" ? now : null,
       },
     });
@@ -3653,12 +3699,15 @@ router.post("/threads/:id/messages", async (req, res) => {
 router.patch("/threads/:id/sla", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const { thread, participant, programmeAdmin } = await threadAccess(me.id, req.params.id, scope.orgId);
-  if (!thread || (!participant && !programmeAdmin && !(await isOrgStaff(me.id)))) return res.status(404).json({ error: "thread not found" });
-  const raw = Number(req.body?.slaHours);
-  if (!Number.isFinite(raw) || raw < 1 || raw > 720) return res.status(400).json({ error: "slaHours must be between 1 and 720" });
-  const updated = await db.messageThread.update({ where: { id: thread.id }, data: { slaHours: Math.round(raw) } });
-  await db.auditLog.create({ data: { userId: me.id, action: "THREAD_SLA_UPDATED", entity: "message_thread", entityId: thread.id, details: JSON.stringify({ slaHours: Math.round(raw) }) } }).catch(() => null);
+  const { thread, participant } = await threadAccess(me.id, req.params.id, scope.orgId);
+  if (!thread) return res.status(404).json({ error: "thread not found" });
+  if (!(await canSetThreadSla(me.id, thread.programmeId))) {
+    return participant ? res.status(403).json({ error: "only programme admins and org staff can change the response window" }) : res.status(404).json({ error: "thread not found" });
+  }
+  const slaHours = parseSlaHours(req.body?.slaHours);
+  if (slaHours === null) return res.status(400).json({ error: "slaHours must be an integer between 1 and 720" });
+  const updated = await db.messageThread.update({ where: { id: thread.id }, data: { slaHours } });
+  await db.auditLog.create({ data: { userId: me.id, action: "THREAD_SLA_UPDATED", entity: "message_thread", entityId: thread.id, details: JSON.stringify({ from: thread.slaHours, slaHours }) } }).catch(() => null);
   return res.json(updated);
 });
 
@@ -3991,9 +4040,16 @@ function assertSameOrg(req: AuthedRequest, orgId: string) {
 }
 router.patch("/organizations/:id", requireOrgStaff(), async (req, res) => {
   assertSameOrg(req as AuthedRequest, req.params.id);
+  const me = (req as AuthedRequest).user!;
+  const current = await db.organization.findUnique({ where: { id: req.params.id }, select: { defaultSlaHours: true } }).catch(() => null);
   const patch = req.body ?? {};
   const data: Record<string, unknown> = {};
   for (const k of ["name", "plan", "domain"]) if (patch[k] !== undefined) data[k] = patch[k];
+  if (patch.defaultSlaHours !== undefined) {
+    const parsed = parseSlaHours(patch.defaultSlaHours);
+    if (parsed === null) return res.status(400).json({ error: "defaultSlaHours must be an integer between 1 and 720" });
+    data.defaultSlaHours = parsed;
+  }
   if (patch.webhookUrls !== undefined) {
     if (!Array.isArray(patch.webhookUrls)) return res.status(400).json({ error: "webhookUrls must be an array" });
     data.webhookUrls = JSON.stringify(patch.webhookUrls);
@@ -4010,7 +4066,11 @@ router.patch("/organizations/:id", requireOrgStaff(), async (req, res) => {
   if (patch.samlIdpCert !== undefined) data.samlIdpCert = patch.samlIdpCert || null;
   if (patch.samlIdpIssuer !== undefined) data.samlIdpIssuer = patch.samlIdpIssuer || null;
   if (patch.samlEntityId !== undefined) data.samlEntityId = patch.samlEntityId || null;
-  return res.json(await db.organization.update({ where: { id: req.params.id }, data }));
+  const updated = await db.organization.update({ where: { id: req.params.id }, data });
+  if (data.defaultSlaHours !== undefined && data.defaultSlaHours !== current?.defaultSlaHours) {
+    await db.auditLog.create({ data: { userId: me.id, action: "ORGANIZATION_DEFAULT_SLA_UPDATED", entity: "organization", entityId: req.params.id, details: JSON.stringify({ from: current?.defaultSlaHours ?? null, defaultSlaHours: data.defaultSlaHours }) } }).catch(() => null);
+  }
+  return res.json(updated);
 });
 router.post("/organizations", async (req, res) => {
   const { name, adminEmail, adminName, domain, adminPassword } = req.body ?? {};
