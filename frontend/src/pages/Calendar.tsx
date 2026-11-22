@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Switch as Toggle } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
+import { SessionRosterPanel, canManageSessionRoster } from '@/components/SessionRosterPanel';
 import {
   useWorkspace,
   useDashboardSummary,
@@ -84,6 +85,8 @@ export function CalendarPage() {
   const rsvp = useRsvpSession();
   const generateIcal = useGenerateIcalToken();
   const qc = useQueryClient();
+  const canManageRoster = canManageSessionRoster(getSessionUser());
+  const [rosterSessionId, setRosterSessionId] = useState('');
   const [open, setOpen] = useState(false);
   const [sessionOpen, setSessionOpen] = useState(false);
   const [sessionForm, setSessionForm] = useState({ title: '', programmeId: '', date: '', time: '', mode: 'online' as 'online' | 'offline', joinUrl: '', location: '', capacity: '', endsAt: '' });
@@ -168,6 +171,16 @@ export function CalendarPage() {
         {!bookings.data?.length && <EmptyState title="No 1:1s booked" detail="Book focused support with a trainer." />}</div>
       </section>
     </div>}
+    {canManageRoster && <section className="rounded-lg border border-border/80 bg-card p-5" data-testid="trainer-roster-tools">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Trainer tools</p><h2 className="mt-1 text-base font-bold">Manage a session roster</h2></div>
+        <select className="h-10 rounded-md border border-input bg-background px-3 text-sm" value={rosterSessionId} onChange={(event) => setRosterSessionId(event.target.value)} data-testid="select-roster-session">
+          <option value="">Choose a session</option>
+          {(sessions.data || []).map((s) => <option key={s.id} value={s.id}>{s.title}</option>)}
+        </select>
+      </div>
+      {rosterSessionId && <SessionRosterPanel sessionId={rosterSessionId} sessionTitle={(sessions.data || []).find((s) => s.id === rosterSessionId)?.title || 'Session'} />}
+    </section>}
   </div>;
 }
 
