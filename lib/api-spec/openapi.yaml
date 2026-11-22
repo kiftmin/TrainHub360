@@ -467,10 +467,69 @@ paths:
             application/json:
               schema:
                 type: object
+                required: [attemptId, attemptNumber, attemptsUsed, maxAttempts]
+                properties:
+                  attemptId: { type: string }
+                  attemptNumber: { type: integer }
+                  attemptsUsed: { type: integer }
+                  maxAttempts: { type: integer, nullable: true }
         "403":
-          description: Assessment version is superseded; start on the live version
+          description: Assessment version is superseded, not published, enrolment missing, or attempts exhausted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  locked: { type: boolean }
+                  bestScore: { type: number, nullable: true }
+                  attemptsUsed: { type: integer }
+                  maxAttempts: { type: integer }
         "409":
-          description: Attempts exhausted or assessment not published
+          description: Assessment has no questions
+  /assessments/{assessmentId}/attempts/reset:
+    post:
+      operationId: resetAssessmentAttempts
+      tags: [learning]
+      summary: Reset a learner's attempts on an assessment and its carried versions
+      description: >
+        Deletes the learner's attempts on this assessment and every earlier version carried
+        forward by a minor correction, then re-evaluates the enrolment. A new paper starts a
+        fresh chain and is not affected.
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enrolmentId]
+              properties:
+                enrolmentId: { type: string }
+      responses:
+        "200":
+          description: Attempts reset
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assessmentId, enrolmentId, reset, chainAssessmentIds]
+                properties:
+                  assessmentId: { type: string }
+                  enrolmentId: { type: string }
+                  reset: { type: integer }
+                  chainAssessmentIds:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: enrolmentId is required
+        "403":
+          description: Caller does not manage this programme
+        "404":
+          description: Assessment or enrolment not found in this scope
   /attempts/{attemptId}/submit:
     post:
       operationId: submitAttemptAnswers

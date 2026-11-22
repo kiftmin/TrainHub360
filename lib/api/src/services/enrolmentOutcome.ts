@@ -1,4 +1,5 @@
 import { db, Prisma } from "../db.js";
+import { attemptStats } from "./assessmentAttempts.js";
 import { calculateEnrolmentScore } from "./reviewCredit.js";
 import { notify } from "./notify.js";
 import { applyScoreChange, notifyManagerSignoffRequired } from "./scoreChange.js";
@@ -118,35 +119,17 @@ async function computeOutcome(
 
   const liveApplied: OutcomeCore["liveApplied"] = [];
   for (const a of applied) {
-    // Round 9 / 2.2: a minor correction carries earlier results forward. The chain is walked back
-    // through `supersedesId` while every link was published as "minor"; a version that was a new
-    // paper starts the count again. Attempts on the earlier versions are attempts on this one, so
-    // they count for `maxAttempts` too.
-    const carried: string[] = [a.id];
-    let cursor: { id: string; supersedesId: string | null; changeKind: string | null } = a;
-    while (cursor.changeKind === "minor" && cursor.supersedesId) {
-      const previous = await tx.assessment.findUnique({
-        where: { id: cursor.supersedesId },
-        select: { id: true, supersededAt: true, version: true, supersedesId: true, changeKind: true },
-      });
-      if (!previous) break;
-      carried.push(previous.id);
-      cursor = { ...previous, supersedesId: previous.supersedesId };
-    }
-    const attempts = await tx.assessmentAttempt.findMany({
-      where: {
-        assessmentId: { in: carried },
-        enrolmentId,
-        status: { in: ["submitted", "graded"] },
-        percent: { not: null },
-      },
-      select: { percent: true },
-    });
-    const best = attempts.length ? Math.max(...attempts.map((x) => x.percent ?? 0)) : null;
-    // An attempt in progress on an earlier version still counts against the limit.
-    const startedCount = await tx.assessmentAttempt.count({ where: { assessmentId: { in: carried }, enrolmentId } });
     const passMark = a.passMark ?? fallbackPassMark;
-    liveApplied.push({ id: a.id, title: a.title, passMark, best, passed: best !== null && best >= passMark, attempts: startedCount, carriedVersions: carried.length - 1 });
+    const stats = await attemptStats(tx, a, enrolmentId, passMark);
+    liveApplied.push({
+      id: a.id,
+      title: a.title,
+      passMark,
+      best: stats.bestScore,
+      passed: stats.passedBefore,
+      attempts: stats.attemptsUsed,
+      carriedVersions: stats.chainIds.length - 1,
+    });
   }
 
   const competent = contentComplete && applied.length > 0 && liveApplied.every((a) => a.passed);
