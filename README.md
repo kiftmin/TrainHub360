@@ -298,14 +298,24 @@ skip reasons, removal, title edits and cancellation.
 Message threads may be scoped to a programme or a single course; `POST /api/threads` persists
 `courseId` and rejects a course from another programme. `GET /api/threads` accepts `programmeId`,
 `courseId` and `slaStatus` (`ok`, `reply_pending`, `escalated`) filters and returns the thread's
-`course`, `slaHours`, `isEscalated`, `slaState` and average trainer response time. Staff can change
-a thread's response window with `PATCH /api/threads/:id/sla` (1–720 hours). Overdue threads are
+`course`, `slaHours`, `isEscalated`, `slaState` and average trainer response time. Only programme
+admins (owners included) and org staff can change a thread's response window with
+`PATCH /api/threads/:id/sla` (1–720 hours); participants who are not admins get 403 and
+non-participants get 404. `POST /api/threads` ignores `slaHours` from everyone else. New threads use
+the programme's `slaHours`, then `Organization.defaultSlaHours`, then 24 hours. Org staff edit the
+workspace default in Settings and programme admins edit a programme override in Programmes; both
+are audited (`ORGANIZATION_DEFAULT_SLA_UPDATED`, `PROGRAMME_SLA_UPDATED`), as is every thread change
+(`THREAD_SLA_UPDATED`). Overdue threads are
 escalated once to programme admins and trainers, either manually with `POST /api/sla/run` or by the
 background job (`SLA_INTERVAL_MS`, default 10 minutes, `0` disables it). Programme staff can also
 manage org-scoped canned responses through `/api/message-templates`; deleting a template deactivates
 it rather than losing the audit trail. The Messages page exposes course creation and inbox filters,
-learner-facing "usually responds within" indicators, staff-only SLA editing and canned-response
+learner-facing "usually responds within" indicators, admin-only SLA editing and canned-response
 management, a manual SLA check for org staff, and a metadata-only notice when messages are withheld.
+
+> [CONFIRM 2026-11-22] Round 13 says a new thread uses “the default (2.3)”, but the existing code,
+> OpenAPI spec and README define 24 hours. This phase keeps 24 as the workspace default and flags
+> the wording conflict for confirmation.
 
 ### Running behind a proxy
 
