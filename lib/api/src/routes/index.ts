@@ -2843,6 +2843,141 @@ async function loadSessionForStaff(req: AuthedRequest, orgId: string) {
   return session;
 }
 
+type SessionForStaff = Awaited<ReturnType<typeof loadSessionForStaff>>;
+
+async function sessionInviteDecision(session: SessionForStaff, learnerId: string, orgId: string) {
+  const learner = await db.user.findFirst({
+    where: { id: learnerId, orgId, isActive: true },
+    select: { id: true, name: true, email: true },
+  }).catch(() => null);
+  if (!learner) return { eligible: false, reason: "user_not_found_or_inactive", learner: null, existing: null };
+  const existing = await db.sessionRSVP.findFirst({
+    where: { sessionId: session.id, learnerId },
+    select: { id: true, status: true },
+  }).catch(() => null);
+  if (existing) return { eligible: false, reason: "already_invited", learner, existing };
+  if (session.courseId) {
+    const enrolled = await db.enrolment.findFirst({
+      where: { learnerId, courseId: session.courseId, status: { not: "withdrawn" }, withdrawnAt: null },
+      select: { id: true },
+    }).catch(() => null);
+    if (!enrolled) return { eligible: false, reason: "not_enrolled_in_course", learner, existing };
+  } else if (session.programmeId) {
+    const enrolled = await db.enrolment.findFirst({
+      where: { learnerId, programmeId: session.programmeId, status: { not: "withdrawn" }, withdrawnAt: null },
+      select: { id: true },
+    }).catch(() => null);
+    if (!enrolled) return { eligible: false, reason: "not_enrolled_in_programme", learner, existing };
+  }
+  return { eligible: true, reason: null, learner, existing };
+}
+
+function sessionRosterSummary(session: SessionForStaff, rsvps: Array<{ status: string }>) {
+  const counts = { invited: 0, confirmed: 0, waitlisted: 0, declined: 0 };
+  for (const rsvp of rsvps) {
+    if (rsvp.status in counts) counts[rsvp.status as keyof typeof counts] += 1;
+  }
+  const capacity = session.capacity ?? null;
+  return {
+    sessionId: session.id,
+    capacity,
+    attendeeCount: counts.confirmed,
+    seatsTaken: counts.confirmed,
+    seatsRemaining: capacity === null ? null : Math.max(0, capacity - counts.confirmed),
+    invited: counts.invited,
+    confirmed: counts.confirmed,
+    waitlisted: counts.waitlisted,
+    declined: counts.declined,
+  };
+}
+
+function sessionRosterRows(sessionId: string) {
+  const order: Record<string, number> = { confirmed: 0, waitlisted: 1, invited: 2, declined: 3 };
+  return db.sessionRSVP.findMany({
+    where: { sessionId },
+    include: { learner: { select: { id: true, name: true, email: true, isActive: true } } },
+  }).then((rows) => rows.sort((a, b) =>
+    (order[a.status] ?? 99) - (order[b.status] ?? 99) || a.createdAt.getTime() - b.createdAt.getTime()));
+}
+
+type SessionRosterRow = Awaited<ReturnType<typeof sessionRosterRows>>[number];
+
+function formatSessionAttendee(rsvp: SessionRosterRow) {
+  return {
+    id: rsvp.id,
+    rsvpId: rsvp.id,
+    learnerId: rsvp.learnerId,
+    name: rsvp.learner.name,
+    email: rsvp.learner.email,
+    isActive: rsvp.learner.isActive,
+    status: rsvp.status,
+    respondedAt: rsvp.respondedAt,
+    waitlistedAt: rsvp.waitlistedAt,
+    createdAt: rsvp.createdAt,
+  };
+}
+
+router.get("/sessions/:id/attendees", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  try {
+    const session = await loadSessionForStaff(req as AuthedRequest, scope.orgId);
+    const rsvps = await sessionRosterRows(session.id);
+    const summary = sessionRosterSummary(session, rsvps);
+    return res.json({
+      ...summary,
+      summary,
+      attendees: rsvps.map(formatSessionAttendee),
+    });
+  } catch (e) {
+    return res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
+  }
+});
+
+router.get("/sessions/:id/invitable", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  try {
+    const session = await loadSessionForStaff(req as AuthedRequest, scope.orgId);
+    const candidates = await db.user.findMany({
+      where: { orgId: scope.orgId, isActive: true },
+      select: { id: true, name: true, email: true },
+      orderBy: { name: "asc" },
+      take: 500,
+    });
+    const ids = candidates.map((user) => user.id);
+    const [rsvps, courseEnrolments, programmeEnrolments] = await Promise.all([
+      db.sessionRSVP.findMany({ where: { sessionId: session.id, learnerId: { in: ids } }, select: { learnerId: true } }),
+      session.courseId
+        ? db.enrolment.findMany({ where: { learnerId: { in: ids }, courseId: session.courseId, status: { not: "withdrawn" }, withdrawnAt: null }, select: { learnerId: true } })
+        : Promise.resolve([] as Array<{ learnerId: string }>),
+      session.programmeId
+        ? db.enrolment.findMany({ where: { learnerId: { in: ids }, programmeId: session.programmeId, status: { not: "withdrawn" }, withdrawnAt: null }, select: { learnerId: true } })
+        : Promise.resolve([] as Array<{ learnerId: string }>),
+    ]);
+    const invited = new Set(rsvps.map((row) => row.learnerId));
+    const enrolled = new Set(session.courseId
+      ? courseEnrolments.map((row) => row.learnerId)
+      : session.programmeId
+        ? programmeEnrolments.map((row) => row.learnerId)
+        : ids);
+    const learners: Array<{ learnerId: string; id: string; name: string; email: string; eligible: true; reason: null }> = [];
+    const skipped: Array<{ learnerId: string; name: string; email: string; reason: string }> = [];
+    for (const candidate of candidates) {
+      const reason = invited.has(candidate.id)
+        ? "already_invited"
+        : enrolled.has(candidate.id)
+          ? null
+          : session.courseId
+            ? "not_enrolled_in_course"
+            : "not_enrolled_in_programme";
+      if (reason) skipped.push({ learnerId: candidate.id, name: candidate.name, email: candidate.email, reason });
+      else learners.push({ learnerId: candidate.id, id: candidate.id, name: candidate.name, email: candidate.email, eligible: true, reason: null });
+    }
+    return res.json({ sessionId: session.id, learners, invitable: learners, invitableLearners: learners, skipped });
+  } catch (e) {
+    return res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
+  }
+});
+
 export function isValidHttpsUrl(value: string): boolean {
   try {
     const u = new URL(value);
@@ -2936,20 +3071,29 @@ router.post("/sessions/:id/invite", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   try {
     const session = await loadSessionForStaff(req as AuthedRequest, scope.orgId);
-    const learnerIds = [...new Set(((req.body?.learnerIds ?? []) as string[]).map(String).filter(Boolean))].slice(0, 500);
+    const requested = ((req.body?.learnerIds ?? []) as string[]).map(String).filter(Boolean);
+    const learnerIds = [...new Set(requested)].slice(0, 500);
     let invited = 0;
+    let newlyInvited = 0;
     const skipped: string[] = [];
+    const skippedReasons: Record<string, string> = {};
+    const results: Array<{ learnerId: string; outcome: string; reason: string | null }> = [];
+    for (const learnerId of requested.slice(500)) {
+      skippedReasons[learnerId] = "batch_limit_exceeded";
+    }
+    for (const learnerId of requested) {
+      if (requested.indexOf(learnerId) !== requested.lastIndexOf(learnerId)) {
+        skippedReasons[learnerId] ??= "duplicate_request";
+      }
+    }
     for (const learnerId of learnerIds) {
-      const learner = await db.user.findFirst({ where: { id: learnerId, orgId: scope.orgId, isActive: true }, select: { id: true, name: true, email: true } }).catch(() => null);
-      if (!learner) { skipped.push(learnerId); continue; }
-      // Only people connected to the session's course/programme may be invited.
-      const eligible = session.courseId
-        ? await db.enrolment.findFirst({ where: { learnerId, courseId: session.courseId } }).catch(() => null)
-        : session.programmeId
-          ? await db.enrolment.findFirst({ where: { learnerId, programmeId: session.programmeId } }).catch(() => null)
-          : true;
-      if (!eligible) { skipped.push(learnerId); continue; }
-      const existing = await db.sessionRSVP.findFirst({ where: { sessionId: session.id, learnerId }, select: { id: true } }).catch(() => null);
+      const decision = await sessionInviteDecision(session, learnerId, scope.orgId);
+      if (!decision.eligible) {
+        skipped.push(learnerId);
+        skippedReasons[learnerId] = decision.reason ?? "not_eligible";
+        results.push({ learnerId, outcome: "skipped", reason: skippedReasons[learnerId] });
+        continue;
+      }
       const r = await db.sessionRSVP.upsert({
         where: { sessionId_learnerId: { sessionId: session.id, learnerId } },
         create: { sessionId: session.id, learnerId, status: "invited" },
@@ -2957,26 +3101,77 @@ router.post("/sessions/:id/invite", async (req, res) => {
       }).catch(() => null);
       if (r) {
         invited += 1;
-        // Round 8 / D.2: the invitation carries the calendar file, so accepting it is one click
-        // instead of retyping the details. A re-invite of someone already on the list does not
-        // send the mail again.
-        if (!existing) {
+        const isNew = !decision.existing;
+        if (isNew) {
+          newlyInvited += 1;
           const { notify } = await import("../services/notify.js");
           const { icsAttachment } = await import("../services/ical.js");
           await notify(learnerId, "session_invite", {
             title: `Invitation: ${session.title}`,
             body: `${session.date} at ${session.time}`,
             link: "/calendar",
-            attachments: [icsAttachment(session, { attendeeEmail: learner.email })],
+            attachments: [icsAttachment(session, { attendeeEmail: decision.learner?.email })],
           });
         }
+        results.push({ learnerId, outcome: isNew ? "invited" : "already_invited", reason: null });
       }
     }
-    return res.json({ sessionId: session.id, invited, skipped });
+    const rejected = results.filter((row) => row.outcome === "skipped");
+    return res.json({
+      sessionId: session.id,
+      invited,
+      newlyInvited,
+      skipped,
+      skippedReasons,
+      rejected,
+      results,
+    });
   } catch (e) {
     return res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
   }
 });
+
+router.post("/sessions/:id/remove", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  try {
+    const session = await loadSessionForStaff(req as AuthedRequest, scope.orgId);
+    const learnerId = req.body?.learnerId ? String(req.body.learnerId) : "";
+    if (!learnerId) return res.status(400).json({ error: "learnerId required" });
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 1000) || null : null;
+    const existing = await db.sessionRSVP.findFirst({
+      where: { sessionId: session.id, learnerId },
+      select: { id: true, status: true },
+    });
+    if (!existing) return res.status(404).json({ error: "attendee not found on this session" });
+    const { declineRsvp } = await import("../services/rsvp.js");
+    const updated = await declineRsvp(session.id, learnerId, scope.orgId);
+    await db.auditLog.create({
+      data: {
+        userId: me.id,
+        action: "SESSION_ATTENDEE_REMOVED",
+        entity: "session",
+        entityId: session.id,
+        details: JSON.stringify({ learnerId, reason, previousStatus: existing.status, rsvpId: existing.id }),
+      },
+    }).catch(() => null);
+    const rsvps = await sessionRosterRows(session.id);
+    const summary = sessionRosterSummary(session, rsvps);
+    return res.json({
+      ...summary,
+      summary,
+      removed: 1,
+      learnerId,
+      previousStatus: existing.status,
+      reason,
+      rsvp: updated,
+      attendees: rsvps.map(formatSessionAttendee),
+    });
+  } catch (e) {
+    return res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
+  }
+});
+
 // Round 6 / M2(d): a token never answers on someone else's behalf. A learner answers only for
 // themselves; anyone answering for another person must be staff of the session's programme (or
 // org staff) AND enrolled as a learner there — a plain org member cannot seat anyone.
@@ -3048,6 +3243,10 @@ router.get("/sessions/:id/ics", async (req, res) => {
 });
 
 const SESSION_PATCH_FIELDS = ["title", "mode", "capacity", "trainerId"] as const;
+function sessionNotificationReason(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  return value.trim().slice(0, 1000) || null;
+}
 function sessionPatchProblem(message: string): Error & { status: number } {
   return Object.assign(new Error(message), { status: 400 });
 }
@@ -3068,7 +3267,9 @@ router.patch("/sessions/:id", async (req, res) => {
   }
   const body = (req.body ?? {}) as Record<string, unknown>;
   const data: Record<string, unknown> = {};
+  const notificationReason = sessionNotificationReason(body.reason);
   try {
+    if (body.reason !== undefined && typeof body.reason !== "string") throw sessionPatchProblem("reason must be a string");
     for (const field of SESSION_PATCH_FIELDS) {
       if (body[field] !== undefined) data[field] = body[field];
     }
@@ -3141,7 +3342,7 @@ router.patch("/sessions/:id", async (req, res) => {
   for (const attendee of attendees) {
     await notify(attendee.learnerId, "session_updated", {
       title: `Updated: ${updated.title}`,
-      body: "The session details changed. The updated calendar file is attached.",
+      body: `The session details changed. The updated calendar file is attached.${notificationReason ? ` Reason: ${notificationReason}` : ""}`,
       link: "/calendar",
       attachments: [icsAttachment(updated, { attendeeEmail: attendee.learner.email })],
     });
@@ -3159,6 +3360,7 @@ router.post("/sessions/:id/cancel", async (req, res) => {
     return res.status(status).json({ error: (e as Error).message });
   }
   if (session.status === "cancelled") return res.json(session);
+  const notificationReason = sessionNotificationReason((req.body ?? {}).reason);
   const updated = await db.session.update({
     where: { id: session.id },
     data: { status: "cancelled", sequence: session.sequence + 1 },
@@ -3169,7 +3371,7 @@ router.post("/sessions/:id/cancel", async (req, res) => {
   for (const attendee of attendees) {
     await notify(attendee.learnerId, "session_cancelled", {
       title: `Cancelled: ${updated.title}`,
-      body: "This session has been cancelled. The cancellation is attached for your calendar.",
+      body: `This session has been cancelled. The cancellation is attached for your calendar.${notificationReason ? ` Reason: ${notificationReason}` : ""}`,
       link: "/calendar",
       attachments: [icsAttachment(updated, { method: "CANCEL", attendeeEmail: attendee.learner.email })],
     });

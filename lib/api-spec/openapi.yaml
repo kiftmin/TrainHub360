@@ -1172,10 +1172,82 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  invited: { type: integer }
-                  skipped: { type: integer }
+                $ref: "#/components/schemas/SessionInviteResult"
+  /sessions/{sessionId}/attendees:
+    get:
+      operationId: listSessionAttendees
+      tags: [engagement]
+      summary: List a session roster with capacity and status counts
+      description: >
+        Programme/organization staff only. Learners receive 403 and a session from another
+        organization receives 404.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Session roster
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionAttendeesResponse"
+        "403": { description: Caller cannot manage this session's programme }
+        "404": { description: Session not found in the caller's organization }
+  /sessions/{sessionId}/invitable:
+    get:
+      operationId: listSessionInvitableLearners
+      tags: [engagement]
+      summary: List active organization learners who can still be invited to a session
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Invitable learners and skip reasons
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionInvitableResponse"
+        "403": { description: Caller cannot manage this session's programme }
+        "404": { description: Session not found in the caller's organization }
+  /sessions/{sessionId}/remove:
+    post:
+      operationId: removeSessionAttendee
+      tags: [engagement]
+      summary: Remove an invitee or attendee and promote the next waitlisted learner
+      description: >
+        Records a declined RSVP instead of deleting history, audits the staff action and reuses
+        the race-safe decline path so a freed confirmed seat promotes the earliest waitlisted
+        learner.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [learnerId]
+              properties:
+                learnerId: { type: string }
+                reason: { type: string, nullable: true, maxLength: 1000 }
+      responses:
+        "200":
+          description: Updated roster after removal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionAttendeesResponse"
+        "400": { description: learnerId required }
+        "403": { description: Caller cannot manage this session's programme }
+        "404": { description: Session or attendee not found in the caller's organization }
   /sessions/{sessionId}/rsvp:
     post:
       operationId: rsvpSession
@@ -2353,6 +2425,7 @@ paths:
                 time: { type: string, description: "HH:MM; interpreted in the session's timezone" }
                 joinUrl: { type: string, format: uri, nullable: true, description: Required for online sessions }
                 location: { type: string, nullable: true, description: Required for offline sessions }
+                reason: { type: string, nullable: true, maxLength: 1000, description: Optional explanation added to attendee notifications }
       responses:
         "200":
           description: Updated session
@@ -2377,6 +2450,14 @@ paths:
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, nullable: true, maxLength: 1000, description: Optional explanation added to attendee notifications }
       responses:
         "200":
           description: Cancelled session
@@ -2980,6 +3061,103 @@ components:
         sequence: { type: integer, description: Bumped on every edit or cancellation for calendar clients }
         canJoin: { type: boolean, description: Whether this caller may see the join details }
         status: { type: string }
+    SessionAttendee:
+      type: object
+      required: [id, rsvpId, learnerId, name, email, isActive, status, createdAt]
+      properties:
+        id: { type: string }
+        rsvpId: { type: string }
+        learnerId: { type: string }
+        name: { type: string }
+        email: { type: string }
+        isActive: { type: boolean }
+        status: { type: string, enum: [invited, confirmed, waitlisted, declined] }
+        respondedAt: { type: ["string", "null"], format: date-time }
+        waitlistedAt: { type: ["string", "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    SessionRosterSummary:
+      type: object
+      required: [sessionId, capacity, attendeeCount, seatsTaken, invited, confirmed, waitlisted, declined]
+      properties:
+        sessionId: { type: string }
+        capacity: { type: ["integer", "null"], description: Null means unlimited }
+        attendeeCount: { type: integer, description: Confirmed seats taken }
+        seatsTaken: { type: integer }
+        seatsRemaining: { type: ["integer", "null"], nullable: true }
+        invited: { type: integer }
+        confirmed: { type: integer }
+        waitlisted: { type: integer }
+        declined: { type: integer }
+    SessionAttendeesResponse:
+      allOf:
+        - $ref: "#/components/schemas/SessionRosterSummary"
+        - type: object
+          required: [attendees, summary]
+          properties:
+            attendees:
+              type: array
+              items: { $ref: "#/components/schemas/SessionAttendee" }
+            summary: { $ref: "#/components/schemas/SessionRosterSummary" }
+    SessionInvitableLearner:
+      type: object
+      required: [learnerId, id, name, email, eligible, reason]
+      properties:
+        learnerId: { type: string }
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        eligible: { type: boolean, enum: [true] }
+        reason: { type: ["null"] }
+    SessionInvitableResponse:
+      type: object
+      required: [sessionId, learners, invitable, invitableLearners, skipped]
+      properties:
+        sessionId: { type: string }
+        learners:
+          type: array
+          items: { $ref: "#/components/schemas/SessionInvitableLearner" }
+        invitable:
+          type: array
+          items: { $ref: "#/components/schemas/SessionInvitableLearner" }
+        invitableLearners:
+          type: array
+          items: { $ref: "#/components/schemas/SessionInvitableLearner" }
+        skipped:
+          type: array
+          items:
+            type: object
+            required: [learnerId, name, email, reason]
+            properties:
+              learnerId: { type: string }
+              name: { type: string }
+              email: { type: string }
+              reason: { type: string }
+    SessionInviteResult:
+      type: object
+      required: [sessionId, invited, newlyInvited, skipped, skippedReasons, rejected, results]
+      properties:
+        sessionId: { type: string }
+        invited: { type: integer }
+        newlyInvited: { type: integer }
+        skipped:
+          type: array
+          items: { type: string }
+        skippedReasons:
+          type: object
+          additionalProperties: { type: string }
+        rejected:
+          type: array
+          items: { $ref: "#/components/schemas/SessionInviteResultRow" }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/SessionInviteResultRow" }
+    SessionInviteResultRow:
+      type: object
+      required: [learnerId, outcome, reason]
+      properties:
+        learnerId: { type: string }
+        outcome: { type: string, enum: [invited, already_invited, skipped] }
+        reason: { type: ["string", "null"] }
     MessageThread:
       type: object
       required: [id, subject, context, participant, preview, updatedAt, unread, urgent]
