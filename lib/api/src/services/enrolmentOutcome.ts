@@ -211,10 +211,12 @@ export async function evaluateEnrolment(
   return runEvaluation(enrolmentId, trigger, options, empty);
 }
 
+// Round 13 / 1.2: every completion side effect carries a stable dedupe key so the filtered
+// unique indexes make a repeated evaluation a no-op even if two workers race past the transaction.
 type SideEffect =
-  | { kind: "locked_notice"; programmeId: string; learnerId: string }
-  | { kind: "signoff_reset"; learnerId: string }
-  | { kind: "pending_changed"; programmeId: string; learnerId: string; score: number }
+  | { kind: "locked_notice"; programmeId: string; learnerId: string; dedupeKey: string }
+  | { kind: "signoff_reset"; learnerId: string; dedupeKey: string }
+  | { kind: "pending_changed"; programmeId: string; learnerId: string; score: number; dedupeKey: string }
   | { kind: "completed"; learnerId: string; attemptId?: string; newlyCompleted: boolean };
 
 /**
@@ -234,6 +236,7 @@ async function runSideEffects(outcome: EnrolmentOutcome, effects: SideEffect[]):
             title: "Assessment result not applied (period locked)",
             body: `${learner?.name ?? "A learner"}'s new result was recorded but the review-credit period is locked, so the score did not change.`,
             link: "/review-credit",
+            dedupeKey: effect.dedupeKey,
           }),
         ),
         learner?.managerId
@@ -241,13 +244,14 @@ async function runSideEffects(outcome: EnrolmentOutcome, effects: SideEffect[]):
               title: "Assessment result not applied (period locked)",
               body: `${learner.name}'s new assessment result was recorded but the locked review-credit period was not changed.`,
               link: "/review-credit",
+              dedupeKey: effect.dedupeKey,
             })
           : Promise.resolve(),
       ]);
       continue;
     }
     if (effect.kind === "signoff_reset") {
-      await notifyManagerSignoffRequired(effect.learnerId);
+      await notifyManagerSignoffRequired(effect.learnerId, effect.dedupeKey);
       continue;
     }
     if (effect.kind === "pending_changed") {
@@ -258,6 +262,7 @@ async function runSideEffects(outcome: EnrolmentOutcome, effects: SideEffect[]):
           title: "Assessment result waiting for review",
           body: `${learner?.name ?? "A learner"}'s automatic assessment result is ${effect.score}% and is waiting for your review.`,
           link: "/review-credit",
+          dedupeKey: effect.dedupeKey,
         }),
       ));
       continue;
@@ -333,8 +338,14 @@ async function runEvaluation(
               details: JSON.stringify({ trigger, appliedScore: core.appliedScore, liveApplied: core.liveApplied, heldForReview: pendingChanged }),
             },
           }).catch(() => null);
-          effects.push({ kind: "locked_notice", programmeId: e.programmeId, learnerId: e.learnerId });
-          if (pendingChanged) effects.push({ kind: "pending_changed", programmeId: e.programmeId, learnerId: e.learnerId, score: core.appliedScore });
+          effects.push({
+            kind: "locked_notice", programmeId: e.programmeId, learnerId: e.learnerId,
+            dedupeKey: `locked:${enrolmentId}:${options.attemptId ?? "none"}`,
+          });
+          if (pendingChanged) effects.push({
+            kind: "pending_changed", programmeId: e.programmeId, learnerId: e.learnerId, score: core.appliedScore,
+            dedupeKey: `pending:${enrolmentId}:${core.appliedScore}`,
+          });
         }
         return {
           ...empty,
@@ -428,9 +439,14 @@ async function runEvaluation(
       });
 
       // Both effects are post-commit: a failed notification cannot roll back a valid score change.
-      if (scoreEffect.signOffCleared) effects.push({ kind: "signoff_reset", learnerId: e.learnerId });
+      if (scoreEffect.signOffCleared) effects.push({
+        kind: "signoff_reset", learnerId: e.learnerId, dedupeKey: `signoff:${enrolmentId}`,
+      });
       if (pendingChanged && pendingScore !== null) {
-        effects.push({ kind: "pending_changed", programmeId: e.programmeId, learnerId: e.learnerId, score: pendingScore });
+        effects.push({
+          kind: "pending_changed", programmeId: e.programmeId, learnerId: e.learnerId, score: pendingScore,
+          dedupeKey: `pending:${enrolmentId}:${pendingScore}`,
+        });
       }
 
       // A completed (competent) enrolment with a certificate requirement holds a certificate,

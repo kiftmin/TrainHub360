@@ -81,12 +81,13 @@ export async function applyScoreChange(
   return { changed: true, signOffCleared };
 }
 
-export async function notifyManagerSignoffRequired(learnerId: string): Promise<void> {
+export async function notifyManagerSignoffRequired(learnerId: string, dedupeKey?: string): Promise<void> {
   const learner = await db.user.findUnique({ where: { id: learnerId }, select: { name: true, managerId: true } }).catch(() => null);
   if (!learner?.managerId) return;
   await notify(learner.managerId, "manager_signoff_required", {
     title: "Review-credit sign-off needs re-confirming",
     body: `${learner.name}'s score changed after your sign-off, so it must be confirmed again.`,
     link: "/review-credit",
+    dedupeKey,
   });
 }

@@ -1,12 +1,20 @@
 import { db } from "../db.js";
+import { isUniqueViolation } from "./dbErrors.js";
 
 export const HIGH_APPLIED_SCORE = 90;
 
-export async function awardRecognition(userId: string, type: string, context?: string) {
+export async function awardRecognition(userId: string, type: string, context?: string, dedupeKey?: string) {
+  const key = dedupeKey ?? `${type}:${context ?? ""}`.slice(0, 200);
   const existing = await db.recognition.findFirst({ where: { userId, type, context: context ?? null } }).catch(() => null);
   if (existing) return { awarded: false, id: existing.id };
-  const r = await db.recognition.create({ data: { userId, type, context: context ?? null } });
-  return { awarded: true, id: r.id };
+  try {
+    const r = await db.recognition.create({ data: { userId, type, context: context ?? null, dedupeKey: key } });
+    return { awarded: true, id: r.id };
+  } catch (error) {
+    if (!isUniqueViolation(error)) throw error;
+    const winner = await db.recognition.findFirst({ where: { userId, dedupeKey: key } }).catch(() => null);
+    return { awarded: false, id: winner?.id };
+  }
 }
 
 export async function checkAppliedScoreRecognition(enrolmentId: string): Promise<{ awarded: boolean }> {
