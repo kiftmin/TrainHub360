@@ -40,6 +40,8 @@ CI does this automatically: `.github/workflows/ci.yml` starts a SQL Server 2022 
 container, pushes the base schema, applies every migration with the same baseline runner,
 verifies `prisma migrate status`, and runs the suite (`DATABASE_URL` is set in the job env).
 
+A failing test is never rerun until it goes green: find and fix the root cause, or leave the build red and report it.
+
 Never commit `.env` or the SA password � it is gitignored. CI uses a placeholder URL.
 
 ## API
@@ -195,6 +197,15 @@ atomically, records a heartbeat every 50 enrolments, and startup/tick reclaims a
 is older than `EVALUATION_STALE_MS` (default 10 minutes). A reclaimed job keeps its attempt count and
 is failed with an audit entry after `EVALUATION_MAX_ATTEMPTS` (5). Migrations
 `20261127_round10_evaluation_queue_resilience` adds the heartbeat, attempts and indexes.
+
+**Completion side effects are idempotent in the database (round 13).** The filtered unique
+index `UX_certificates_one_active_per_enrolment` permits one active certificate per enrolment;
+a losing concurrent issuer re-reads and returns the winner as `existing: true` instead of
+surfacing a SQL Server 2601/2627 or Prisma P2002. The other side effects — streak and
+high-score recognitions, locked-result and pending-result notices, and manager sign-off notices —
+use nullable `dedupeKey` columns with filtered unique indexes on `(user_id, dedupe_key)`; a
+duplicate insert is treated as "already done" and sends no second email. The round 13 migration
+revokes duplicate active certificates before creating the index and audits every repair.
 
 Each enrolment is read, scored and written inside one transaction that holds the row
 (`WITH (UPDLOCK, HOLDLOCK)`), so two triggers arriving together cannot both see "not completed" and

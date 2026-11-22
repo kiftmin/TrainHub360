@@ -647,6 +647,9 @@ model Recognition {
   type      String
   awardedAt DateTime @default(now()) @map("awarded_at")
   context   String?  @db.NVarChar(1024)
+  // Round 13 / 1.2: null for legacy rows; completion awards use a stable key so the
+  // filtered unique index makes a second award a no-op instead of a duplicate.
+  dedupeKey String?  @map("dedupe_key") @db.NVarChar(200)
 
   @@map("recognitions")
 }
@@ -769,6 +772,9 @@ model Notification {
   link      String?  @db.NVarChar(1024)
   readAt    DateTime? @map("read_at")
   createdAt DateTime @default(now()) @map("created_at")
+  // Round 13 / 1.2: opt-in completion dedupe key, guarded by a filtered unique index
+  // on (user_id, dedupe_key). Ordinary notifications leave it null and are unaffected.
+  dedupeKey String?  @map("dedupe_key") @db.NVarChar(200)
 
   @@index([userId, readAt])
   @@map("notifications")

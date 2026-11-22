@@ -1,6 +1,11 @@
 import { db, Prisma } from "../db.js";
+import { isUniqueViolation } from "./dbErrors.js";
 
 const COMPLIANCE_CATEGORIES = ["compliance", "certification"];
+
+async function existingActiveCertificate(enrolmentId: string) {
+  return db.certificate.findFirst({ where: { enrolmentId, status: "active" } }).catch(() => null);
+}
 
 export function needsCertificate(category: string | null, validityMonths: number | null): boolean {
   if (validityMonths && validityMonths > 0) return true;
@@ -14,7 +19,7 @@ export async function issueCertificateForEnrolment(enrolmentId: string, attemptI
   // when the content is complete and every live applied assessment is passed; "manual" by a staff
   // override that carried a reason. Nothing else may produce a certificate.
   if (!e.completionSource) return { issued: false, reason: "no completion source" };
-  const existing = await db.certificate.findFirst({ where: { enrolmentId: e.id, status: "active" } }).catch(() => null);
+  const existing = await existingActiveCertificate(e.id);
   // The attempt is passed in by whoever knows it: a certificate issued from the assessment loop
   // points at the attempt that earned it, while one issued from a staff status change has none.
   if (existing) return { issued: false, existing: true, id: existing.id };
@@ -22,10 +27,18 @@ export async function issueCertificateForEnrolment(enrolmentId: string, attemptI
   const months = e.course.validityMonths ?? 12;
   const expiresAt = new Date();
   expiresAt.setMonth(expiresAt.getMonth() + months);
-  const cert = await db.certificate.create({
-    data: { learnerId: e.learnerId, courseId: e.courseId, enrolmentId: e.id, attemptId: attemptId ?? null, expiresAt, status: "active" },
-  });
-  return { issued: true, id: cert.id };
+  try {
+    const cert = await db.certificate.create({
+      data: { learnerId: e.learnerId, courseId: e.courseId, enrolmentId: e.id, attemptId: attemptId ?? null, expiresAt, status: "active" },
+    });
+    return { issued: true, id: cert.id };
+  } catch (error) {
+    // Round 13 / 1.1: the filtered unique index is the authority. Two evaluations that both
+    // passed the pre-check must converge on one certificate, never surface a 2601/2627/P2002.
+    if (!isUniqueViolation(error)) throw error;
+    const winner = await existingActiveCertificate(e.id);
+    return winner ? { issued: false, existing: true, id: winner.id } : { issued: false };
+  }
 }
 
 export async function revokeCertificatesForEnrolment(

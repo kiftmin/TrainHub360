@@ -2,6 +2,7 @@ import { db } from "../db.js";
 import { getEmailSender, escapeHtml } from "./email.js";
 import { appUrl } from "./links.js";
 import { recordEmailFailure } from "./emailFailures.js";
+import { isUniqueViolation } from "./dbErrors.js";
 
 export interface NotifyPayload {
   title: string;
@@ -10,6 +11,8 @@ export interface NotifyPayload {
   email?: boolean;
   /** Round 8 / D.2: calendar invitations and updates travel with the mail as an .ics file. */
   attachments?: Array<{ filename: string; contentType: string; content: string }>;
+  /** Round 13 / 1.2: opt-in completion dedupe key (unique per user via a filtered index). */
+  dedupeKey?: string;
 }
 
 // Creates the in-app notification record and (best effort) sends an email.
@@ -21,11 +24,20 @@ export async function notify(userId: string, type: string, payload: NotifyPayloa
   try {
     const user = await db.user.findUnique({ where: { id: userId }, select: { email: true, orgId: true } }).catch(() => null);
     if (!user) return;
-    await db.notification.create({
-      data: { userId, orgId: user.orgId, type, title: payload.title, body: payload.body ?? null, link: payload.link ?? null },
-    }).catch((e: unknown) => {
+    try {
+      await db.notification.create({
+        data: {
+          userId, orgId: user.orgId, type, title: payload.title, body: payload.body ?? null,
+          link: payload.link ?? null, dedupeKey: payload.dedupeKey ?? null,
+        },
+      });
+    } catch (e) {
+      if (payload.dedupeKey && isUniqueViolation(e)) {
+        // Already announced for this completion event: no second notification and no second email.
+        return;
+      }
       console.error(`[notify] could not store the in-app notification for ${userId} (${type}):`, e instanceof Error ? e.message : e);
-    });
+    }
     if (payload.email !== false) {
       // The link is stored app-relative (the bell navigates in-app); the email needs an
       // absolute one, because the recipient has no origin to resolve "/x" against.
