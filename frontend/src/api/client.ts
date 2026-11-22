@@ -50,6 +50,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     error.body = body;
     throw error;
   }
+  if (res.status === 204) return undefined as T;
   const ct = res.headers.get("content-type") ?? "";
   if (ct.includes("text/csv")) return (await res.text()) as T;
   return (await res.json()) as T;
