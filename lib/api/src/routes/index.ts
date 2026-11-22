@@ -48,7 +48,7 @@ import { evaluateEnrolment } from "../services/enrolmentOutcome.js";
 import { enqueueCourseEvaluation, drainEvaluationQueue } from "../services/evaluationQueue.js";
 import { buildIcsCalendar, sessionsForUser } from "../services/ical.js";
 import crypto from "node:crypto";
-import { db, orgScope, orgIdOf } from "../db.js";
+import { db, Prisma, orgScope, orgIdOf } from "../db.js";
 import type { AuthedRequest } from "../middleware/auth.js";
 type EnrolmentRow = Awaited<ReturnType<typeof db.enrolment.findMany>>[number];
 type Enrolment = EnrolmentRow;
@@ -3481,7 +3481,7 @@ router.get("/threads", async (req, res) => {
   const participantThreads = await db.threadParticipant.findMany({ where: { userId: me.id, leftAt: null }, select: { threadId: true } }).catch(() => [] as Array<{ threadId: string }>);
   const participantIds = new Set(participantThreads.map((p) => p.threadId));
   const adminIdsSet = new Set(adminIds);
-  const where = participantIds.size || adminIds.length || orgStaff
+  const baseWhere: Prisma.MessageThreadWhereInput = participantIds.size || adminIds.length || orgStaff
     ? {
         orgId: scope.orgId,
         OR: [
@@ -3491,28 +3491,48 @@ router.get("/threads", async (req, res) => {
         ],
       }
     : { orgId: scope.orgId, id: { in: [] as string[] } };
+  const filters: Prisma.MessageThreadWhereInput = {};
+  const programmeFilter = typeof req.query.programmeId === "string" && req.query.programmeId ? req.query.programmeId : null;
+  const courseFilter = typeof req.query.courseId === "string" && req.query.courseId ? req.query.courseId : null;
+  if (programmeFilter) filters.programmeId = programmeFilter;
+  if (courseFilter) filters.courseId = courseFilter;
   const threads = await db.messageThread.findMany({
-    where,
+    where: { ...baseWhere, ...filters },
     take: 200,
     orderBy: { updatedAt: "desc" },
     include: {
       messages: { orderBy: { createdAt: "asc" } },
       participants: { select: { userId: true, role: true } },
+      course: { select: { id: true, title: true } },
     },
-  }).catch(() => [] as Array<{ id: string; programmeId: string | null; messages: Array<{ authorId: string | null; createdAt: Date }>; participants: Array<{ userId: string; role: string }> }>);
-  return res.json(threads.map((t) => {
+  }).catch(() => [] as Array<{
+    id: string;
+    programmeId: string | null;
+    courseId: string | null;
+    course: { id: string; title: string } | null;
+    isEscalated: boolean;
+    lastLearnerMessageAt: Date | null;
+    lastTrainerResponseAt: Date | null;
+    messages: Array<{ authorId: string | null; createdAt: Date }>;
+    participants: Array<{ userId: string; role: string }>;
+  }>);
+  const rows = threads.map((t) => {
     const canRead = participantIds.has(t.id) || (t.programmeId ? adminIdsSet.has(t.programmeId) : false);
     const roleByUser = new Map(t.participants.map((p) => [p.userId, p.role]));
     const mapped = t.messages.map((m) => ({ authorId: m.authorId, authorRole: m.authorId ? roleByUser.get(m.authorId) ?? "learner" : "learner", createdAt: m.createdAt }));
     const avg = avgResponseHours(mapped);
+    const awaiting = Boolean(t.lastLearnerMessageAt && (!t.lastTrainerResponseAt || +new Date(t.lastLearnerMessageAt) > +new Date(t.lastTrainerResponseAt)));
     return {
       ...t,
       messages: canRead ? t.messages : [],
       metadataOnly: !canRead,
       averageResponseTimeHours: avg,
       slaStatus: slaStatusFor(t as SlaThread, avg),
+      slaState: t.isEscalated ? "escalated" : awaiting ? "reply_pending" : "ok",
     };
-  }));
+  });
+  const slaFilter = typeof req.query.slaStatus === "string" ? req.query.slaStatus : null;
+  return res.json(slaFilter ? rows.filter((row) => row.slaState === slaFilter || row.slaStatus.toLowerCase().includes(slaFilter)) : rows);
 });
 
 router.post("/threads", async (req, res) => {
@@ -3557,8 +3577,10 @@ router.post("/threads", async (req, res) => {
         context: courseId ? "course" : "programme",
         participant: "",
         programmeId,
+        courseId,
         orgId: scope.orgId,
         urgent: Boolean(req.body?.urgent),
+        slaHours: Number.isFinite(Number(req.body?.slaHours)) ? Math.min(Math.max(Math.round(Number(req.body.slaHours)), 1), 720) : 24,
         lastLearnerMessageAt: callerRole === "learner" ? now : null,
       },
     });
@@ -3627,6 +3649,80 @@ router.post("/threads/:id/messages", async (req, res) => {
   });
   return res.status(201).json(msg);
 });
+
+router.patch("/threads/:id/sla", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const { thread, participant, programmeAdmin } = await threadAccess(me.id, req.params.id, scope.orgId);
+  if (!thread || (!participant && !programmeAdmin && !(await isOrgStaff(me.id)))) return res.status(404).json({ error: "thread not found" });
+  const raw = Number(req.body?.slaHours);
+  if (!Number.isFinite(raw) || raw < 1 || raw > 720) return res.status(400).json({ error: "slaHours must be between 1 and 720" });
+  const updated = await db.messageThread.update({ where: { id: thread.id }, data: { slaHours: Math.round(raw) } });
+  await db.auditLog.create({ data: { userId: me.id, action: "THREAD_SLA_UPDATED", entity: "message_thread", entityId: thread.id, details: JSON.stringify({ slaHours: Math.round(raw) }) } }).catch(() => null);
+  return res.json(updated);
+});
+
+async function requireMessageTemplateStaff(req: Parameters<typeof orgScope>[0]): Promise<string | null> {
+  const me = req.user;
+  if (!me) return null;
+  const scope = orgScope(req);
+  const allowed = (await isOrgStaff(me.id)) || (await hasAnyProgrammeStaffGrant(me.id));
+  return allowed ? scope.orgId : null;
+}
+
+router.get("/message-templates", async (req, res) => {
+  const orgId = await requireMessageTemplateStaff(req as AuthedRequest);
+  if (!orgId) return res.status(403).json({ error: "programme staff access required" });
+  const rows = await db.messageTemplate.findMany({ where: { orgId, isActive: true }, orderBy: { title: "asc" }, take: 200 }).catch(() => []);
+  return res.json(rows);
+});
+
+router.post("/message-templates", async (req, res) => {
+  const orgId = await requireMessageTemplateStaff(req as AuthedRequest);
+  if (!orgId) return res.status(403).json({ error: "programme staff access required" });
+  const me = (req as AuthedRequest).user!;
+  const title = String(req.body?.title ?? "").trim();
+  const body = String(req.body?.body ?? "").trim();
+  if (!title || !body || title.length > 256) return res.status(400).json({ error: "title and body required" });
+  const row = await db.messageTemplate.create({ data: { orgId, title, body, createdBy: me.id } });
+  await db.auditLog.create({ data: { userId: me.id, action: "MESSAGE_TEMPLATE_CREATED", entity: "message_template", entityId: row.id, details: null } }).catch(() => null);
+  return res.status(201).json(row);
+});
+
+router.patch("/message-templates/:id", async (req, res) => {
+  const orgId = await requireMessageTemplateStaff(req as AuthedRequest);
+  if (!orgId) return res.status(403).json({ error: "programme staff access required" });
+  const me = (req as AuthedRequest).user!;
+  const row = await db.messageTemplate.findFirst({ where: { id: req.params.id, orgId } });
+  if (!row) return res.status(404).json({ error: "template not found" });
+  const data: Prisma.MessageTemplateUpdateInput = {};
+  if (req.body?.title !== undefined) {
+    const title = String(req.body.title).trim();
+    if (!title || title.length > 256) return res.status(400).json({ error: "title must be 1-256 characters" });
+    data.title = title;
+  }
+  if (req.body?.body !== undefined) {
+    const body = String(req.body.body).trim();
+    if (!body) return res.status(400).json({ error: "body required" });
+    data.body = body;
+  }
+  if (req.body?.isActive !== undefined) data.isActive = Boolean(req.body.isActive);
+  const updated = await db.messageTemplate.update({ where: { id: row.id }, data });
+  await db.auditLog.create({ data: { userId: me.id, action: "MESSAGE_TEMPLATE_UPDATED", entity: "message_template", entityId: row.id, details: JSON.stringify(data) } }).catch(() => null);
+  return res.json(updated);
+});
+
+router.delete("/message-templates/:id", async (req, res) => {
+  const orgId = await requireMessageTemplateStaff(req as AuthedRequest);
+  if (!orgId) return res.status(403).json({ error: "programme staff access required" });
+  const me = (req as AuthedRequest).user!;
+  const row = await db.messageTemplate.findFirst({ where: { id: req.params.id, orgId, isActive: true } });
+  if (!row) return res.status(404).json({ error: "template not found" });
+  await db.messageTemplate.update({ where: { id: row.id }, data: { isActive: false } });
+  await db.auditLog.create({ data: { userId: me.id, action: "MESSAGE_TEMPLATE_DELETED", entity: "message_template", entityId: row.id, details: null } }).catch(() => null);
+  return res.status(204).end();
+});
+
 router.get("/bookings", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   res.json(await db.booking.findMany({ where: { orgId: scope.orgId }, take: 200 }).catch(() => []));

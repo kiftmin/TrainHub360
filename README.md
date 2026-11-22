@@ -271,6 +271,18 @@ waitlisted learner. `PATCH /api/sessions/:id` and `POST /api/sessions/:id/cancel
 tools to programme staff as a roster panel with capacity counts, status groups, eligible learners,
 skip reasons, removal, title edits and cancellation.
 
+### Direct messaging and response SLA
+
+Message threads may be scoped to a programme or a single course; `POST /api/threads` persists
+`courseId` and rejects a course from another programme. `GET /api/threads` accepts `programmeId`,
+`courseId` and `slaStatus` (`ok`, `reply_pending`, `escalated`) filters and returns the thread's
+`course`, `slaHours`, `isEscalated`, `slaState` and average trainer response time. Staff can change
+a thread's response window with `PATCH /api/threads/:id/sla` (1–720 hours). Overdue threads are
+escalated once to programme admins and trainers, either manually with `POST /api/sla/run` or by the
+background job (`SLA_INTERVAL_MS`, default 10 minutes, `0` disables it). Programme staff can also
+manage org-scoped canned responses through `/api/message-templates`; deleting a template deactivates
+it rather than losing the audit trail.
+
 ### Running behind a proxy
 
 `TRUST_PROXY` decides whether `X-Forwarded-For` is believed. It is off by default, so a client
