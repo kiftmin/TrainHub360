@@ -262,6 +262,13 @@ file; cancelling sends `METHOD:CANCEL`. Personal feeds live at `GET /api/calenda
 with a token issued by `GET /api/me/ical-token` that is stored hashed, shown once and can be
 rotated by org admins. Real Outlook/Google API sync is **not built** and stays out of scope.
 
+Programme staff can manage a roster through `GET /api/sessions/:id/attendees` (statuses plus a
+capacity/seat summary), `GET /api/sessions/:id/invitable`, `POST /api/sessions/:id/invite` (returns
+skip reasons), and `POST /api/sessions/:id/remove`. Removal records a declined RSVP, audits the staff
+action and reuses the race-safe decline path so a freed confirmed seat promotes the earliest
+waitlisted learner. `PATCH /api/sessions/:id` and `POST /api/sessions/:id/cancel` accept an optional
+`reason` that is included in attendee notifications and emails.
+
 ### Running behind a proxy
 
 `TRUST_PROXY` decides whether `X-Forwarded-For` is believed. It is off by default, so a client
