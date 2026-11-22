@@ -45,8 +45,9 @@ const roster = {
   attendees: [
     { id: "u1", rsvpId: "r1", learnerId: "l1", name: "Ada Learner", email: "ada@example.com", isActive: true, status: "confirmed", respondedAt: "2026-11-22T10:00:00.000Z", waitlistedAt: null, createdAt: "2026-11-21T10:00:00.000Z" },
     { id: "u2", rsvpId: "r2", learnerId: "l2", name: "Ben Learner", email: "ben@example.com", isActive: true, status: "waitlisted", respondedAt: null, waitlistedAt: "2026-11-22T10:00:00.000Z", createdAt: "2026-11-21T10:00:00.000Z" },
+    { id: "u6", rsvpId: "r6", learnerId: "l6", name: "Removed Learner", email: "removed@example.com", isActive: true, status: "removed", respondedAt: "2026-11-22T11:00:00.000Z", waitlistedAt: null, removalReason: "Safety escalation", removedAt: "2026-11-22T11:00:00.000Z", removedBy: "u9", createdAt: "2026-11-21T10:00:00.000Z" },
   ],
-  summary: { sessionId: "s1", capacity: 1, attendeeCount: 1, seatsTaken: 1, seatsRemaining: 0, invited: 1, confirmed: 1, waitlisted: 1, declined: 0 },
+  summary: { sessionId: "s1", capacity: 1, attendeeCount: 1, seatsTaken: 1, seatsRemaining: 0, invited: 1, confirmed: 1, waitlisted: 1, declined: 0, removed: 1 },
 };
 
 const learner3 = { learnerId: "l3", id: "u3", name: "Cleo Learner", email: "cleo@example.com", eligible: true, reason: null };
@@ -176,6 +177,16 @@ describe("session roster UI", () => {
     await waitFor(() => expect(calls.some((call) => call.url.includes("/sessions/s1/cancel"))).toBe(true));
     const cancelCall = calls.find((call) => call.url.includes("/sessions/s1/cancel"));
     expect(cancelCall?.body).toEqual({ reason: "Room changed" });
+  });
+
+  test("shows removed attendees with their reason and no remove control", async () => {
+    harness();
+    render(<Providers><SessionRosterPanel sessionId="s1" sessionTitle="Safety briefing" /></Providers>);
+
+    const removed = await screen.findByTestId("attendee-l6");
+    expect(removed.textContent).toContain("removed");
+    expect((await screen.findByTestId("attendee-removal-reason-l6")).textContent).toContain("Safety escalation");
+    expect(screen.queryByTestId("remove-attendee-l6")).toBeNull();
   });
 
   test("debounces search, loads more pages and shows the selected count", async () => {
