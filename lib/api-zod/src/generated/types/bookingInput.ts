@@ -7,8 +7,10 @@
  */
 
 export interface BookingInput {
-  trainer: string;
-  course?: string;
+  /** The trainer's user id. A trainer name is no longer accepted. */
+  trainerId: string;
+  /** @nullable */
+  courseId?: string | null;
   date: string;
   time: string;
 }

@@ -6,7 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type InviteSessionParticipants200 = {
-  invited?: number;
-  skipped?: number;
+export type ResetAssessmentAttempts200 = {
+  assessmentId: string;
+  enrolmentId: string;
+  reset: number;
+  chainAssessmentIds: string[];
 };

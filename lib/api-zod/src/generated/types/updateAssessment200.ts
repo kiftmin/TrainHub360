@@ -6,4 +6,12 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type UpdateAssessment200 = { [key: string]: unknown };
+export type UpdateAssessment200 = {
+  id?: string;
+  version?: number;
+  isPublished?: boolean;
+  /** @nullable */
+  supersedesId?: string | null;
+  /** Legacy alias for the new draft id */
+  redirectedTo?: string;
+};

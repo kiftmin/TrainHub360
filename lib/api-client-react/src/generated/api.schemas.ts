@@ -100,6 +100,11 @@ export interface Organization {
   plan: string;
   learnerCount: number;
   programmeCount: number;
+  /**
+     * @minimum 1
+     * @maximum 720
+     */
+  defaultSlaHours?: number;
 }
 
 export interface Programme {
@@ -111,6 +116,12 @@ export interface Programme {
   courseCount: number;
   progress: number;
   owner: string;
+  /**
+     * @minimum 1
+     * @maximum 720
+     * @nullable
+     */
+  slaHours?: number | null;
 }
 
 export interface CurrentUser {
@@ -186,31 +197,232 @@ export interface DashboardSummary {
   expiringItems: ExpiringCredential[];
 }
 
+export type TrainingSessionMode = typeof TrainingSessionMode[keyof typeof TrainingSessionMode];
+
+
+export const TrainingSessionMode = {
+  online: 'online',
+  offline: 'offline',
+} as const;
+
+/**
+ * @nullable
+ */
+export type TrainingSessionMyRsvpStatus = typeof TrainingSessionMyRsvpStatus[keyof typeof TrainingSessionMyRsvpStatus] | null;
+
+
+export const TrainingSessionMyRsvpStatus = {
+  invited: 'invited',
+  confirmed: 'confirmed',
+  waitlisted: 'waitlisted',
+  declined: 'declined',
+  removed: 'removed',
+} as const;
+
 export interface TrainingSession {
   id: string;
   title: string;
   programme: string;
+  /** @nullable */
+  programmeId?: string | null;
+  /** @nullable */
+  courseId?: string | null;
+  trainer?: string;
+  /** @nullable */
+  trainerId?: string | null;
+  /** YYYY-MM-DD, derived from startsAt in the session's timezone */
   date: string;
+  /** HH:MM, derived from startsAt in the session's timezone */
   time: string;
-  mode: string;
   /** @nullable */
+  startsAt?: string | null;
+  /** @nullable */
+  endsAt?: string | null;
+  timezone?: string;
+  mode: TrainingSessionMode;
+  /**
+     * Withheld (null) from callers who cannot join
+     * @nullable
+     */
   location?: string | null;
-  /** @nullable */
+  /**
+     * Withheld (null) from callers who cannot join
+     * @nullable
+     */
+  joinUrl?: string | null;
+  /**
+     * Legacy alias for joinUrl
+     * @nullable
+     */
   videoLink?: string | null;
   attendees: number;
+  /**
+     * Null means unlimited
+     * @nullable
+     */
+  capacity?: number | null;
+  /** Bumped on every edit or cancellation for calendar clients */
+  sequence: number;
+  /** Whether this caller may see the join details */
+  canJoin: boolean;
   status: string;
+  /** @nullable */
+  myRsvpStatus: TrainingSessionMyRsvpStatus;
+  /**
+     * One-based position in the session waitlist
+     * @nullable
+     */
+  myWaitlistPosition: number | null;
+  /** Authenticated per-session .ics download */
+  icsUrl: string;
+  /** @nullable */
+  cancellationReason: string | null;
+  enrolled: boolean;
 }
 
-export interface MessageThread {
+export type SessionAttendeeStatus = typeof SessionAttendeeStatus[keyof typeof SessionAttendeeStatus];
+
+
+export const SessionAttendeeStatus = {
+  invited: 'invited',
+  confirmed: 'confirmed',
+  waitlisted: 'waitlisted',
+  declined: 'declined',
+  removed: 'removed',
+} as const;
+
+export interface SessionAttendee {
   id: string;
-  subject: string;
-  context: string;
-  participant: string;
-  preview: string;
-  updatedAt: string;
-  unread: boolean;
-  urgent: boolean;
+  rsvpId: string;
+  learnerId: string;
+  name: string;
+  email: string;
+  isActive: boolean;
+  status: SessionAttendeeStatus;
+  /** @nullable */
+  respondedAt?: string | null;
+  /** @nullable */
+  waitlistedAt?: string | null;
+  /**
+     * @maxLength 1000
+     * @nullable
+     */
+  removalReason?: string | null;
+  /** @nullable */
+  removedAt?: string | null;
+  /** @nullable */
+  removedBy?: string | null;
+  createdAt: string;
 }
+
+export interface SessionRosterSummary {
+  sessionId: string;
+  /**
+     * Null means unlimited
+     * @nullable
+     */
+  capacity: number | null;
+  /** Confirmed seats taken */
+  attendeeCount: number;
+  seatsTaken: number;
+  /** @nullable */
+  seatsRemaining?: number | null;
+  invited: number;
+  confirmed: number;
+  waitlisted: number;
+  declined: number;
+  /** Removed people are shown on the roster but never count toward seats */
+  removed: number;
+}
+
+export type SessionAttendeesResponse = SessionRosterSummary & {
+  attendees: SessionAttendee[];
+  summary: SessionRosterSummary;
+};
+
+export interface SessionInvitableLearner {
+  learnerId: string;
+  id: string;
+  name: string;
+  email: string;
+  eligible: true;
+  /** @nullable */
+  reason: string | null;
+}
+
+export type SessionInvitableResponseSkippedItem = {
+  learnerId: string;
+  name: string;
+  email: string;
+  reason: string;
+};
+
+export interface SessionInvitableResponse {
+  sessionId: string;
+  q: string;
+  /** @maximum 200 */
+  limit: number;
+  total: number;
+  /** @nullable */
+  nextCursor: string | null;
+  learners: SessionInvitableLearner[];
+  invitable: SessionInvitableLearner[];
+  invitableLearners: SessionInvitableLearner[];
+  skipped: SessionInvitableResponseSkippedItem[];
+}
+
+export type SessionInviteResultSkippedReasons = {[key: string]: string};
+
+export type SessionInviteResultRowOutcome = typeof SessionInviteResultRowOutcome[keyof typeof SessionInviteResultRowOutcome];
+
+
+export const SessionInviteResultRowOutcome = {
+  invited: 'invited',
+  already_invited: 'already_invited',
+  skipped: 'skipped',
+} as const;
+
+export interface SessionInviteResultRow {
+  learnerId: string;
+  outcome: SessionInviteResultRowOutcome;
+  /** @nullable */
+  reason: string | null;
+}
+
+export interface SessionInviteResult {
+  sessionId: string;
+  allEnrolled: boolean;
+  selectedCount: number;
+  invited: number;
+  newlyInvited: number;
+  skipped: string[];
+  skippedCount: number;
+  skippedReasons: SessionInviteResultSkippedReasons;
+  rejected: SessionInviteResultRow[];
+  results: SessionInviteResultRow[];
+}
+
+/**
+ * @nullable
+ */
+export type MessageThreadCourse = {
+  id?: string;
+  title?: string;
+} | null;
+
+export type MessageThreadParticipantsItem = {
+  userId?: string;
+  role?: string;
+};
+
+export type MessageThreadSlaState = typeof MessageThreadSlaState[keyof typeof MessageThreadSlaState];
+
+
+export const MessageThreadSlaState = {
+  ok: 'ok',
+  reply_pending: 'reply_pending',
+  escalated: 'escalated',
+} as const;
 
 export interface ThreadMessage {
   id: string;
@@ -221,6 +433,79 @@ export interface ThreadMessage {
   urgent: boolean;
 }
 
+export interface MessageThread {
+  id: string;
+  subject: string;
+  context: string;
+  participant: string;
+  /** @nullable */
+  programmeId: string | null;
+  /** @nullable */
+  courseId: string | null;
+  /** @nullable */
+  course?: MessageThreadCourse;
+  orgId: string;
+  preview?: string;
+  updatedAt: string;
+  unread?: boolean;
+  urgent: boolean;
+  slaHours: number;
+  participants?: MessageThreadParticipantsItem[];
+  isEscalated: boolean;
+  /** @nullable */
+  escalatedAt?: string | null;
+  /** @nullable */
+  lastLearnerMessageAt?: string | null;
+  /** @nullable */
+  lastTrainerResponseAt?: string | null;
+  metadataOnly: boolean;
+  /** @nullable */
+  averageResponseTimeHours: number | null;
+  slaStatus: string;
+  slaState: MessageThreadSlaState;
+  messages?: ThreadMessage[];
+}
+
+export type ReviewCreditExportRowManagerApprovalsItem = {
+  enrolmentId: string;
+  signOff: boolean;
+  /** @nullable */
+  by: string | null;
+  /** @nullable */
+  at: string | null;
+};
+
+export interface ReviewCreditExportRow {
+  learnerId: string;
+  enrolmentIds: string[];
+  raw: number;
+  final: number;
+  managerApprovals: ReviewCreditExportRowManagerApprovalsItem[];
+  lockedAt: string[];
+}
+
+export interface MessageTemplateInput {
+  /** @maxLength 256 */
+  title: string;
+  /**
+     * @minLength 1
+     * @maxLength 5000
+     */
+  body: string;
+  isActive?: boolean;
+}
+
+export interface MessageTemplate {
+  id: string;
+  orgId: string;
+  title: string;
+  body: string;
+  createdBy: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ThreadMessageInput {
   body: string;
   urgent?: boolean;
@@ -228,8 +513,13 @@ export interface ThreadMessageInput {
 
 export interface Booking {
   id: string;
+  /** Display name captured when the booking was made */
   trainer: string;
+  /** @nullable */
+  trainerId: string | null;
   course: string;
+  /** @nullable */
+  courseId?: string | null;
   date: string;
   time: string;
   duration: string;
@@ -239,10 +529,83 @@ export interface Booking {
 }
 
 export interface BookingInput {
-  trainer: string;
-  course?: string;
+  /** The trainer's user id. A trainer name is no longer accepted. */
+  trainerId: string;
+  /** @nullable */
+  courseId?: string | null;
   date: string;
   time: string;
+}
+
+export interface BookableTrainer {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export type PendingVerificationStatus = typeof PendingVerificationStatus[keyof typeof PendingVerificationStatus];
+
+
+export const PendingVerificationStatus = {
+  pending_verification: 'pending_verification',
+} as const;
+
+export type PendingVerificationContentItem = { [key: string]: unknown };
+
+export type PendingVerificationEnrolment = { [key: string]: unknown };
+
+export interface PendingVerification {
+  id: string;
+  status: PendingVerificationStatus;
+  /** @nullable */
+  startedAt?: string | null;
+  /** @nullable */
+  evidenceNote?: string | null;
+  /** @nullable */
+  evidenceFileId?: string | null;
+  contentItem: PendingVerificationContentItem;
+  enrolment?: PendingVerificationEnrolment;
+}
+
+export type GradingQueueItemLearner = {
+  id: string;
+  name: string;
+  email: string;
+};
+
+export type GradingQueueItemAssessment = {
+  id: string;
+  title: string;
+  type: string;
+};
+
+export type GradingQueueItemCourse = {
+  id: string;
+  title: string;
+  programmeId: string;
+};
+
+export interface GradingQueueItem {
+  id: string;
+  attemptId: string;
+  attemptNumber: number;
+  /** @nullable */
+  submittedAt?: string | null;
+  learner: GradingQueueItemLearner;
+  assessment: GradingQueueItemAssessment;
+  course: GradingQueueItemCourse;
+  /** Answers already carrying a mark */
+  answered: number;
+  answersStored: number;
+}
+
+export interface EmailFailure {
+  id: string;
+  orgId: string;
+  to: string;
+  subject: string;
+  error: string;
+  createdAt: string;
 }
 
 export interface CalendarEvent {
@@ -411,6 +774,13 @@ export interface ReviewCreditRow {
   final: number;
 }
 
+export type CreateProgrammeBody = {
+  name: string;
+  type?: string;
+  /** Display name; defaults to the caller */
+  owner?: string;
+};
+
 export type ListCoursesParams = {
 /**
  * @nullable
@@ -420,7 +790,78 @@ programmeId?: string | null;
 
 export type ListCourseAttempts200Item = { [key: string]: unknown };
 
-export type ListCourseAssessments200Item = { [key: string]: unknown };
+/**
+ * @nullable
+ */
+export type GetCourseEvaluationStatus200Job = {
+  id?: string;
+  status?: string;
+  attempts?: number;
+  /** @nullable */
+  lastError?: string | null;
+} | null;
+
+export type GetCourseEvaluationStatus200 = {
+  pending: boolean;
+  /** @nullable */
+  job?: GetCourseEvaluationStatus200Job;
+  attempts: number;
+  /** The running job has lost its heartbeat */
+  stale: boolean;
+  /** @nullable */
+  lastError: string | null;
+};
+
+export type ListCourseAssessments200ItemType = typeof ListCourseAssessments200ItemType[keyof typeof ListCourseAssessments200ItemType];
+
+
+export const ListCourseAssessments200ItemType = {
+  recall: 'recall',
+  applied: 'applied',
+} as const;
+
+/**
+ * @nullable
+ */
+export type ListCourseAssessments200ItemChangeKind = typeof ListCourseAssessments200ItemChangeKind[keyof typeof ListCourseAssessments200ItemChangeKind] | null;
+
+
+export const ListCourseAssessments200ItemChangeKind = {
+  minor: 'minor',
+  new_paper: 'new_paper',
+} as const;
+
+export type ListCourseAssessments200ItemQuestionsItem = { [key: string]: unknown };
+
+export type ListCourseAssessments200Item = {
+  id: string;
+  moduleId: string;
+  type: ListCourseAssessments200ItemType;
+  title?: string;
+  passMark?: number;
+  /** @nullable */
+  maxAttempts?: number | null;
+  /** @nullable */
+  timeLimitMinutes?: number | null;
+  isPublished: boolean;
+  version?: number;
+  /** @nullable */
+  publishedAt?: string | null;
+  /** @nullable */
+  supersededAt?: string | null;
+  /** @nullable */
+  supersedesId?: string | null;
+  /** @nullable */
+  changeKind?: ListCourseAssessments200ItemChangeKind;
+  /** Learner responses never include correct answers, accepted answers, rubrics or option correctness. */
+  questions: ListCourseAssessments200ItemQuestionsItem[];
+  attemptCount: number;
+  /** @nullable */
+  bestScore: number | null;
+  /** @nullable */
+  remainingAttempts: number | null;
+  locked: boolean;
+};
 
 export type GetAssessment200 = { [key: string]: unknown };
 
@@ -432,12 +873,21 @@ export type UpdateAssessmentBody = {
      */
   passMark?: number;
   /** @minimum 1 */
-  maxAttempts?: number;
+  maxAttempts?: number | null;
   /** @minimum 1 */
   timeLimitMinutes?: number | null;
+  confirmNewVersion?: boolean;
 };
 
-export type UpdateAssessment200 = { [key: string]: unknown };
+export type UpdateAssessment200 = {
+  id?: string;
+  version?: number;
+  isPublished?: boolean;
+  /** @nullable */
+  supersedesId?: string | null;
+  /** Legacy alias for the new draft id */
+  redirectedTo?: string;
+};
 
 export type CreateQuestionBodyKind = typeof CreateQuestionBodyKind[keyof typeof CreateQuestionBodyKind];
 
@@ -468,9 +918,80 @@ export type UpdateQuestionBody = { [key: string]: unknown };
 
 export type UpdateQuestion200 = { [key: string]: unknown };
 
-export type PublishAssessment200 = { [key: string]: unknown };
+export type GetAssessmentPublishImpact200 = {
+  enrolled: number;
+  completed: number;
+  notCompleted: number;
+  withAttempts: number;
+};
 
-export type StartAssessmentAttempt201 = { [key: string]: unknown };
+export type PublishAssessmentBodyChangeKind = typeof PublishAssessmentBodyChangeKind[keyof typeof PublishAssessmentBodyChangeKind];
+
+
+export const PublishAssessmentBodyChangeKind = {
+  minor: 'minor',
+  new_paper: 'new_paper',
+} as const;
+
+export type PublishAssessmentBody = {
+  changeKind?: PublishAssessmentBodyChangeKind;
+};
+
+/**
+ * @nullable
+ */
+export type PublishAssessment200ChangeKind = typeof PublishAssessment200ChangeKind[keyof typeof PublishAssessment200ChangeKind] | null;
+
+
+export const PublishAssessment200ChangeKind = {
+  minor: 'minor',
+  new_paper: 'new_paper',
+} as const;
+
+export type PublishAssessment200 = {
+  id?: string;
+  isPublished?: boolean;
+  /** @nullable */
+  publishedAt?: string | null;
+  /** @nullable */
+  changeKind?: PublishAssessment200ChangeKind;
+};
+
+export type PublishAssessment400 = {
+  error?: string;
+  problems?: string[];
+  requiresChangeKind?: boolean;
+};
+
+export type DiscardAssessmentDraft200 = {
+  discarded: string;
+  liveVersion: string;
+};
+
+export type StartAssessmentAttempt201 = {
+  attemptId: string;
+  attemptNumber: number;
+  attemptsUsed: number;
+  maxAttempts: number | null;
+};
+
+export type StartAssessmentAttempt403 = {
+  locked?: boolean;
+  bestScore?: number | null;
+  attemptsUsed?: number;
+  maxAttempts?: number;
+};
+
+export type ResetAssessmentAttemptsBody = {
+  enrolmentId: string;
+};
+
+export type ResetAssessmentAttempts200 = {
+  assessmentId: string;
+  enrolmentId: string;
+  reset: number;
+  chainAssessmentIds: string[];
+};
 
 export type SubmitAttemptAnswersBodyAnswersItem = {
   questionId: string;
@@ -512,12 +1033,41 @@ export type CreateSessionBody = {
   trainerId?: string | null;
 };
 
+export type ListMessageThreadsParams = {
+programmeId?: string;
+courseId?: string;
+slaStatus?: ListMessageThreadsSlaStatus;
+};
+
+export type ListMessageThreadsSlaStatus = typeof ListMessageThreadsSlaStatus[keyof typeof ListMessageThreadsSlaStatus];
+
+
+export const ListMessageThreadsSlaStatus = {
+  ok: 'ok',
+  reply_pending: 'reply_pending',
+  escalated: 'escalated',
+} as const;
+
 export type CreateThreadBody = {
   subject: string;
   body: string;
-  programmeId?: string | null;
+  programmeId: string;
+  courseId?: string | null;
+  /**
+     * @minimum 1
+     * @maximum 720
+     */
+  slaHours?: number;
   participantIds: string[];
   urgent?: boolean;
+};
+
+export type UpdateThreadSlaBody = {
+  /**
+     * @minimum 1
+     * @maximum 720
+     */
+  slaHours: number;
 };
 
 export type ListNotificationsParams = {
@@ -533,12 +1083,30 @@ limit?: number;
 };
 
 export type InviteSessionParticipantsBody = {
-  learnerIds: string[];
+  learnerIds?: string[];
+  allEnrolled?: boolean;
 };
 
-export type InviteSessionParticipants200 = {
-  invited?: number;
-  skipped?: number;
+export type ListSessionInvitableLearnersParams = {
+/**
+ * Case-insensitive name/email substring; minimum 2 characters when present.
+ */
+q?: string;
+/**
+ * @minimum 1
+ * @maximum 200
+ */
+limit?: number;
+/**
+ * Opaque cursor returned by a previous page.
+ */
+cursor?: string;
+};
+
+export type RemoveSessionAttendeeBody = {
+  learnerId: string;
+  /** @maxLength 1000 */
+  reason?: string | null;
 };
 
 export type RsvpSessionBodyStatus = typeof RsvpSessionBodyStatus[keyof typeof RsvpSessionBodyStatus];
@@ -568,6 +1136,8 @@ export type RegenerateUserIcalToken200 = {
 export type GetCalendarFeedParams = {
 token: string;
 };
+
+export type ListProgrammeMembers200Item = { [key: string]: unknown };
 
 export type AssignProgrammeMemberBodyRolesItem = typeof AssignProgrammeMemberBodyRolesItem[keyof typeof AssignProgrammeMemberBodyRolesItem];
 
@@ -758,6 +1328,14 @@ export type ResetPasswordBody = {
   password: string;
 };
 
+export type UpdateOrganizationBody = {
+  /**
+     * @minimum 1
+     * @maximum 720
+     */
+  defaultSlaHours?: number;
+};
+
 export type CreateCohortBody = {
   name: string;
   programmeId: string;
@@ -775,4 +1353,140 @@ export type SubmitCourseFeedbackBody = {
   rating: number;
   comment?: string;
 };
+
+export type UpdateProgrammeBody = {
+  /**
+     * @minimum 1
+     * @maximum 720
+     * @nullable
+     */
+  slaHours?: number | null;
+};
+
+export type RunReminders200 = { [key: string]: unknown };
+
+export type UpdateSessionBodyMode = typeof UpdateSessionBodyMode[keyof typeof UpdateSessionBodyMode];
+
+
+export const UpdateSessionBodyMode = {
+  online: 'online',
+  offline: 'offline',
+} as const;
+
+export type UpdateSessionBody = {
+  title?: string;
+  mode?: UpdateSessionBodyMode;
+  /**
+     * A positive whole number, or null for unlimited
+     * @minimum 1
+     */
+  capacity?: number | null;
+  trainerId?: string | null;
+  startsAt?: string | null;
+  endsAt?: string | null;
+  /** YYYY-MM-DD; interpreted in the session's timezone */
+  date?: string;
+  /** HH:MM; interpreted in the session's timezone */
+  time?: string;
+  /** Required for online sessions */
+  joinUrl?: string | null;
+  /** Required for offline sessions */
+  location?: string | null;
+  /**
+     * Optional explanation added to attendee notifications
+     * @maxLength 1000
+     */
+  reason?: string | null;
+};
+
+export type CancelSessionBody = {
+  /**
+     * Optional explanation added to attendee notifications
+     * @maxLength 1000
+     */
+  reason?: string | null;
+};
+
+export type ListGradingQueueParams = {
+programmeId?: string;
+};
+
+export type GetAttempt200 = { [key: string]: unknown };
+
+export type SaveAttemptAnswersBodyAnswersItem = {
+  questionId: string;
+  optionIds?: string[];
+  text?: string;
+};
+
+export type SaveAttemptAnswersBody = {
+  answers: SaveAttemptAnswersBodyAnswersItem[];
+};
+
+export type SaveAttemptAnswers200 = { [key: string]: unknown };
+
+export type GetAttemptAnswersForGrading200 = { [key: string]: unknown };
+
+export type GradeAttemptBodyGradesItem = {
+  questionId: string;
+  points: number;
+  comment?: string;
+};
+
+export type GradeAttemptBodyAnswersItem = {
+  answerId: string;
+  pointsAwarded: number;
+  comment?: string;
+};
+
+export type GradeAttemptBody = {
+  grades?: GradeAttemptBodyGradesItem[];
+  answers?: GradeAttemptBodyAnswersItem[];
+};
+
+export type GradeAttempt200 = { [key: string]: unknown };
+
+export type ReorderAssessmentQuestionsBody = {
+  ids: string[];
+};
+
+export type ReorderAssessmentQuestions200 = {
+  assessmentId: string;
+  order: string[];
+};
+
+export type RejectAssessmentScore200 = {
+  ok: boolean;
+  enrolmentId: string;
+};
+
+export type ListEmailFailuresParams = {
+/**
+ * @minimum 1
+ * @maximum 200
+ */
+limit?: number;
+/**
+ * @minimum 0
+ */
+offset?: number;
+};
+
+export type ListEmailFailures200 = {
+  items: EmailFailure[];
+  limit: number;
+  offset: number;
+};
+
+export type ExportOrganizationReviewCreditsParams = {
+format?: ExportOrganizationReviewCreditsFormat;
+};
+
+export type ExportOrganizationReviewCreditsFormat = typeof ExportOrganizationReviewCreditsFormat[keyof typeof ExportOrganizationReviewCreditsFormat];
+
+
+export const ExportOrganizationReviewCreditsFormat = {
+  json: 'json',
+  csv: 'csv',
+} as const;
 

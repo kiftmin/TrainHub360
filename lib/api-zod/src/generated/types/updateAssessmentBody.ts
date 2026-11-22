@@ -14,7 +14,8 @@ export type UpdateAssessmentBody = {
      */
   passMark?: number;
   /** @minimum 1 */
-  maxAttempts?: number;
+  maxAttempts?: number | null;
   /** @minimum 1 */
   timeLimitMinutes?: number | null;
+  confirmNewVersion?: boolean;
 };

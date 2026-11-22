@@ -15,4 +15,10 @@ export interface Programme {
   courseCount: number;
   progress: number;
   owner: string;
+  /**
+     * @minimum 1
+     * @maximum 720
+     * @nullable
+     */
+  slaHours?: number | null;
 }

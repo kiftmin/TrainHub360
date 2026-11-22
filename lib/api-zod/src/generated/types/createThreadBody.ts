@@ -9,7 +9,13 @@
 export type CreateThreadBody = {
   subject: string;
   body: string;
-  programmeId?: string | null;
+  programmeId: string;
+  courseId?: string | null;
+  /**
+     * @minimum 1
+     * @maximum 720
+     */
+  slaHours?: number;
   participantIds: string[];
   urgent?: boolean;
 };
