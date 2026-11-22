@@ -4,7 +4,7 @@ import { render, cleanup, screen, waitFor, fireEvent, within } from "@testing-li
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { api } from "@/api/client";
-import { canManageMessaging } from "@/components/MessagingStaffTools";
+import { canEditThreadSla, canManageMessaging } from "@/components/MessagingStaffTools";
 import { Messages } from "@/pages/Messages";
 
 afterEach(() => {
@@ -53,6 +53,7 @@ const baseThread = {
   courseId: "c1",
   course: { id: "c1", title: "Safety Course" },
   slaHours: 24,
+  participants: [{ userId: "me", role: "learner" }],
   isEscalated: false,
   escalatedAt: null,
   lastLearnerMessageAt: "2026-11-22T09:00:00.000Z",
@@ -74,10 +75,11 @@ const template = {
   updatedAt: "2026-11-21T10:00:00.000Z",
 };
 
-function harness(options: { threads?: unknown[]; templates?: typeof template[]; messages?: unknown[] } = {}) {
+function harness(options: { threads?: unknown[]; templates?: typeof template[]; messages?: unknown[]; members?: unknown[] } = {}) {
   const calls: Call[] = [];
   const threads = options.threads ?? [baseThread];
   const messages = options.messages ?? [];
+  const members = options.members ?? [{ userId: "u2", name: "Learner B", email: "b@example.com", role: "learner" }];
   let templates = options.templates ?? [template];
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     calls.push({ url: String(url), method: init?.method ?? "GET", body: bodyOf(init) });
@@ -85,7 +87,7 @@ function harness(options: { threads?: unknown[]; templates?: typeof template[]; 
     const method = init?.method ?? "GET";
     const body = bodyOf(init) as Record<string, unknown> | undefined;
     if (path === "/api/programmes") return jsonResponse([{ id: "p1", name: "Programme 1" }]);
-    if (path.startsWith("/api/programmes/p1/members")) return jsonResponse([{ userId: "u2", name: "Learner B", email: "b@example.com", role: "learner" }]);
+    if (path.startsWith("/api/programmes/p1/members")) return jsonResponse(members);
     if (path.startsWith("/api/courses")) return jsonResponse([{ id: "c1", programmeId: "p1", title: "Safety Course" }]);
     if (path === "/api/message-templates" && method === "GET") return jsonResponse(templates);
     if (path === "/api/message-templates" && method === "POST") {
@@ -114,8 +116,8 @@ function harness(options: { threads?: unknown[]; templates?: typeof template[]; 
 }
 
 describe("Round 12 messaging UI", () => {
-  test("staff see course scope, SLA indicators and editable response windows", async () => {
-    signIn("trainer");
+  test("admins see course scope, SLA indicators and editable response windows", async () => {
+    signIn("admin", true);
     const { calls } = harness({ threads: [{ ...baseThread, slaState: "escalated", slaStatus: "Escalated — trainer reply overdue" }] });
     render(<Providers><Messages /></Providers>);
 
@@ -135,12 +137,23 @@ describe("Round 12 messaging UI", () => {
     expect((await screen.findByTestId("sla-editor-message")).textContent).toContain("8 hours");
   });
 
+  test("trainers see the response promise but cannot edit the SLA", async () => {
+    signIn("trainer");
+    harness();
+    render(<Providers><Messages /></Providers>);
+
+    expect((await screen.findByTestId("sla-promise")).textContent).toContain("Usually replies within 24 hours.");
+    expect(screen.queryByTestId("sla-editor")).toBeNull();
+    expect(screen.getByTestId("message-templates-panel")).toBeTruthy();
+  });
+
   test("learners see the response promise but no staff tools or template requests", async () => {
     signIn("learner");
     const { calls } = harness();
     render(<Providers><Messages /></Providers>);
 
     expect((await screen.findByTestId("active-sla")).textContent).toContain("Usually responds within 24 hours.");
+    expect((await screen.findByTestId("sla-promise")).textContent).toContain("Usually replies within 24 hours.");
     expect(screen.queryByTestId("sla-editor")).toBeNull();
     expect(screen.queryByTestId("message-templates-panel")).toBeNull();
     expect(screen.queryByTestId("button-run-sla")).toBeNull();
@@ -163,7 +176,7 @@ describe("Round 12 messaging UI", () => {
     await waitFor(() => expect(calls.some((call) => call.url.includes("programmeId=p1&courseId=c1&slaStatus=escalated"))).toBe(true));
   });
 
-  test("new threads carry the selected course and staff response window", async () => {
+  test("new threads from trainers carry the selected course but no custom SLA", async () => {
     signIn("trainer");
     const { calls } = harness();
     render(<Providers><Messages /></Providers>);
@@ -177,6 +190,7 @@ describe("Round 12 messaging UI", () => {
     await waitFor(() => expect(within(courseSelect).getByRole("option", { name: "Safety Course" })).toBeTruthy());
     fireEvent.change(courseSelect, { target: { value: "c1" } });
     await waitFor(() => expect(within(screen.getByTestId("list-thread-participants")).queryByRole("checkbox")).not.toBeNull());
+    expect(screen.queryByTestId("input-new-thread-sla-hours")).toBeNull();
     fireEvent.change(screen.getByTestId("input-thread-subject"), { target: { value: "Course help" } });
     fireEvent.change(screen.getByTestId("input-thread-body"), { target: { value: "Please explain module 2." } });
     fireEvent.click(within(screen.getByTestId("list-thread-participants")).getByRole("checkbox"));
@@ -190,7 +204,33 @@ describe("Round 12 messaging UI", () => {
       participantIds: ["u2"],
       urgent: false,
       courseId: "c1",
-      slaHours: 24,
+    });
+  });
+
+  test("programme admins can choose the SLA for a new thread", async () => {
+    signIn("admin");
+    const { calls } = harness({ members: [{ userId: "me", name: "Programme Admin", email: "me@example.com", role: "admin" }, { userId: "u2", name: "Learner B", email: "b@example.com", role: "learner" }] });
+    render(<Providers><Messages /></Providers>);
+
+    fireEvent.click(screen.getByRole("button", { name: /new message/i }));
+    const programmeSelect = await screen.findByTestId("select-thread-programme");
+    await waitFor(() => expect(within(programmeSelect).getByRole("option", { name: "Programme 1" })).toBeTruthy());
+    fireEvent.change(programmeSelect, { target: { value: "p1" } });
+    await waitFor(() => expect(screen.getByTestId("input-new-thread-sla-hours")).toBeTruthy());
+    fireEvent.change(screen.getByTestId("input-new-thread-sla-hours"), { target: { value: "36" } });
+    fireEvent.change(screen.getByTestId("input-thread-subject"), { target: { value: "Admin help" } });
+    fireEvent.change(screen.getByTestId("input-thread-body"), { target: { value: "Please explain module 2." } });
+    fireEvent.click(within(screen.getByTestId("list-thread-participants")).getByRole("checkbox"));
+    fireEvent.click(screen.getByTestId("button-create-thread"));
+
+    await waitFor(() => expect(calls.some((call) => call.method === "POST" && call.url === "/api/threads")).toBe(true));
+    expect(calls.find((call) => call.method === "POST" && call.url === "/api/threads")?.body).toEqual({
+      subject: "Admin help",
+      body: "Please explain module 2.",
+      programmeId: "p1",
+      participantIds: ["u2"],
+      urgent: false,
+      slaHours: 36,
     });
   });
 
@@ -239,6 +279,11 @@ describe("Round 12 messaging UI", () => {
     expect(canManageMessaging({ role: "trainer" })).toBe(true);
     expect(canManageMessaging({ role: "admin" })).toBe(true);
     expect(canManageMessaging({ role: "learner", isOrgStaff: true })).toBe(true);
+    expect(canEditThreadSla(null, baseThread)).toBe(false);
+    expect(canEditThreadSla({ id: "me", role: "trainer" }, baseThread)).toBe(false);
+    expect(canEditThreadSla({ id: "me", role: "admin" }, baseThread)).toBe(true);
+    expect(canEditThreadSla({ id: "me", role: "learner", isOrgStaff: true }, baseThread)).toBe(true);
+    expect(canEditThreadSla({ id: "me", role: "learner", isOrgStaff: false }, { ...baseThread, participants: [{ userId: "me", role: "admin" }] })).toBe(true);
 
     vi.stubGlobal("fetch", () => new Response(null, { status: 204 }));
     await expect(api<void>("/message-templates/tpl1", { method: "DELETE" })).resolves.toBeUndefined();

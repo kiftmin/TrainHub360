@@ -10,6 +10,13 @@ export function canManageMessaging(user: { role?: string; isOrgStaff?: boolean }
   return ['owner', 'admin', 'trainer'].includes(user.role ?? '');
 }
 
+export function canEditThreadSla(user: { id?: string; role?: string; isOrgStaff?: boolean } | null, thread: MessageThread | null): boolean {
+  if (!user || !thread) return false;
+  if (user.isOrgStaff || ['owner', 'admin'].includes(user.role ?? '')) return true;
+  const mine = thread.participants?.find((p) => p.userId === user.id);
+  return ['owner', 'admin'].includes(mine?.role ?? '');
+}
+
 export function ThreadSlaControl({ thread }: { thread: MessageThread }) {
   const update = useUpdateThreadSla();
   const [hours, setHours] = useState(String(thread.slaHours ?? 24));

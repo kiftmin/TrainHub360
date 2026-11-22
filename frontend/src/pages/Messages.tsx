@@ -40,7 +40,7 @@ import {
 } from '@/api/hooks';
 import { getToken, clearSession, getSessionUser } from '@/api/client';
 import { MessageTemplatesPanel } from '@/components/MessageTemplatesPanel';
-import { ManualSlaRunButton, ThreadSlaControl, canManageMessaging } from '@/components/MessagingStaffTools';
+import { ManualSlaRunButton, ThreadSlaControl, canEditThreadSla, canManageMessaging } from '@/components/MessagingStaffTools';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
 import { Register } from '@/pages/Register';
@@ -107,13 +107,14 @@ export function Messages() {
   const members = useProgrammeMembers(newProgrammeId, newOpen && !!newProgrammeId);
   const newCourses = useCourses(newProgrammeId || undefined, newOpen && !!newProgrammeId);
   const meId = session?.id;
+  const canSetNewSla = !!session?.isOrgStaff || !!members.data?.some((m) => m.userId === meId && ['owner', 'admin'].includes(m.role));
   const submitThread = () => {
     if (!newSubject.trim() || !newBody.trim() || !newProgrammeId || !newParticipants.length) {
       setNewError('Subject, programme, body and at least one participant are required.');
       return;
     }
     const slaHours = Number(newSlaHours);
-    if (canManage && (!Number.isInteger(slaHours) || slaHours < 1 || slaHours > 720)) {
+    if (canSetNewSla && (!Number.isInteger(slaHours) || slaHours < 1 || slaHours > 720)) {
       setNewError('Response window must be between 1 and 720 hours.');
       return;
     }
@@ -122,7 +123,7 @@ export function Messages() {
       subject: newSubject.trim(), body: newBody.trim(), programmeId: newProgrammeId,
       participantIds: newParticipants, urgent: newUrgent,
       ...(newCourseId ? { courseId: newCourseId } : {}),
-      ...(canManage ? { slaHours } : {}),
+      ...(canSetNewSla ? { slaHours } : {}),
     }, {
       onSuccess: () => {
         setNewOpen(false); setNewSubject(''); setNewBody(''); setNewParticipants([]); setNewProgrammeId(''); setNewCourseId(''); setNewSlaHours('24'); setNewUrgent(false);
@@ -134,6 +135,7 @@ export function Messages() {
   const [body, setBody] = useState('');
   const [urgent, setUrgent] = useState(false);
   const active = threads.data?.find((thread) => thread.id === selected) || threads.data?.[0];
+  const canEditSla = canEditThreadSla(session, active ?? null);
   const activeId = active?.id || '';
   const messages = useThreadMessages(activeId, !!activeId && !active?.metadataOnly);
   const send = useSendMessage(activeId);
@@ -156,7 +158,7 @@ export function Messages() {
               <option value="">Programme-wide</option>
               {(newCourses.data || []).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}
             </select></label>
-            {canManage && <label className="block text-xs font-semibold">Response window (hours)<Input className="mt-2" type="number" min={1} max={720} value={newSlaHours} onChange={(e) => setNewSlaHours(e.target.value)} data-testid="input-new-thread-sla-hours" /></label>}
+            {canSetNewSla && <label className="block text-xs font-semibold">Response window (hours)<Input className="mt-2" type="number" min={1} max={720} value={newSlaHours} onChange={(e) => setNewSlaHours(e.target.value)} data-testid="input-new-thread-sla-hours" /></label>}
             <label className="block text-xs font-semibold">Subject<Input className="mt-2" value={newSubject} onChange={(e) => setNewSubject(e.target.value)} data-testid="input-thread-subject" /></label>
             <div className="block text-xs font-semibold">Participants
               <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-md border border-border/70 p-1" data-testid="list-thread-participants">
@@ -227,7 +229,8 @@ export function Messages() {
             {active.slaStatus && <div data-testid="active-sla"><Status tone={slaTone(active.slaState)}>{active.slaStatus}</Status></div>}
             {active.averageResponseTimeHours !== null && active.averageResponseTimeHours !== undefined && <p className="text-xs text-muted-foreground">Average trainer response: {active.averageResponseTimeHours.toFixed(1)} hours</p>}
             {active.metadataOnly && <p className="text-xs text-destructive" data-testid="metadata-only-notice">Metadata only — messages withheld by organization policy.</p>}
-            {canManage && <ThreadSlaControl thread={active} />}
+            <p className="text-xs text-muted-foreground" data-testid="sla-promise">Usually replies within {active.slaHours ?? 24} hours.</p>
+            {canEditSla && <ThreadSlaControl thread={active} />}
             {canManage && <MessageTemplatesPanel onInsert={(value) => setBody(value)} />}
           </div>
           <div className="flex-1 space-y-3 p-4">
