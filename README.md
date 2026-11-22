@@ -113,8 +113,8 @@ message, links included, is printed to the API log).
 - The login throttle is always live (`LOGIN_THROTTLE_*`), and a lockout answers with the same
   generic 401 as a wrong password.
 
-### Content storage and uploads
-Learning content files go through `lib/api/src/services/storage.ts` (`StorageProvider`). The default local-disk provider writes under `STORAGE_DIR` (default `.storage/` relative to the API process); mount a persistent volume in production. S3/Azure providers are reserved but not implemented. `scanUpload` is a no-op hook today.
+### File storage and uploads
+Learning content files go through `lib/api/src/services/storage.ts` (`StorageProvider`). With no `STORAGE_PROVIDER` set — the default, and warned about at production startup — files are written to local disk under `STORAGE_DIR` (default `.storage/` relative to the API process). A local-disk deployment needs a persistent volume and backups; files on an ephemeral container filesystem will be lost. S3/Azure providers and virus scanning are **not built**; `scanUpload` is a no-op hook today.
 
 Uploads (A.3) are **multipart**, not base64 in JSON — `express.json()` caps a JSON body at 100 KB, so a real PDF or video used to fail with 413:
 
@@ -265,9 +265,13 @@ A field that exists on the endpoint but not for your role is refused with `403`;
 does not have at all is a `400`. The score is recomputed from the stored row plus the validated
 fields, so a `deadlineDate` in the body can no longer change a stored `timelinessScore`.
 
-### Reminders and calendar
+### Calendar
 
-The reminder job (`jobs/sessionReminderJob.ts` → `services/reminderCadence.ts`) follows each
+Supported calendar access is file-based: `.ics` invitations, a per-session `.ics` download and a
+personal feed. Outlook/Google API sync is **not built**; `POST /api/sessions/:id/sync-calendar`
+answers `501` with that message and the supported alternatives.
+
+Reminders are separate from calendar sync. The reminder job (`jobs/sessionReminderJob.ts` → `services/reminderCadence.ts`) follows each
 organisation's `reminderCadenceJson`: `unansweredHours` offsets after an unanswered invitation (up to
 `maxUnanswered`) and `confirmedBeforeStartHours` offsets before a confirmed session starts. The
 cadence is validated on save (arrays of positive integers, bounded length) and is editable in
@@ -302,6 +306,16 @@ returning selected, invited and skipped counts so it works for thousands of peop
 page exposes these tools to programme staff as a roster panel with capacity counts, status groups,
 a debounced search, load-more paging, selected counts, "invite all eligible", skip reasons, removal,
 title edits and cancellation.
+
+### Trainer tools
+
+- Calendar: supported — `.ics` invitations, a per-session `.ics` download and a personal
+  `feed.ics` subscription; not built — Outlook/Google API sync (`POST /sessions/:id/sync-calendar`
+  returns 501).
+- Sessions: supported — roster, invitations, removals, waitlist promotion and cancellations with
+  a reason; not built — direct writes into an attendee's external calendar.
+- Storage: supported — local-disk uploads under a persistent volume; not built — S3/Azure cloud
+  storage and virus scanning.
 
 ### Direct messaging and response SLA
 

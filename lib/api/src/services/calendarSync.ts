@@ -2,16 +2,11 @@ import { db } from "../db.js";
 
 export type CalendarSender = (connection: { provider: string; calendarId: string | null }, event: { title: string; date: string; time: string }) => Promise<boolean>;
 
-export const defaultSender: CalendarSender = async (connection, event) => {
-  console.log(`[calendar] ${connection.provider} sync stub: "${event.title}" -> calendar ${connection.calendarId ?? "(default)"}`);
-  return true;
-};
-
 export function buildExternalEvent(session: { title: string; date: string; time: string }) {
   return { title: `[TrainHub360] ${session.title}`, date: session.date, time: session.time };
 }
 
-export async function syncSessionToCalendars(sessionId: string, sender: CalendarSender = defaultSender, orgId?: string): Promise<{ synced: number; skipped: number }> {
+export async function syncSessionToCalendars(sessionId: string, sender: CalendarSender, orgId?: string): Promise<{ synced: number; skipped: number }> {
   const session = orgId
     ? await db.session.findFirst({ where: { id: sessionId, orgId } })
     : await db.session.findUnique({ where: { id: sessionId } });

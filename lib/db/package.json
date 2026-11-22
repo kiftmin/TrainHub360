@@ -20,6 +20,7 @@
     "prisma:migrate:status": "prisma migrate status --schema ./prisma/schema.prisma",
     "prisma:push": "prisma db push --schema ./prisma/schema.prisma",
     "prisma:baseline": "node scripts/migrate-baseline.cjs --all",
+    "verify-schema": "node scripts/verify-schema.cjs",
     "prisma:studio": "prisma studio --schema ./prisma/schema.prisma",
     "prisma:seed": "tsx prisma/seed.ts"
   },

@@ -124,6 +124,11 @@ export interface TrainingSession {
   sequence?: number;
   canJoin?: boolean;
   status: string;
+  myRsvpStatus?: 'invited' | 'confirmed' | 'waitlisted' | 'declined' | 'removed' | null;
+  myWaitlistPosition?: number | null;
+  icsUrl?: string;
+  cancellationReason?: string | null;
+  enrolled?: boolean;
 }
 
 export interface SessionRosterSummary {
@@ -1095,6 +1100,17 @@ export interface CourseAssessment {
   bestScore: number | null;
   remainingAttempts: number | null;
   locked: boolean;
+}
+
+export interface PublishImpact {
+  enrolled: number;
+  completed: number;
+  notCompleted: number;
+  withAttempts: number;
+}
+
+export function usePublishImpact(assessmentId: string, enabled = true) {
+  return useQuery(queryOpts(['publish-impact', assessmentId] as const, () => api<PublishImpact>(`/assessments/${assessmentId}/publish-impact`), enabled && !!assessmentId));
 }
 
 export interface EvaluationStatus {

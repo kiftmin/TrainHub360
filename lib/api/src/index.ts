@@ -22,6 +22,7 @@ import { scheduleSlaJob } from "./jobs/slaJob.js";
 import { startEvaluationWorker } from "./services/evaluationQueue.js";
 import { assertEmailConfiguration } from "./services/email.js";
 import { parseTrustProxy } from "./config/proxy.js";
+import { assertProductionSchema } from "./services/schemaVerification.js";
 
 type StatusError = Error & { status?: unknown };
 
@@ -109,6 +110,20 @@ if (process.env.NODE_ENV !== "test") {
       "[api] TRUST_PROXY is not set. Behind a reverse proxy, the login throttle will see the " +
         "proxy's address for every request. Set TRUST_PROXY to the hop count, loopback, or the proxy CIDRs.",
     );
+  }
+  if (process.env.NODE_ENV === "production" && !process.env.STORAGE_PROVIDER) {
+    console.warn(
+      "[api] STORAGE_PROVIDER is not set. Uploads use the local disk provider under STORAGE_DIR; " +
+        "mount a persistent volume and back it up in production.",
+    );
+  }
+  if (process.env.NODE_ENV === "production") {
+    try {
+      await assertProductionSchema();
+    } catch (e) {
+      console.error((e as Error).message);
+      process.exit(1);
+    }
   }
   app.listen(port, () => console.log(`TrainHub360 API on :${port}`));
   scheduleKpiJob();

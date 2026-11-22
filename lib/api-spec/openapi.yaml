@@ -382,6 +382,35 @@ paths:
       responses:
         "204":
           description: Deleted
+  /assessments/{assessmentId}/publish-impact:
+    get:
+      operationId: getAssessmentPublishImpact
+      tags: [learning]
+      summary: Count the learners affected by publishing a replacement draft
+      description: >
+        Programme staff only. Answers for a draft that replaces a live paper in the caller's
+        organization. Withdrawn enrolments are excluded.
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Course-wide impact counts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enrolled, completed, notCompleted, withAttempts]
+                properties:
+                  enrolled: { type: integer }
+                  completed: { type: integer }
+                  notCompleted: { type: integer }
+                  withAttempts: { type: integer }
+        "400": { description: The draft does not replace a live paper }
+        "403": { description: Forbidden for this programme }
+        "404": { description: Draft not found in your organization }
   /assessments/{assessmentId}/publish:
     post:
       operationId: publishAssessment
@@ -2139,15 +2168,18 @@ paths:
     post:
       operationId: syncSessionCalendar
       tags: [engagement]
-      summary: Push the session to connected calendars
+      summary: Not implemented — use .ics invitations or the personal feed
+      description: >
+        Outlook/Google API sync is not built. This route answers 501 even for programme staff;
+        the supported calendar approach is GET /sessions/{sessionId}/ics and GET /calendar/feed.ics.
       parameters:
         - name: sessionId
           in: path
           required: true
           schema: { type: string }
       responses:
-        "200":
-          description: Sync result
+        "501":
+          description: Calendar API sync is not implemented
   /nudge/dispatch:
     post:
       operationId: dispatchNudges
@@ -3219,7 +3251,7 @@ components:
         status: { type: string }
     TrainingSession:
       type: object
-      required: [id, title, programme, date, time, mode, attendees, status, sequence, canJoin]
+      required: [id, title, programme, date, time, mode, attendees, status, sequence, canJoin, myRsvpStatus, myWaitlistPosition, icsUrl, cancellationReason, enrolled]
       properties:
         id: { type: string }
         title: { type: string }
@@ -3242,6 +3274,11 @@ components:
         sequence: { type: integer, description: Bumped on every edit or cancellation for calendar clients }
         canJoin: { type: boolean, description: Whether this caller may see the join details }
         status: { type: string }
+        myRsvpStatus: { type: ["string", "null"], enum: [invited, confirmed, waitlisted, declined, removed, null] }
+        myWaitlistPosition: { type: ["integer", "null"], description: One-based position in the session waitlist }
+        icsUrl: { type: string, description: Authenticated per-session .ics download }
+        cancellationReason: { type: ["string", "null"] }
+        enrolled: { type: boolean }
     SessionAttendee:
       type: object
       required: [id, rsvpId, learnerId, name, email, isActive, status, createdAt]
