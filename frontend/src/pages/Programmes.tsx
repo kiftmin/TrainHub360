@@ -18,7 +18,6 @@ import {
   useProgrammes,
   useCourses,
   useCreateCourse,
-  useSubmitAttempt,
   useModules,
   useSessions,
   useThreads,
@@ -42,13 +41,16 @@ import {
   useAddProgrammeMember,
   useUpdateProgrammeMember,
   useRemoveProgrammeMember,
+  useBulkRemoveProgrammeMembers,
   useUserDirectory,
   useModuleContent,
   useCreateContent,
   useArchiveContent,
   useUploadContent,
+  useRecalculationStatus,
   downloadReviewCreditCsv,
   type Course,
+  type UploadedFile,
   type ProgrammeMemberRole,
   type ReviewCreditSettings,
 } from '@/api/hooks';
@@ -85,6 +87,7 @@ const adminNav = [
 ];
 
 import { fmtDate, pct, initials, Skeleton, EmptyState, ErrorState, Status, ProgressLine, PageHeading, KpiCard } from '@/components/shared';
+import { PendingAssessmentResultsPanel } from '@/components/PendingAssessmentResults';
 export function Programmes() {
   const programmes = useProgrammes();
   const updateProgramme = useUpdateProgramme();
@@ -138,6 +141,7 @@ export function ProgrammeDetail({ id }: { id: string }) {
   const addMember = useAddProgrammeMember(id);
   const updateMember = useUpdateProgrammeMember(id);
   const removeMember = useRemoveProgrammeMember(id);
+  const bulkRemove = useBulkRemoveProgrammeMembers(id);
   const requestDelete = (target: 'courses' | 'modules', id: string, label: string) => { const reason = window.prompt(`Request deletion approval for "${label}"? A second admin must approve:`); if (reason === null) return; requestContentDeletion.mutate({ target, id, reason: reason || undefined }, { onSuccess: refreshDetail }); };
   const dqc = useQueryClient();
   const [editingCourse, setEditingCourse] = useState<null | { id: string; title: string; category: string; trainer: string }>(null);
@@ -151,6 +155,13 @@ export function ProgrammeDetail({ id }: { id: string }) {
   const [memberEditError, setMemberEditError] = useState<string | null>(null);
   const [removingMember, setRemovingMember] = useState<null | { userId: string; name: string; email: string; role: ProgrammeMemberRole }>(null);
   const [memberRemoveError, setMemberRemoveError] = useState<string | null>(null);
+  const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const [bulkResult, setBulkResult] = useState<null | { pendingApproval: boolean; removed: number; withdrawn: number; coursesUnassigned: number }>(null);
+  const memberIds = useMemo(() => Array.from(new Set((members.data || []).map((m) => m.userId))), [members.data]);
+  const allSelected = memberIds.length > 0 && selectedMembers.length === memberIds.length;
+  const toggleMemberSelection = (userId: string) => setSelectedMembers((current) => current.includes(userId) ? current.filter((x) => x !== userId) : [...current, userId]);
   const directory = useUserDirectory(memberSearch, memberOpen && canManageDetail);
   const availableUsers = useMemo(() => {
     const existing = new Set((members.data || []).map((m) => m.userId));
@@ -181,6 +192,22 @@ export function ProgrammeDetail({ id }: { id: string }) {
       onError: (e) => setMemberRemoveError((e as Error).message),
     });
   };
+  const confirmBulkRemove = () => {
+    setBulkError(null);
+    bulkRemove.mutate(selectedMembers, {
+      onSuccess: (res) => {
+        setBulkOpen(false);
+        setSelectedMembers([]);
+        setBulkResult({
+          pendingApproval: !!res.pendingApproval,
+          removed: res.removed ?? 0,
+          withdrawn: res.withdrawn ?? 0,
+          coursesUnassigned: res.coursesUnassigned ?? 0,
+        });
+      },
+      onError: (e) => setBulkError((e as Error).message),
+    });
+  };
   const trainerNames = useMemo(() => {
     const names = (members.data || []).filter((m) => m.role === 'trainer').map((m) => m.name);
     if (editingCourse?.trainer && !names.includes(editingCourse.trainer)) names.unshift(editingCourse.trainer);
@@ -193,7 +220,7 @@ export function ProgrammeDetail({ id }: { id: string }) {
     {programmes.isLoading || courses.isLoading ? <Skeleton className="h-64" />
     : programmes.isError || courses.isError ? <ErrorState retry={() => { programmes.refetch(); courses.refetch(); }} />
     : !programme ? <EmptyState title="Programme not found" detail="It may have been archived." />
-    : <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
+    : <div className="space-y-5"><PendingAssessmentResultsPanel /><div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
       <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>
         <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <div key={c.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-semibold">{c.title}</p><Status tone={c.status === 'published' ? 'good' : 'warn'}>{c.status}</Status></div><p className="mt-1 text-xs text-muted-foreground">{c.category} - {c.trainer}</p><div className="mt-3"><ProgressLine value={c.progress} /></div>{canAuthorDetail && <div className="mt-3 flex gap-2"><Button size="sm" variant="outline" onClick={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })}>Edit</Button>{canManageDetail && <Button size="sm" variant="outline" onClick={() => { requestDelete('courses', c.id, c.title); }}>Delete</Button>}</div>}</div>)}
         {!courses.data?.length && <EmptyState title="No courses yet" detail="Courses assigned to this programme will appear here." />}</div>
@@ -212,7 +239,9 @@ export function ProgrammeDetail({ id }: { id: string }) {
             <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Members</p>
             <p className="mt-1 text-xs text-muted-foreground">Trainers, learners and stakeholders assigned to this programme.</p>
           </div>
-          {canManageDetail && <Dialog open={memberOpen} onOpenChange={(v) => { setMemberOpen(v); if (!v) { setMemberError(null); setMemberSearch(''); setMemberForm({ userId: '', name: '', email: '', roles: ['learner'] }); } }}>
+          {canManageDetail && <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+            {selectedMembers.length > 0 && <Button size="sm" variant="destructive" onClick={() => { setBulkError(null); setBulkOpen(true); }} data-testid="button-bulk-remove">Remove selected ({selectedMembers.length})</Button>}
+          <Dialog open={memberOpen} onOpenChange={(v) => { setMemberOpen(v); if (!v) { setMemberError(null); setMemberSearch(''); setMemberForm({ userId: '', name: '', email: '', roles: ['learner'] }); } }}>
             <DialogTrigger asChild><Button size="sm"><Plus className="size-4" />Add member</Button></DialogTrigger>
             <DialogContent>
               <DialogHeader><DialogTitle>Add programme member</DialogTitle></DialogHeader>
@@ -249,13 +278,20 @@ export function ProgrammeDetail({ id }: { id: string }) {
                 <Button className="w-full" disabled={addMember.isPending || !memberForm.userId} onClick={submitMember} data-testid="button-submit-member">{addMember.isPending ? 'Adding-' : 'Add member'}</Button>
               </div>
             </DialogContent>
-          </Dialog>}
+          </Dialog>
+          </div>}
         </div>
+        {bulkResult && <div className="mt-3 rounded-md border border-border/70 bg-secondary/40 px-3 py-2 text-xs text-muted-foreground" data-testid="bulk-remove-result">
+          {bulkResult.pendingApproval
+            ? <>This removal needs a second administrator's approval. <Link href="/governance" className="font-semibold text-primary hover:underline">Open the pending request in Governance</Link>.</>
+            : <>Removed {bulkResult.removed} grant(s), withdrew {bulkResult.withdrawn} enrolment(s) and unassigned {bulkResult.coursesUnassigned} course(s).</>}
+        </div>}
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="border-b border-border/70 text-left font-mono text-[10px] uppercase tracking-[.12em] text-muted-foreground"><th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Email</th><th className="py-2 pr-3">Role</th><th className="py-2 text-right">Actions</th></tr></thead>
+            <thead><tr className="border-b border-border/70 text-left font-mono text-[10px] uppercase tracking-[.12em] text-muted-foreground">{canManageDetail && <th className="w-8 py-2 pr-2"><input type="checkbox" aria-label="Select all members" checked={allSelected} onChange={(e) => setSelectedMembers(e.target.checked ? memberIds : [])} data-testid="checkbox-select-all-members" /></th>}<th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Email</th><th className="py-2 pr-3">Role</th><th className="py-2 text-right">Actions</th></tr></thead>
             <tbody>
               {(members.data || []).map((m) => <tr key={`${m.userId}-${m.role}`} className="border-b border-border/50 last:border-0">
+                {canManageDetail && <td className="py-2 pr-2"><input type="checkbox" aria-label={`Select ${m.name}`} checked={selectedMembers.includes(m.userId)} onChange={() => toggleMemberSelection(m.userId)} data-testid={`checkbox-select-member-${m.userId}`} /></td>}
                 <td className="py-2 pr-3 font-medium">{m.name}</td>
                 <td className="py-2 pr-3 text-muted-foreground">{m.email}</td>
                 <td className="py-2 pr-3"><Status tone={m.role === 'admin' ? 'good' : 'neutral'}>{m.role}</Status></td>
@@ -305,9 +341,23 @@ export function ProgrammeDetail({ id }: { id: string }) {
             </div>}
           </DialogContent>
         </Dialog>
+        <Dialog open={bulkOpen} onOpenChange={(v) => { if (!v) { setBulkOpen(false); setBulkError(null); } }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Remove selected members</DialogTitle></DialogHeader>
+            <div className="space-y-4 pt-2">
+              <p className="text-sm text-muted-foreground">Remove <span className="font-semibold text-foreground">{selectedMembers.length}</span> people from this programme? Their grants are deleted and their enrolments withdrawn. Courses assigned to a removed trainer are set to Unassigned.</p>
+              <p className="text-xs text-muted-foreground">Large removals may need a second administrator's approval. If this one does, it is queued in Governance and nobody is removed until it is approved.</p>
+              {bulkError && <p className="text-xs text-destructive">{bulkError}</p>}
+              <div className="flex gap-2">
+                <Button className="flex-1" variant="outline" onClick={() => setBulkOpen(false)}>Cancel</Button>
+                <Button className="flex-1" variant="destructive" disabled={bulkRemove.isPending || !selectedMembers.length} onClick={confirmBulkRemove} data-testid="button-confirm-bulk-remove">{bulkRemove.isPending ? 'Removing-' : `Remove ${selectedMembers.length}`}</Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </section>
       <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Workspace detail</p><h2 className="mt-1 text-base font-bold">Progress {pct(programme.progress)}</h2><div className="mt-4"><ProgressLine value={programme.progress} color="bg-emerald-600" /></div><div className="mt-4 space-y-2 text-sm"><p className="flex justify-between"><span className="text-muted-foreground">Status</span><Status tone={programme.status === 'active' ? 'good' : 'neutral'}>{programme.status}</Status></p><p className="flex justify-between"><span className="text-muted-foreground">Learners</span><span className="font-semibold">{programme.learnerCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Courses</span><span className="font-semibold">{programme.courseCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Owner</span><span className="font-semibold">{programme.owner}</span></p></div></section>
-    </div>}
+    </div></div>}
     <Dialog open={!!contentModule} onOpenChange={(v) => { if (!v) setContentModule(null); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>{contentModule ? `Content - ${contentModule.title}` : 'Content'}</DialogTitle></DialogHeader>
@@ -317,11 +367,13 @@ export function ProgrammeDetail({ id }: { id: string }) {
   </div>;
 }
 
-function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: string; moduleTitle: string; courseId: string }) {
+export function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: string; moduleTitle: string; courseId: string }) {
   const content = useModuleContent(moduleId);
   const create = useCreateContent(moduleId, courseId);
   const archive = useArchiveContent(moduleId, courseId);
   const upload = useUploadContent(moduleId);
+  const [recalcActive, setRecalcActive] = useState(false);
+  const recalculation = useRecalculationStatus(courseId, recalcActive, 2000);
   const [type, setType] = useState<'native' | 'file' | 'external_link'>('native');
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
@@ -329,7 +381,7 @@ function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: s
   const [completionMode, setCompletionMode] = useState<'trainer_verified' | 'self_report'>('trainer_verified');
   const [required, setRequired] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [uploaded, setUploaded] = useState<{ storageKey: string; fileName: string; mimeType: string; sizeBytes: number; checksum: string } | null>(null);
+  const [uploaded, setUploaded] = useState<UploadedFile | null>(null);
   const reset = () => { setTitle(''); setBody(''); setUrl(''); setUploaded(null); setError(null); };
   const submit = async () => {
     setError(null);
@@ -341,17 +393,29 @@ function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: s
       body: type === 'native' ? body : undefined,
       url: type === 'external_link' ? url : undefined,
       completionMode: type === 'external_link' ? completionMode : undefined,
-      ...(uploaded ? { storageKey: uploaded.storageKey, fileName: uploaded.fileName, mimeType: uploaded.mimeType, sizeBytes: uploaded.sizeBytes, checksum: uploaded.checksum } : {}),
-    }, { onSuccess: reset, onError: (e) => setError((e as Error).message) });
+      // A.3: the item points at the org-bound upload, not at a key copied from the response.
+      ...(uploaded ? { storedFileId: uploaded.storedFileId } : {}),
+    }, {
+      onSuccess: (item) => { reset(); if (item.required) setRecalcActive(true); },
+      onError: (e) => setError((e as Error).message),
+    });
   };
   return <div className="space-y-4 pt-2">
     <p className="text-xs text-muted-foreground">{moduleTitle} - learners see items in this order.</p>
+    {recalcActive && <div data-testid="recalculation-status" className="rounded-lg border border-border/60 bg-secondary/40 p-3 text-xs">
+      {recalculation.isError ? `Could not check recalculation: ${(recalculation.error as Error)?.message ?? 'unknown error'}`
+        : recalculation.data?.stale || recalculation.data?.job?.status === 'failed'
+          ? `Recalculation stalled${recalculation.data?.lastError ? `: ${recalculation.data.lastError}` : ''}. Check the evaluation queue.`
+          : recalculation.data?.pending === false
+            ? 'Recalculation complete — course progress is up to date.'
+            : `Recalculating… ${recalculation.data?.job?.status ?? 'queued'} · ${recalculation.data?.attempts ?? 0} attempt(s)`}
+    </div>}
     <div className="max-h-48 space-y-2 overflow-y-auto">
       {content.isLoading ? <p className="text-xs text-muted-foreground">Loading content-</p>
       : !content.data?.length ? <p className="text-xs text-muted-foreground">No content yet.</p>
       : content.data.map((item, index) => <div key={item.id} className="flex items-center justify-between gap-2 rounded-md border border-border/70 p-2 text-xs">
         <span className="min-w-0 truncate"><span className="font-semibold">{index + 1}. {item.title}</span> <span className="text-muted-foreground">- {item.type}{item.required ? ' - required' : ''}</span></span>
-        <Button size="sm" variant="outline" onClick={() => archive.mutate(item.id)} disabled={archive.isPending}>Archive</Button>
+        <Button size="sm" variant="outline" onClick={() => archive.mutate(item.id, { onSuccess: () => setRecalcActive(true) })} disabled={archive.isPending}>Archive</Button>
       </div>)}
     </div>
     <div className="rounded-lg border border-border/70 p-4">

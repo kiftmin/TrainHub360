@@ -34,6 +34,7 @@ model Organization {
   samlIdpIssuer String?  @map("saml_idp_issuer") @db.NVarChar(512)
   samlEntityId String?   @map("saml_entity_id") @db.NVarChar(512)
   programmes                           Programme[]
+  storedFiles                          StoredFile[]
   users                                User[]
   kpiSummaries                         KpiSummary[]
   cohorts                              Cohort[]
@@ -114,10 +115,15 @@ model Module {
   @@map("modules")
 }
 
+// An assessment is edited in place while it is unpublished. Publishing freezes the current set of
+// questions: an edit to a published row moves `publishedAt` aside, bumps `version` and copies the
+// questions into a new row, so a past attempt stays attached to the questions it was graded
+// against. "The live copy" is therefore one predicate: isPublished and publishedAt not null.
 model Assessment {
   id       String @id @default(cuid())
   moduleId String @map("module_id")
   module   Module @relation(fields: [moduleId], references: [id], onDelete: Cascade)
+  // "recall" is objective only; "applied" must carry at least one scenario or short answer.
   type     String @default("recall")
   title    String @default("")
   maxScore Float  @default(100) @map("max_score")
@@ -125,13 +131,26 @@ model Assessment {
   maxAttempts Int? @map("max_attempts")
   timeLimitMinutes Int? @map("time_limit_minutes")
   isPublished Boolean @default(false) @map("is_published")
+  // When the current question set was frozen; null once this row is superseded.
+  publishedAt DateTime? @map("published_at")
   version   Int     @default(1)
+  // The row this version continues from, so a chain can be walked either way.
+  supersedesId String? @map("supersedes_id") @db.NVarChar(64)
+  // Round 8 / 2.4: set when a later version goes live, so "live" = supersededAt null.
+  // Existing attempts keep pointing at the version they started on.
+  supersededAt DateTime? @map("superseded_at")
+  supersededById String? @map("superseded_by_id")
+  // Round 9 / 2.2: how the version that replaced the previous one was treated when it was
+  // published. "minor" carries earlier results forward, "new_paper" does not. Null on a first
+  // version and while a draft is still being edited.
+  changeKind String? @map("change_kind")
   isArchived Boolean @default(false) @map("is_archived")
   archivedAt DateTime? @map("archived_at")
   deletedAt  DateTime? @map("deleted_at")
   questions Question[]
   attempts  AssessmentAttempt[]
 
+  @@index([moduleId])
   @@map("assessments")
 }
 
@@ -145,6 +164,9 @@ model Question {
   scenarioContext String? @map("scenario_context") @db.NVarChar(Max)
   points          Float  @default(1)
   rubric          String? @db.NVarChar(Max)
+  // Accepted forms for a short answer, as a JSON array, so an objective-enough answer can be
+  // marked without a person. Empty means a person must mark it.
+  acceptedAnswers String? @map("accepted_answers") @db.NVarChar(Max)
   options         QuestionOption[]
   answers         AttemptAnswer[]
 
@@ -173,6 +195,8 @@ model AssessmentAttempt {
   attemptNumber Int   @default(1) @map("attempt_number")
   startedAt    DateTime @default(now()) @map("started_at")
   submittedAt  DateTime? @map("submitted_at")
+  // in_progress -> submitted -> grading -> graded. A purely objective attempt goes straight to
+  // graded on submit; anything with a scenario or short answer waits in grading for a person.
   status       String @default("in_progress")
   score        Float?
   maxScore     Float? @map("max_score")
@@ -183,6 +207,8 @@ model AssessmentAttempt {
   gradedAt     DateTime? @map("graded_at")
   answers      AttemptAnswer[]
 
+  @@index([assessmentId, learnerId])
+  @@index([status])
   @@map("assessment_attempts")
 }
 
@@ -192,13 +218,39 @@ model AttemptAnswer {
   attempt        AssessmentAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
   questionId     String @map("question_id")
   question       Question @relation(fields: [questionId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  answer         String @db.NVarChar(Max)
+  // `answer` holds the text of a scenario or short answer; choice kinds keep their selection in
+  // `optionIds`, so grading never parses JSON out of a string column.
+  answer         String? @db.NVarChar(Max)
+  optionIds      String? @map("option_ids") @db.NVarChar(Max)
   pointsAwarded  Float? @map("points_awarded")
   autoGraded     Boolean @default(false) @map("auto_graded")
   graderComment  String? @map("grader_comment") @db.NVarChar(Max)
 
   @@unique([attemptId, questionId])
   @@map("attempt_answers")
+}
+
+// Round 9 / Phase 3.3. A course-wide re-evaluation is enqueued, not run inside the request that
+// triggered it: publishing a paper or adding content used to loop over every enrolment inline.
+// One row per course while a run is pending; the worker takes 50 enrolments per batch.
+model EvaluationJob {
+  id          String    @id @default(cuid())
+  courseId    String    @map("course_id")
+  trigger     String    @map("trigger_name")
+  status      String    @default("pending")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  startedAt   DateTime? @map("started_at")
+  heartbeatAt DateTime? @map("heartbeat_at")
+  finishedAt  DateTime? @map("finished_at")
+  processed   Int       @default(0)
+  total       Int       @default(0)
+  attempts    Int       @default(0)
+  lastError   String?   @map("last_error") @db.NVarChar(Max)
+
+  @@index([courseId, status])
+  @@index([status, createdAt])
+  @@index([status, heartbeatAt])
+  @@map("evaluation_jobs")
 }
 
 model Enrolment {
@@ -212,6 +264,24 @@ model Enrolment {
   status                      String     @default("enrolled")
   reviewCreditEligible        Boolean    @default(true) @map("review_credit_eligible")
   appliedAssessmentScore      Float?     @map("applied_assessment_score")
+  // Round 8 / 1.3: where the applied score came from and how a manual override is tracked.
+  // [CONFIRM] default source is "assessment"; a manual PATCH needs a reason and is audited.
+  appliedScoreSource          String     @default("assessment") @map("applied_score_source")
+  appliedScoreOverrideReason  String?    @map("applied_score_override_reason") @db.NVarChar(Max)
+  appliedScoreOverriddenBy    String?    @map("applied_score_overridden_by")
+  appliedScoreOverriddenAt    DateTime?  @map("applied_score_overridden_at")
+  pendingAssessmentScore      Float?     @map("pending_assessment_score")
+  pendingAssessmentScoreAt    DateTime?  @map("pending_assessment_score_at")
+  // Round 10 / 1.2: the last automatic score programme staff rejected. While the computed value
+  // still equals this, it is not stored as pending again; a different value is a new proposal.
+  pendingRejectedScore        Float?     @map("pending_rejected_score")
+  // Round 8 / 1.1: content completion is tracked separately from competence.
+  contentCompletedAt          DateTime?  @map("content_completed_at")
+  // Round 9 / 1.2: why this enrolment is completed. "assessment" is written by evaluateEnrolment
+  // (content complete and every live applied assessment passed); "manual" by a staff override with
+  // a reason. A certificate is never issued while this is null, so a status someone set by hand
+  // cannot stand in for evidence.
+  completionSource            String?    @map("completion_source")
   completionDate              DateTime?  @map("completion_date")
   deadlineDate                DateTime?  @map("deadline_date")
   timelinessScore             Float?     @map("timeliness_score")
@@ -305,7 +375,14 @@ model UserRole {
   role        Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
   programmeId String? @map("programme_id")
 
-  @@unique([userId, roleId, programmeId])
+  // Two limits, both deliberate (recorded 2026-11-20, with the baseline migration):
+  //   - the surrogate `id` is the primary key, so a grant has a stable identity;
+  //   - the old pair stays unique, so a person cannot hold the same role twice.
+  // The pair, not the triple, is the limit: `@@unique([userId, roleId, programmeId])` cannot
+  // enforce "same role in two programmes" on SQL Server anyway, because a NULL programme_id
+  // compares as unknown and the unique index lets it through. Allowing a person to hold one role
+  // in several programmes is a separate change to this line, and needs its own migration.
+  @@unique([userId, roleId])
   @@index([programmeId])
   @@map("user_roles")
 }
@@ -363,6 +440,9 @@ model ThreadParticipant {
   user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   role     String   @default("learner")
   joinedAt DateTime @default(now()) @map("joined_at")
+  // Round 8 / E.5: revoking access keeps the row for audit and can be restored.
+  leftAt   DateTime? @map("left_at")
+  leftReason String? @map("left_reason") @db.NVarChar(512)
 
   @@unique([threadId, userId])
   @@index([userId])
@@ -487,11 +567,15 @@ model Certificate {
   courseId          String    @map("course_id")
   course            Course    @relation(fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   enrolmentId       String?   @map("enrolment_id")
+  // The applied attempt that made the learner competent, so a certificate points at its evidence
+  // and not only at the enrolment.
+  attemptId         String?   @map("attempt_id")
   issuedAt          DateTime  @default(now()) @map("issued_at")
   expiresAt         DateTime? @map("expires_at")
   status            String    @default("active")
   certificateNumber String    @unique @default(cuid()) @map("certificate_number") @db.NVarChar(64)
 
+  @@index([learnerId])
   @@map("certificates")
 }
 
@@ -571,6 +655,8 @@ model Session {
   attendees Int    @default(0)
   status    String @default("scheduled")
   capacity  Int?
+  // Round 8 / D.2: bumped whenever the event changes so calendar clients update.
+  sequence  Int    @default(0)
   rsvps     SessionRSVP[]
   reminders ReminderLog[]
 
@@ -585,6 +671,8 @@ model SessionRSVP {
   learner     User      @relation(fields: [learnerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   status      String    @default("invited")
   respondedAt DateTime? @map("responded_at")
+  // Round 8 / E.7: promotion must follow when the learner joined the waitlist.
+  waitlistedAt DateTime? @map("waitlisted_at")
   createdAt   DateTime  @default(now()) @map("created_at")
 
   @@unique([sessionId, learnerId])
@@ -605,6 +693,9 @@ model ContentItem {
   estimatedMinutes Int?    @map("estimated_minutes")
   body             String? @db.NVarChar(Max)
   storageKey       String? @map("storage_key") @db.NVarChar(512)
+  // A.3: the org-bound upload this item points at. Null for rows created before A.3.
+  storedFileId     String? @map("stored_file_id")
+  storedFile       StoredFile? @relation(fields: [storedFileId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   fileName         String? @map("file_name") @db.NVarChar(512)
   mimeType         String? @map("mime_type") @db.NVarChar(256)
   sizeBytes        Int?    @map("size_bytes")
@@ -620,6 +711,7 @@ model ContentItem {
 
   @@index([moduleId])
   @@index([orgId])
+  @@index([storedFileId])
   @@map("content_items")
 }
 
@@ -634,6 +726,9 @@ model ContentProgress {
   completedAt    DateTime? @map("completed_at")
   evidenceNote   String?   @map("evidence_note") @db.NVarChar(Max)
   evidenceFileKey String?  @map("evidence_file_key") @db.NVarChar(512)
+  // A.3: the org-bound upload a learner attached as proof. Null for older rows.
+  evidenceFileId  String?  @map("evidence_file_id")
+  evidenceFile    StoredFile? @relation("ProgressEvidence", fields: [evidenceFileId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   verifiedBy     String?   @map("verified_by")
   verifier       User?     @relation("ContentVerifier", fields: [verifiedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
   verifiedAt     DateTime? @map("verified_at")
@@ -657,6 +752,51 @@ model Notification {
 
   @@index([userId, readAt])
   @@map("notifications")
+}
+
+// Round 7 gap 3: a send that failed used to vanish (`.catch(() => false)`). One row per
+// failure, so an operator can see that mail is not going out without reading debug logs.
+model EmailFailure {
+  id          String   @id @default(cuid())
+  to          String   @db.NVarChar(320)
+  subject     String   @db.NVarChar(512)
+  kind        String   @db.NVarChar(64)
+  error       String   @db.NVarChar(1000)
+  userId      String?  @map("user_id")
+  orgId       String?  @map("org_id")
+  contextJson String?  @map("context_json") @db.NVarChar(2000)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([createdAt])
+  @@index([orgId, createdAt])
+  @@map("email_failures")
+}
+
+// Round 6 / A.3: org-bound file ids.
+//
+// A file used to exist only as a `storageKey` string copied from an upload response into a
+// content item or a progress record. Nothing tied that string to the organization that
+// uploaded it, so an id from another tenant could be reused, and a made-up key was accepted
+// as if it had been uploaded. A StoredFile row is now the only thing a content item or a
+// progress record may point at, and it carries the org, the uploader and the checksum.
+model StoredFile {
+  id            String   @id @default(cuid())
+  orgId         String   @map("org_id")
+  organization  Organization @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  uploadedById  String?  @map("uploaded_by_id")
+  storageKey    String   @unique @map("storage_key") @db.NVarChar(512)
+  fileName      String   @map("file_name") @db.NVarChar(512)
+  mimeType      String   @map("mime_type") @db.NVarChar(256)
+  sizeBytes     Int      @map("size_bytes")
+  checksum      String   @db.NVarChar(128)
+  // Which upload path produced it: "content" (a module file) or "evidence" (progress proof).
+  purpose       String   @default("content") @db.NVarChar(32)
+  createdAt     DateTime @default(now()) @map("created_at")
+  contentItems  ContentItem[]
+  progressEvidence ContentProgress[] @relation("ProgressEvidence")
+
+  @@index([orgId, createdAt])
+  @@map("stored_files")
 }
 
 model ReminderLog {

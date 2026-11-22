@@ -18,7 +18,6 @@ import {
   useProgrammes,
   useCourses,
   useCreateCourse,
-  useSubmitAttempt,
   useModules,
   useSessions,
   useThreads,
@@ -34,6 +33,7 @@ import {
   useCertificates, useRecognitions,
   useCourseContent,
   useContentProgress,
+  useUploadEvidence,
   downloadReviewCreditCsv,
   type Course,
   type ReviewCreditSettings,
@@ -82,6 +82,11 @@ export function MyLearning() {
   const contentCourse = contentCourseId || active[0]?.id || '';
   const content = useCourseContent(contentCourse, !!contentCourse);
   const progress = useContentProgress(contentCourse);
+  // A.3: proof is uploaded through /uploads/evidence and referenced by id, so the learner is
+  // not limited to a text note and the API can bind the file to the organization.
+  const evidenceUpload = useUploadEvidence();
+  const [evidenceFile, setEvidenceFile] = useState<Record<string, { id: string; name: string }>>({});
+  const [evidenceError, setEvidenceError] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<Record<string, string>>({});
   return <div className="page-in">
     <PageHeading eyebrow="My learning" title="Your path, in order." detail="Active courses, upcoming schedule, and earned certificates." />
@@ -112,11 +117,28 @@ export function MyLearning() {
               <div className="flex shrink-0 gap-2">
                 {item.type === 'external_link' && item.url && <a href={item.url} target="_blank" rel="noreferrer noopener" className="text-xs font-semibold text-primary underline">Open link</a>}
                 {item.type === 'file' && <a href={`/api/content/${item.id}/download`} className="text-xs font-semibold text-primary underline">Download</a>}
-                <Button size="sm" variant="outline" disabled={progress.isPending || item.progress?.status === 'completed'} onClick={() => progress.mutate({ id: item.id, status: 'completed', evidenceNote: evidence[item.id] })}>Mark complete</Button>
+                <Button size="sm" variant="outline" disabled={progress.isPending || evidenceUpload.isPending || item.progress?.status === 'completed'} onClick={() => progress.mutate({ id: item.id, status: 'completed', evidenceNote: evidence[item.id], evidenceFileId: evidenceFile[item.id]?.id }, { onError: (e) => setEvidenceError((e as Error).message) })}>Mark complete</Button>
               </div>
             </div>
             {item.type === 'native' && item.body && <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>}
-            {item.type === 'external_link' && item.completionMode === 'trainer_verified' && item.progress?.status !== 'completed' && <Input className="mt-2" placeholder="Evidence note for trainer verification" value={evidence[item.id] ?? ''} onChange={(e) => setEvidence({ ...evidence, [item.id]: e.target.value })} />}
+            {item.type === 'external_link' && item.completionMode === 'trainer_verified' && item.progress?.status !== 'completed' && <div className="mt-2 space-y-1">
+              <Input placeholder="Evidence note for trainer verification" value={evidence[item.id] ?? ''} onChange={(e) => setEvidence({ ...evidence, [item.id]: e.target.value })} />
+              <label className="block text-xs text-muted-foreground">Or attach proof (pdf, office, image, zip)
+                <input className="mt-1 block w-full text-xs" type="file" disabled={evidenceUpload.isPending} data-testid="input-evidence-file"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    if (!file) return;
+                    setEvidenceError(null);
+                    evidenceUpload.mutate(file, {
+                      onSuccess: (saved) => setEvidenceFile((current) => ({ ...current, [item.id]: { id: saved.storedFileId, name: saved.fileName } })),
+                      onError: (err) => setEvidenceError((err as Error).message),
+                    });
+                  }} />
+              </label>
+              {evidenceUpload.isPending && <p className="text-xs text-muted-foreground">Uploading…</p>}
+              {evidenceFile[item.id] && <p className="text-xs text-emerald-700">Attached {evidenceFile[item.id].name}</p>}
+              {evidenceError && <p className="text-xs text-destructive">{evidenceError}</p>}
+            </div>}
           </div>)}</div>
         </div>)}</div>}
       </section>

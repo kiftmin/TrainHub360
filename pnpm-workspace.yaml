@@ -161,3 +161,7 @@ overrides:
   # drizzle-kit uses esbuild internally on an older version that's vulnerable, this overrides it
   "@esbuild-kit/esm-loader": "npm:tsx@^4.21.0"
   esbuild: "0.27.3"
+  # lib/api runs Express 4. @types/multer declares @types/express: "*", which resolved to the
+  # Express 5 typings and made every `router.post(path, uploadSingleFile, handler)` fail to
+  # typecheck (two incompatible copies of RequestHandler). Pin it to the Express 4 line.
+  "@types/express": 4.17.25

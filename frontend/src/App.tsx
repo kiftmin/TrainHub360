@@ -18,7 +18,6 @@ import {
   useProgrammes,
   useCourses,
   useCreateCourse,
-  useSubmitAttempt,
   useModules,
   useSessions,
   useThreads,
@@ -39,13 +38,16 @@ import {
 import { getToken, clearSession, getSessionUser } from '@/api/client';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
+import { Activate } from '@/pages/Activate';
+import { ResetPassword } from '@/pages/ResetPassword';
 import { Register } from '@/pages/Register';
 import { AiConceptExplainer } from '@/components/AiConceptExplainer';
 import { BulkImportButton } from '@/components/BulkImport';
+import { NotificationBell } from '@/components/NotificationBell';
 import { initials } from '@/components/shared';
 import {
   Activity, ArrowUpRight, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown,
-  CircleAlert, Clock3, Download, FileCheck2, Gauge, GraduationCap, LayoutDashboard,
+  CircleAlert, ClipboardCheck, Clock3, Download, FileCheck2, Gauge, GraduationCap, LayoutDashboard,
   Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings2,
   ShieldCheck, SlidersHorizontal, Target, Users, X, Zap,
 } from 'lucide-react';
@@ -59,6 +61,7 @@ const nav = [
   { href: '/people', label: 'People', icon: Users },
   { href: '/my-learning', label: 'My learning', icon: Target },
   { href: '/assessments', label: 'Assessments', icon: FileCheck2 },
+  { href: '/verification', label: 'Verification', icon: ClipboardCheck },
   { href: '/calendar', label: 'Calendar', icon: CalendarDays },
   { href: '/messages', label: 'Messages', icon: MessageSquare },
 ];
@@ -74,6 +77,8 @@ import { Programmes, ProgrammeDetail } from '@/pages/Programmes';
 import { People } from '@/pages/People';
 import { MyLearning } from '@/pages/MyLearning';
 import { Assessments } from '@/pages/Assessments';
+import { GradingQueuePage, GradingAttemptPage } from '@/pages/Grading';
+import { VerificationPage } from '@/pages/Verification';
 import { CalendarPage } from '@/pages/Calendar';
 import { Messages } from '@/pages/Messages';
 import { Reports } from '@/pages/Reports';
@@ -86,7 +91,9 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
   const go = (href: string) => { setMobileOpen(false); setLocation(href); };
   const isStakeholder = getSessionUser()?.role === 'stakeholder';
   const canSeeDirectory = ['owner', 'admin'].includes(getSessionUser()?.role ?? '');
-  const visibleNav = isStakeholder ? [] : nav.filter((n) => n.href !== '/people' || canSeeDirectory);
+  const canVerify = ['owner', 'admin', 'trainer'].includes(getSessionUser()?.role ?? '');
+  const visibleNav = isStakeholder ? [] : nav.filter((n) =>
+    (n.href !== '/people' || canSeeDirectory) && (n.href !== '/verification' || canVerify));
   const visibleAdminNav = isStakeholder ? [] : adminNav;
   const allNav = [...visibleNav, ...visibleAdminNav];
   const active = allNav.find((n) => n.href === location) ?? (location.startsWith('/programmes') ? { href: '/programmes', label: 'Programmes' } : null);
@@ -136,7 +143,7 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
         </div>
         <div className="flex items-center gap-2">
           <button className="hidden rounded-md border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground md:flex md:items-center md:gap-2"><Search className="size-3.5" />Search <kbd className="rounded border border-border px-1 font-mono text-[9px]">⌘ K</kbd></button>
-          <button className="relative rounded-md p-2 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Notifications"><Bell className="size-[18px]" /><span className="absolute right-1.5 top-1.5 size-1.5 rounded-full bg-accent" /></button>
+          <NotificationBell onNavigate={go} />
           <div className="ml-1 grid size-8 place-items-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">{user?.initials || 'TH'}</div>
         </div>
       </header>
@@ -159,6 +166,9 @@ function Router() {
     <Route path="/people" component={People} />
     <Route path="/my-learning" component={MyLearning} />
     <Route path="/assessments" component={Assessments} />
+    <Route path="/assessments/grading" component={GradingQueuePage} />
+    <Route path="/assessments/grading/:attemptId">{(params) => <GradingAttemptPage attemptId={params.attemptId} />}</Route>
+    <Route path="/verification" component={VerificationPage} />
     <Route path="/calendar" component={CalendarPage} />
     <Route path="/messages" component={Messages} />
     <Route path="/reports" component={Reports} />
@@ -177,6 +187,26 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 export function App() {
   const [authed, setAuthed] = useState(() => !!getToken());
   const [registering, setRegistering] = useState(false);
+  // Activation and password-reset links arrive from an email with ?token=…, so they must
+  // render before any session exists. wouter is not mounted on the signed-out screen, so
+  // read the path here. Round 7 gap 4 added /reset-password: the email already linked to it,
+  // but there was no route, so the link landed on the login page and the token was dropped.
+  if (window.location.pathname === '/activate') {
+    return <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <Activate onDone={() => { window.history.replaceState(null, '', '/'); window.location.reload(); }} />
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>;
+  }
+  if (window.location.pathname === '/reset-password') {
+    return <QueryClientProvider client={queryClient}>
+      <TooltipProvider>
+        <ResetPassword onDone={() => { window.history.replaceState(null, '', '/'); window.location.reload(); }} />
+        <Toaster />
+      </TooltipProvider>
+    </QueryClientProvider>;
+  }
   return <QueryClientProvider client={queryClient}>
     <TooltipProvider>
       {authed ? (

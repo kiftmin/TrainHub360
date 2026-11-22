@@ -19,6 +19,8 @@ tags:
   - name: engagement
     description: Messaging, bookings, and calendar
   - name: auth
+  - name: notifications
+    description: In-app notification bell (scoped to the calling user)
   - name: enrolments
   - name: analytics
   - name: governance
@@ -76,6 +78,30 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/Programme"
+    post:
+      operationId: createProgramme
+      tags: [learning]
+      summary: Create a programme (organization staff)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+                type: { type: string }
+                owner: { type: string, description: Display name; defaults to the caller }
+      responses:
+        "201":
+          description: Created programme
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Programme"
+        "403":
+          description: Organization staff access required
   /courses:
     get:
       operationId: listCourses
@@ -118,6 +144,9 @@ paths:
       operationId: submitAssessmentAttempt
       tags: [learning]
       summary: Legacy course-level attempt (removed; use assessments/{assessmentId}/attempts)
+      description: >
+        Returns 410. Client-submitted scores are never accepted: competence comes from the
+        applied assessment, graded on the server.
       deprecated: true
       parameters:
         - name: courseId
@@ -147,6 +176,38 @@ paths:
                 type: array
                 items:
                   type: object
+  /courses/{courseId}/evaluation-status:
+    get:
+      operationId: getCourseEvaluationStatus
+      tags: [learning]
+      summary: Whether a course-wide re-evaluation is still running (staff only)
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: "pending: true while a recalculation is due or running, plus the last job"
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [pending, attempts, stale, lastError]
+                properties:
+                  pending: { type: boolean }
+                  job:
+                    type: [object, "null"]
+                    properties:
+                      id: { type: string }
+                      status: { type: string }
+                      attempts: { type: integer }
+                      lastError: { type: [string, "null"] }
+                  attempts: { type: integer }
+                  stale: { type: boolean, description: The running job has lost its heartbeat }
+                  lastError: { type: [string, "null"] }
+        "403":
+          description: Programme staff access required
   /courses/{courseId}/assessments:
     get:
       operationId: listCourseAssessments
@@ -166,6 +227,29 @@ paths:
                 type: array
                 items:
                   type: object
+                  required: [id, moduleId, type, isPublished, questions, attemptCount, bestScore, remainingAttempts, locked]
+                  properties:
+                    id: { type: string }
+                    moduleId: { type: string }
+                    type: { type: string, enum: [recall, applied] }
+                    title: { type: string }
+                    passMark: { type: integer }
+                    maxAttempts: { type: [integer, "null"] }
+                    timeLimitMinutes: { type: [integer, "null"] }
+                    isPublished: { type: boolean }
+                    version: { type: integer }
+                    publishedAt: { type: [string, "null"], format: date-time }
+                    supersededAt: { type: [string, "null"], format: date-time }
+                    supersedesId: { type: [string, "null"] }
+                    changeKind: { type: [string, "null"], enum: [minor, new_paper, null] }
+                    questions:
+                      type: array
+                      description: Learner responses never include correct answers, accepted answers, rubrics or option correctness.
+                      items: { type: object }
+                    attemptCount: { type: integer }
+                    bestScore: { type: [number, "null"] }
+                    remainingAttempts: { type: [integer, "null"] }
+                    locked: { type: boolean }
   /assessments/{assessmentId}:
     get:
       operationId: getAssessment
@@ -191,6 +275,10 @@ paths:
       operationId: updateAssessment
       tags: [learning]
       summary: Update assessment settings (title, passMark, maxAttempts, timeLimitMinutes)
+      description: >
+        Editing a live assessment requires confirmNewVersion: true. The edit lands in the one draft
+        that supersedes the live row; the live paper stays available to learners until that draft is
+        published.
       parameters:
         - name: assessmentId
           in: path
@@ -205,15 +293,24 @@ paths:
               properties:
                 title: { type: string }
                 passMark: { type: integer, minimum: 0, maximum: 100 }
-                maxAttempts: { type: integer, minimum: 1 }
+                maxAttempts: { type: integer, minimum: 1, nullable: true }
                 timeLimitMinutes: { type: integer, minimum: 1, nullable: true }
+                confirmNewVersion: { type: boolean }
       responses:
         "200":
-          description: Updated assessment
+          description: Updated assessment or the new draft that received the edit
           content:
             application/json:
               schema:
                 type: object
+                properties:
+                  id: { type: string }
+                  version: { type: integer }
+                  isPublished: { type: boolean }
+                  supersedesId: { type: [string, "null"] }
+                  redirectedTo: { type: string, description: Legacy alias for the new draft id }
+        "409":
+          description: Live assessment; requiresNewVersion is true until confirmNewVersion is sent
   /assessments/{assessmentId}/questions:
     post:
       operationId: createQuestion
@@ -290,11 +387,23 @@ paths:
       operationId: publishAssessment
       tags: [learning]
       summary: Publish an assessment (blocks further question edits)
+      description: >
+        A draft that replaces a live version must send changeKind: "minor" carries earlier results
+        forward, "new_paper" requires a retake and notifies not-yet-completed learners. Publishing
+        retires the old row in the same transaction and queues a course-wide re-evaluation.
       parameters:
         - name: assessmentId
           in: path
           required: true
           schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                changeKind: { type: string, enum: [minor, new_paper] }
       responses:
         "200":
           description: Published assessment
@@ -302,6 +411,45 @@ paths:
             application/json:
               schema:
                 type: object
+                properties:
+                  id: { type: string }
+                  isPublished: { type: boolean }
+                  publishedAt: { type: [string, "null"], format: date-time }
+                  changeKind: { type: [string, "null"], enum: [minor, new_paper, null] }
+        "400":
+          description: Publishing problems, or changeKind missing/invalid for a replacement
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: string }
+                  problems: { type: array, items: { type: string } }
+                  requiresChangeKind: { type: boolean }
+        "409": { description: Assessment is already published }
+  /assessments/{assessmentId}/discard-draft:
+    post:
+      operationId: discardAssessmentDraft
+      tags: [learning]
+      summary: Discard a draft of a live assessment (the live version is unaffected)
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Draft discarded; the live version was not changed
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [discarded, liveVersion]
+                properties:
+                  discarded: { type: string }
+                  liveVersion: { type: string }
+        "409":
+          description: Not a draft of a live version, or it already has attempts
   /assessments/{assessmentId}/attempts:
     post:
       operationId: startAssessmentAttempt
@@ -319,6 +467,8 @@ paths:
             application/json:
               schema:
                 type: object
+        "403":
+          description: Assessment version is superseded; start on the live version
         "409":
           description: Attempts exhausted or assessment not published
   /attempts/{attemptId}/submit:
@@ -326,6 +476,11 @@ paths:
       operationId: submitAttemptAnswers
       tags: [learning]
       summary: Submit answers (graded server-side)
+      description: >
+        Objective questions are graded here, on the server. A submitted score in the body is
+        ignored; there is no field for one. An applied assessment whose questions include a
+        scenario or a short answer goes to status "grading" instead of being marked, and a
+        trainer finishes it with POST /attempts/{attemptId}/grade.
       parameters:
         - name: attemptId
           in: path
@@ -362,6 +517,11 @@ paths:
       operationId: listSessions
       tags: [engagement]
       summary: List upcoming training sessions
+      description: >
+        Every session in the organization is listed, but joinUrl and location are only sent to
+        someone who could attend: org staff, programme staff, the session's trainer, an invited
+        learner, or a learner enrolled on the session's course. Everyone else gets nulls and
+        canJoin=false.
       responses:
         "200":
           description: Sessions
@@ -454,6 +614,10 @@ paths:
       operationId: listThreadMessages
       tags: [engagement]
       summary: List messages in a thread
+      description: >
+        Participants, and programme admins of the thread's programme, only. Anyone else gets
+        404 rather than 403, so a thread's existence is not leaked. Stakeholders are denied.
+        Access is re-checked on every read, so a removed member loses it immediately.
       parameters:
         - name: threadId
           in: path
@@ -473,6 +637,9 @@ paths:
       operationId: sendThreadMessage
       tags: [engagement]
       summary: Send a message in a thread
+      description: >
+        The author is taken from the token; any author or authorRole in the body is ignored.
+        Escalation is cleared only when the poster holds a trainer role on that thread.
       parameters:
         - name: threadId
           in: path
@@ -615,6 +782,61 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/AuthResponse"
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List the caller's notifications
+      description: Always scoped to the authenticated user. Newest first.
+      parameters:
+        - name: unread
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: Only notifications that have not been read
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Notifications plus the unread count for the bell badge
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationList"
+  /notifications/{notificationId}/read:
+    post:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark one of the caller's notifications as read
+      parameters:
+        - name: notificationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Marked read (or already read)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationReadResult"
+        "404":
+          description: No notification with that id belongs to the caller
+  /notifications/read-all:
+    post:
+      operationId: markAllNotificationsRead
+      tags: [notifications]
+      summary: Mark every unread notification of the caller as read
+      responses:
+        "200":
+          description: Number of notifications updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotificationReadAllResult"
+
   /enrolments:
     get:
       operationId: listEnrolments
@@ -651,6 +873,11 @@ paths:
       operationId: updateEnrolment
       tags: [enrolments]
       summary: Update enrolment (recomputes score, audit-logged)
+      description: >
+        Programme-scoped whitelist. Moving a completed enrolment back to "enrolled" clears its
+        completion date and source and revokes any active certificate with a CERTIFICATE_REVOKED
+        audit entry. Sign-off is cleared only when an effective score input really changes and the
+        review-credit period is unlocked.
       parameters:
         - name: enrolmentId
           in: path
@@ -672,7 +899,12 @@ paths:
     delete:
       operationId: deleteEnrolment
       tags: [enrolments]
-      summary: Delete enrolment (requires second-admin approval per governance)
+      summary: Withdraw an enrolment (requires second-admin approval per governance)
+      description: >
+        Removing a learner's last grant in a programme withdraws their enrolments: the row is
+        kept with status "withdrawn", withdrawnAt and withdrawnBy, so scores and history survive
+        and the learner's thread access is revoked. A withdrawal is excluded from active KPIs
+        and from review-credit eligibility unless an admin overrides it.
       parameters:
         - name: enrolmentId
           in: path
@@ -967,10 +1199,36 @@ paths:
         "401":
           description: Invalid token
   /programmes/{programmeId}/members:
+    get:
+      operationId: listProgrammeMembers
+      tags: [programmes]
+      summary: List the programme's members and their roles
+      description: Programme staff (admin, owner or trainer) only.
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Members with their programme-scoped grants
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        "403":
+          description: Programme staff access required
     post:
-      operationId: addProgrammeMember
+      operationId: assignProgrammeMember
       tags: [programmes]
       summary: Add a member with one or more roles
+      description: >
+        Adds role grants; it never removes another grant, so a person can hold several roles in
+        one programme (a Trainer who is also Programme Admin). Idempotent through the unique
+        grant. A learner grant creates the enrolment, or reinstates a withdrawn one when the
+        person is being re-added; that also restores thread participation they lost.
       parameters:
         - name: programmeId
           in: path
@@ -1004,6 +1262,10 @@ paths:
       operationId: updateProgrammeMember
       tags: [programmes]
       summary: Update member name and/or replace their full programme role set
+      description: >
+        `{ fromRole, toRole }` changes one named grant; `roles` replaces the whole set. No route
+        may remove or change an admin grant without assertNotLastProgrammeAdmin, which returns
+        409, and every multi-step change runs in one transaction.
       parameters:
         - name: programmeId
           in: path
@@ -1033,6 +1295,29 @@ paths:
             application/json:
               schema:
                 type: object
+        "409":
+          description: Cannot remove the last programme admin
+    delete:
+      operationId: removeProgrammeMember
+      tags: [programmes]
+      summary: Remove a member from a programme
+      description: >
+        Deletes the member's grants in this programme, withdraws their enrolments and unassigns
+        courses they trained. Their thread participation rows are soft-revoked (leftAt/leftReason)
+        so the history survives and a later re-add can restore access. The last programme admin
+        cannot be removed (409).
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Removed, with counts of what changed
         "409":
           description: Cannot remove the last programme admin
   /modules/{moduleId}/content:
@@ -1275,8 +1560,1224 @@ paths:
                 format: binary
         "403":
           description: Not permitted
+  # --- Phase 1.7: user management (documented 2026-11-20) -----------------------------------
+  /users:
+    get:
+      operationId: listUsers
+      tags: [governance]
+      summary: Directory
+      description: >
+        Org staff (owner/admin) get the full directory: department, job function, activation
+        state, and every grant. A programme admin gets identity plus their own programmes'
+        grants only - other programmes' grants and department/job function are never sent.
+        Anyone else gets 403.
+      parameters:
+        - name: search
+          in: query
+          schema: { type: string }
+          description: Matches name or email
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+      responses:
+        "200":
+          description: Directory entries, scoped to the caller's organization
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/DirectoryUser"
+        "403":
+          description: Directory access required
+    post:
+      operationId: createUser
+      tags: [governance]
+      summary: Create a user and send an activation link
+      description: >
+        Org staff only. The account is created with a random, unguessable password, so nobody
+        can log in until the activation link is used. The activation token is never returned
+        outside NODE_ENV=test.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, name]
+              properties:
+                email: { type: string, format: email }
+                name: { type: string }
+                department: { type: string }
+                jobFunction: { type: string }
+      responses:
+        "201":
+          description: Created user (activation email sent; emailSent=false when the send failed)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectoryUser"
+        "400":
+          description: Invalid email or missing name
+        "409":
+          description: Email already in use in this or another organization
+  /users/{userId}:
+    patch:
+      operationId: updateUser
+      tags: [governance]
+      summary: Rename, change details or deactivate
+      description: >
+        Changing an owner's own grants or active state is owner-only; an org admin attempting it
+        gets 403. Deactivating the last active owner, or removing your own last org-staff role,
+        is a 409. A rename only touches courses in the caller's organization, and only rows
+        whose trainerId is null.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                department: { type: [string, "null"] }
+                jobFunction: { type: [string, "null"] }
+                isActive: { type: boolean }
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectoryUser"
+        "403":
+          description: Only an owner may change an owner
+        "409":
+          description: Would leave the organization without an active owner, or yourself without a staff role
+  /users/{userId}/org-role:
+    post:
+      operationId: setOrgRole
+      tags: [governance]
+      summary: Grant or remove an organization-wide role
+      description: >
+        `role: ""` removes the org-wide grant. Removing or changing an owner's role is
+        owner-only (403 for an admin); removing the last owner's role is 409.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  description: owner, admin, trainer, learner, stakeholder, or "" to remove
+      responses:
+        "200":
+          description: Updated grants
+        "403":
+          description: Only an owner may change an owner
+        "409":
+          description: Would remove the last owner, or your own last staff role
+  /users/{userId}/resend-activation:
+    post:
+      operationId: resendActivation
+      tags: [governance]
+      summary: Send a fresh activation link to a user who has not activated
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Link reissued (emailSent reports the send)
+        "409":
+          description: The user has already activated
+  # --- Phase 1: programme memberships ---------------------------------------------------------
+  /programmes/{programmeId}/members/bulk-remove:
+    post:
+      operationId: bulkRemoveProgrammeMembers
+      tags: [governance]
+      summary: Remove several people at once
+      description: >
+        At or above the organization's bulkRemovalThreshold this creates a member_bulk delete
+        request instead of removing anyone; the request needs a different approver than its
+        requester.
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [userIds]
+              properties:
+                userIds:
+                  type: array
+                  items: { type: string }
+                reason: { type: string }
+      responses:
+        "200":
+          description: Removed, or a pending request was created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  removed: { type: integer }
+                  pendingRequestId: { type: [string, "null"] }
+  /delete-requests:
+    get:
+      operationId: listDeleteRequests
+      tags: [governance]
+      summary: Pending destructive requests
+      responses:
+        "200":
+          description: Requests the caller may act on
+  /delete-requests/{requestId}/approve:
+    post:
+      operationId: approveDeleteRequest
+      tags: [governance]
+      summary: Approve a destructive request
+      description: >
+        The approver must be an admin of the target's own programme, or an org admin/owner, and
+        never the requester.
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Approved and applied
+        "403":
+          description: Not an admin of the target's programme, or the requester
+  /delete-requests/{requestId}/reject:
+    post:
+      operationId: rejectDeleteRequest
+      tags: [governance]
+      summary: Reject a destructive request
+      parameters:
+        - name: requestId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Rejected
+        "403":
+          description: Not an admin of the target's programme, or the requester
+  # --- Auth additions -------------------------------------------------------------------------
+  /auth/activate:
+    post:
+      operationId: activateAccount
+      tags: [auth]
+      summary: Set a password with an activation token
+      description: Single use, 7-day expiry, same password policy as reset. The token is rejected after use or expiry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 12 }
+      responses:
+        "200":
+          description: Activated
+        "400":
+          description: Invalid, used or expired token, or a password that fails the policy
+  /auth/forgot-password:
+    post:
+      operationId: requestPasswordReset
+      tags: [auth]
+      summary: Request a reset link
+      description: Always 200, so the endpoint does not reveal which addresses exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email: { type: string, format: email }
+      responses:
+        "200":
+          description: Accepted
+  /auth/reset-password:
+    post:
+      operationId: resetPassword
+      tags: [auth]
+      summary: Reset a password with a token
+      description: Bumps tokenVersion, so every existing session for that user is invalid.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, minLength: 12 }
+      responses:
+        "200":
+          description: Reset
+        "400":
+          description: Invalid, used or expired token, or a password that fails the policy
+  /readyz:
+    get:
+      operationId: readiness
+      tags: [health]
+      summary: Readiness (database reachable)
+      responses:
+        "200":
+          description: Ready
+        "503":
+          description: Dependency unavailable
+  # --- Sessions, jobs and notifications -------------------------------------------------------
+  /sessions/{sessionId}/sync-calendar:
+    post:
+      operationId: syncSessionCalendar
+      tags: [engagement]
+      summary: Push the session to connected calendars
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Sync result
+  /nudge/dispatch:
+    post:
+      operationId: dispatchNudges
+      tags: [analytics]
+      summary: Dispatch nudges for a learner (org staff)
+      responses:
+        "200":
+          description: Dispatch result
+  /sla/run:
+    post:
+      operationId: runSlaJob
+      tags: [engagement]
+      summary: Run the messaging SLA escalation now (org staff)
+      responses:
+        "200":
+          description: Escalation result
+  /content-lifecycle/run:
+    post:
+      operationId: runContentLifecycle
+      tags: [learning]
+      summary: Archive expired content and notify owners (org staff)
+      responses:
+        "200":
+          description: Lifecycle result
+  /certificates/check-expiry:
+    post:
+      operationId: checkCertificateExpiry
+      tags: [learning]
+      summary: Notify learners whose certificates are expiring (org staff)
+      responses:
+        "200":
+          description: Expiry check result
+  /review-credits/lock:
+    post:
+      operationId: lockReviewCredits
+      tags: [review-credit]
+      summary: Lock a review-credit period
+      responses:
+        "200":
+          description: Locked
+  # --- Organizations --------------------------------------------------------------------------
+  /organizations:
+    post:
+      operationId: createOrganization
+      tags: [governance]
+      summary: Create an organization (platform administration)
+      responses:
+        "201":
+          description: Created organization
+  /organizations/{orgId}:
+    patch:
+      operationId: updateOrganization
+      tags: [governance]
+      summary: Update organization settings (org staff)
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated organization
+  /organizations/{orgId}/verify-domain:
+    post:
+      operationId: verifyOrganizationDomain
+      tags: [governance]
+      summary: Verify an email domain for the organization (org staff)
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Verification result
+  /organizations/{orgId}/learners/import:
+    post:
+      operationId: importLearners
+      tags: [governance]
+      summary: Bulk-import learners (org staff)
+      description: Each created account gets a random password and its own activation token.
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Import report
+  # --- Calendar, certificates, cohorts --------------------------------------------------------
+  /calendar/connections:
+    get:
+      operationId: listCalendarConnections
+      tags: [engagement]
+      summary: Connected external calendars
+      responses:
+        "200":
+          description: Connections
+    post:
+      operationId: createCalendarConnection
+      tags: [engagement]
+      summary: Connect an external calendar (free/busy reading)
+      responses:
+        "201":
+          description: Connection created
+  /calendar/connections/{connectionId}:
+    delete:
+      operationId: deleteCalendarConnection
+      tags: [engagement]
+      summary: Disconnect an external calendar
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Disconnected
+  /certificates:
+    get:
+      operationId: listCertificates
+      tags: [learning]
+      summary: Certificates the caller may see
+      responses:
+        "200":
+          description: Certificates
+  /recognitions:
+    get:
+      operationId: listRecognitions
+      tags: [learning]
+      summary: Recognitions the caller may see
+      responses:
+        "200":
+          description: Recognitions
+  /cohorts:
+    get:
+      operationId: listCohorts
+      tags: [learning]
+      summary: Cohorts
+      responses:
+        "200":
+          description: Cohorts
+    post:
+      operationId: createCohort
+      tags: [learning]
+      summary: Create a cohort
+      description: Requires a staff role on the cohort's programme.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, programmeId]
+              properties:
+                name: { type: string }
+                programmeId: { type: string }
+      responses:
+        "201":
+          description: Created cohort
+        "403":
+          description: Not programme staff
+  /cohorts/{cohortId}/enrol:
+    post:
+      operationId: enrolCohort
+      tags: [learning]
+      summary: Enrol a cohort's learners on a course
+      parameters:
+        - name: cohortId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Enrolment result
+  /cohorts/{cohortId}/members:
+    post:
+      operationId: addCohortMembers
+      tags: [learning]
+      summary: Add learners to a cohort
+      parameters:
+        - name: cohortId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated cohort
+  # --- Uploads --------------------------------------------------------------------------------
+  /uploads/evidence:
+    post:
+      operationId: uploadEvidence
+      tags: [learning]
+      summary: Upload a learner's evidence for an external-link completion
+      description: >
+        Any organization member. Only an upload made here can be attached as evidence; a staff
+        content upload is rejected as proof.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "201":
+          description: Stored file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/StoredFile"
+        "400":
+          description: Missing file, or a type outside the allowlist
+        "413":
+          description: Over the size limit
+  /content-progress/{progressId}/evidence:
+    get:
+      operationId: getEvidenceFile
+      tags: [learning]
+      summary: Download the evidence a learner attached
+      description: The uploader, or programme staff of the item's programme.
+      parameters:
+        - name: progressId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: File bytes
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "403":
+          description: Not the uploader or programme staff
+  # --- Destructive requests, feedback and authoring -------------------------------------------
+  /assessments/{assessmentId}/delete-requests:
+    post:
+      operationId: requestAssessmentDeletion
+      tags: [governance]
+      summary: Request deletion of an assessment
+      description: Needs approval by an admin of the assessment's programme who is not the requester.
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Pending request
+  /courses/{courseId}/delete-requests:
+    post:
+      operationId: requestCourseDeletion
+      tags: [governance]
+      summary: Request deletion of a course
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Pending request
+  /programmes/{programmeId}/delete-requests:
+    post:
+      operationId: requestProgrammeDeletion
+      tags: [governance]
+      summary: Request deletion of a programme
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Pending request
+  /modules/{moduleId}/delete-requests:
+    post:
+      operationId: requestModuleDeletion
+      tags: [governance]
+      summary: Request deletion of a module
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Pending request
+  /courses/{courseId}/feedback:
+    post:
+      operationId: submitCourseFeedback
+      tags: [learning]
+      summary: Leave course feedback (enrolled learners)
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [rating]
+              properties:
+                rating: { type: integer, minimum: 1, maximum: 5 }
+                comment: { type: string }
+      responses:
+        "201":
+          description: Feedback recorded
+        "403":
+          description: Not enrolled
+  /courses/{courseId}/modules/{moduleId}/explain:
+    post:
+      operationId: explainConcept
+      tags: [learning]
+      summary: Explain a concept in the context of the module (AI help)
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Explanation
+  /courses/{courseId}:
+    patch:
+      operationId: updateCourse
+      tags: [learning]
+      summary: Edit a course
+      description: trainerId takes precedence over the legacy trainer display name.
+      parameters:
+        - name: courseId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated course
+  /programmes/{programmeId}:
+    patch:
+      operationId: updateProgramme
+      tags: [learning]
+      summary: Edit a programme
+      parameters:
+        - name: programmeId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated programme
+  /modules/{moduleId}:
+    patch:
+      operationId: updateModule
+      tags: [learning]
+      summary: Edit a module
+      parameters:
+        - name: moduleId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Updated module
+  /reminders/run:
+    post:
+      operationId: runReminders
+      tags: [engagement]
+      summary: Run the reminder cadence for the organization now
+      description: >
+        Org staff only. Evaluates the configured reminder cadence against the current clock and
+        sends the session and enrolment reminders that are due. Each cadence step is logged, so
+        running it twice in a row does not send the same reminder again.
+      responses:
+        "200":
+          description: Run summary with per-category counts
+          content:
+            application/json:
+              schema:
+                type: object
+  /sessions/{sessionId}:
+    patch:
+      operationId: updateSession
+      tags: [engagement]
+      summary: Edit a scheduled session
+      description: >
+        A correction, not a cancel-and-reinvite. Every edit bumps sequence, because a calendar
+        client ignores an update whose SEQUENCE did not increase, and confirms the change to
+        confirmed attendees with an updated .ics attachment.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title: { type: string }
+                mode: { type: string, enum: [online, offline] }
+                capacity:
+                  type: integer
+                  minimum: 1
+                  nullable: true
+                  description: A positive whole number, or null for unlimited
+                trainerId: { type: string, nullable: true }
+                startsAt: { type: string, format: date-time, nullable: true }
+                endsAt: { type: string, format: date-time, nullable: true }
+                date: { type: string, description: "YYYY-MM-DD; interpreted in the session's timezone" }
+                time: { type: string, description: "HH:MM; interpreted in the session's timezone" }
+                joinUrl: { type: string, format: uri, nullable: true, description: Required for online sessions }
+                location: { type: string, nullable: true, description: Required for offline sessions }
+      responses:
+        "200":
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainingSession"
+        "400":
+          description: Invalid field; online needs an https joinUrl, offline needs a location
+        "403": { description: Caller cannot manage this session's programme }
+        "404": { description: Session or trainer not found in the caller's organization }
+  /sessions/{sessionId}/cancel:
+    post:
+      operationId: cancelSession
+      tags: [engagement]
+      summary: Cancel a scheduled session
+      description: >
+        Sets status to cancelled, bumps sequence and notifies confirmed attendees with a CANCEL
+        .ics. Cancelling an already-cancelled session returns it unchanged.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Cancelled session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainingSession"
+        "403": { description: Caller cannot manage this session's programme }
+        "404": { description: Session not found in the caller's organization }
+  /sessions/{sessionId}/ics:
+    get:
+      operationId: getSessionIcs
+      tags: [engagement]
+      summary: Download one session as a calendar file
+      description: >
+        Only for people with a right to be in the room: an invitee or attendee (waitlisted
+        included), the session's trainer, or programme/org staff. A cancelled session yields a
+        CANCEL file.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: iCalendar payload
+          content:
+            text/calendar:
+              schema: { type: string }
+        "403": { description: Caller is not invited to the session }
+        "404": { description: Session not found in the caller's organization }
+  /content-progress/pending:
+    get:
+      operationId: listPendingVerification
+      tags: [learning]
+      summary: Trainer verification queue
+      description: >
+        Content progress awaiting verification. Org staff see the entire organization;
+        programme trainers/admins see only their own programmes; anyone else gets 403.
+      responses:
+        "200":
+          description: Pending rows, oldest start first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PendingVerification"
+        "403": { description: Programme staff access required }
+  /bookings/trainers:
+    get:
+      operationId: listBookableTrainers
+      tags: [engagement]
+      summary: List trainers the caller may book
+      description: >
+        Org staff see every active trainer in the organization; a learner sees only trainers
+        with a grant in a programme they are currently enrolled on (a withdrawn enrolment does
+        not count). A learner with no live enrolment gets an empty list.
+      responses:
+        "200":
+          description: Bookable trainers, sorted by name
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BookableTrainer"
+  /assessments/grading/queue:
+    get:
+      operationId: listGradingQueue
+      tags: [learning]
+      summary: Attempts awaiting a trainer's marks
+      description: >
+        Submitted attempts with status "grading", oldest submission first. Programme staff see
+        only their own programmes; org staff see the organization; a caller with no staff grant
+        gets 403. An attempt never appears before it was submitted.
+      parameters:
+        - name: programmeId
+          in: query
+          required: false
+          schema: { type: string }
+      responses:
+        "200":
+          description: Grading queue
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/GradingQueueItem"
+        "403": { description: Programme staff access required }
+  /attempts/{attemptId}:
+    get:
+      operationId: getAttempt
+      tags: [learning]
+      summary: Read an attempt
+      description: >
+        The owner sees their own answers; staff of the attempt's programme also see the answer
+        key, the rubric and per-answer marks. A score exists only after grading. An attempt in
+        another organization is 404; another learner's attempt is 403.
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Attempt detail
+          content:
+            application/json:
+              schema:
+                type: object
+        "403": { description: Attempt belongs to another learner }
+        "404": { description: Attempt not found in the caller's organization }
+  /attempts/{attemptId}/answers:
+    put:
+      operationId: saveAttemptAnswers
+      tags: [learning]
+      summary: Save answers without submitting
+      description: >
+        The attempt's owner only, while status is in_progress. The time limit is enforced here
+        too, so a learner cannot keep editing by never pressing submit; an expired attempt must
+        be submitted to have what was entered graded.
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [answers]
+              properties:
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    required: [questionId]
+                    properties:
+                      questionId: { type: string }
+                      optionIds: { type: array, items: { type: string } }
+                      text: { type: string }
+      responses:
+        "200":
+          description: Saved answers and the expiry of the attempt's time limit
+          content:
+            application/json:
+              schema:
+                type: object
+        "404": { description: Attempt not found }
+        "409": { description: Attempt already submitted, or the time limit has passed }
+    get:
+      operationId: getAttemptAnswersForGrading
+      tags: [learning]
+      summary: Staff view of an attempt for marking
+      description: >
+        Requires a trainer/admin/owner grant on the attempt's programme; grading your own
+        attempt is refused. Returns the answer key, the rubric and each stored answer.
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Attempt with answer key and rubric
+          content:
+            application/json:
+              schema:
+                type: object
+        "403": { description: Not programme staff, or the caller owns the attempt }
+        "404": { description: Attempt not found in the caller's organization }
+  /attempts/{attemptId}/grade:
+    post:
+      operationId: gradeAttempt
+      tags: [learning]
+      summary: Mark a queued attempt
+      description: >
+        Programme staff (or org staff) only, never the learner it belongs to. Every manual
+        question must be marked in one call: a half-marked attempt would silently score zero for
+        the rest. Accepts either { grades: [{ questionId, points, comment }] } or the builder's
+        { answers: [{ answerId, pointsAwarded, comment }] }. A graded attempt is final (409).
+      parameters:
+        - name: attemptId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                grades:
+                  type: array
+                  items:
+                    type: object
+                    required: [questionId, points]
+                    properties:
+                      questionId: { type: string }
+                      points: { type: number }
+                      comment: { type: string }
+                answers:
+                  type: array
+                  items:
+                    type: object
+                    required: [answerId, pointsAwarded]
+                    properties:
+                      answerId: { type: string }
+                      pointsAwarded: { type: number }
+                      comment: { type: string }
+      responses:
+        "200":
+          description: Final marks, pass/fail, competence and any certificate issued
+          content:
+            application/json:
+              schema:
+                type: object
+        "400": { description: A manual question is unmarked }
+        "403": { description: Not programme staff, or grading your own attempt }
+        "404": { description: Attempt not found in the caller's organization }
+        "409": { description: Attempt is not awaiting grading }
+  /assessments/{assessmentId}/questions/order:
+    put:
+      operationId: reorderAssessmentQuestions
+      tags: [learning]
+      summary: Reorder questions in a draft assessment
+      description: >
+        The body must list every question in the assessment exactly once. A published assessment
+        cannot be reordered (409 with requiresNewVersion); publish a new version instead.
+      parameters:
+        - name: assessmentId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ids]
+              properties:
+                ids:
+                  type: array
+                  items: { type: string }
+      responses:
+        "200":
+          description: New order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [assessmentId, order]
+                properties:
+                  assessmentId: { type: string }
+                  order: { type: array, items: { type: string } }
+        "400": { description: ids must list every question exactly once }
+        "404": { description: Assessment not found in the caller's organization }
+        "409": { description: Assessment is published; requiresNewVersion }
+  /enrolments/{enrolmentId}/accept-assessment-score:
+    post:
+      operationId: acceptAssessmentScore
+      tags: [enrolments]
+      summary: Accept a pending assessment result into the enrolment score
+      description: >
+        Programme/org staff only. Applies pendingAssessmentScore with source "assessment" only when
+        an effective input really differs from the stored score; clears sign-off and notifies the
+        manager only for that real change. A pending result held by a locked review-credit period is
+        accepted without moving the locked score or sign-off.
+      parameters:
+        - name: enrolmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The re-evaluated enrolment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Enrolment"
+        "403": { description: Not programme staff }
+        "404": { description: Enrolment not found in the caller's organization }
+        "409": { description: There is no pending assessment result }
+  /enrolments/{enrolmentId}/reject-assessment-score:
+    post:
+      operationId: rejectAssessmentScore
+      tags: [enrolments]
+      summary: Discard a pending assessment result
+      description: >
+        Programme/org staff only. Clears pendingAssessmentScore without touching the applied score,
+        stores the suppressed value in pendingRejectedScore so the same result is not re-pending,
+        and audit-logs the decision. A locked-period rejection leaves sign-off intact.
+      parameters:
+        - name: enrolmentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Rejection acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok, enrolmentId]
+                properties:
+                  ok: { type: boolean }
+                  enrolmentId: { type: string }
+        "403": { description: Not programme staff }
+        "404": { description: Enrolment not found in the caller's organization }
+        "409": { description: There is no pending assessment result }
+  /email-failures:
+    get:
+      operationId: listEmailFailures
+      tags: [governance]
+      summary: List failed email sends for the organization
+      description: >
+        Org staff only. Newest first; a failure stays until an operator dismisses it after
+        handling.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Page of failures
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/EmailFailure"
+                  limit: { type: integer }
+                  offset: { type: integer }
+        "403": { description: Org staff access required }
+  /email-failures/{failureId}/dismiss:
+    post:
+      operationId: dismissEmailFailure
+      tags: [governance]
+      summary: Dismiss a handled email failure
+      parameters:
+        - name: failureId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204": { description: Dismissed }
+        "403": { description: Org staff access required }
+        "404": { description: Failure not found in the caller's organization }
+  /organizations/{orgId}/review-credits/export:
+    get:
+      operationId: exportReviewCredits
+      tags: [review-credit]
+      summary: Export review-credit aggregates with manager sign-off state
+      description: >
+        Org staff of that organization only. JSON rows include enrolment ids, manager approvals
+        and lock timestamps; format=csv flattens them to learner/raw/final/signoff.
+      parameters:
+        - name: orgId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: format
+          in: query
+          required: false
+          schema: { type: string, enum: [json, csv], default: json }
+      responses:
+        "200":
+          description: Review-credit export
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ReviewCreditExportRow"
+            text/csv:
+              schema: { type: string }
+        "403": { description: Org staff access required, or a different organization }
 components:
   schemas:
+    DirectoryUser:
+      type: object
+      required: [id, name, email, isActive, roles]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string, format: email }
+        isActive: { type: boolean }
+        department: { type: [string, "null"], description: Org staff only }
+        jobFunction: { type: [string, "null"], description: Org staff only }
+        activatedAt: { type: [string, "null"], format: date-time, description: Org staff only }
+        roles:
+          type: array
+          description: Org staff see every grant; a programme admin sees only their own programmes'
+          items:
+            type: object
+            properties:
+              role: { type: string }
+              programmeId: { type: [string, "null"] }
+              programmeName: { type: [string, "null"] }
+    StoredFile:
+      type: object
+      required: [storedFileId, fileName, mimeType, sizeBytes, checksum, purpose]
+      properties:
+        storedFileId: { type: string }
+        fileName: { type: string }
+        mimeType: { type: string }
+        sizeBytes: { type: integer }
+        checksum: { type: string, description: SHA-256 of the stored bytes }
+        purpose: { type: string, enum: [content, evidence] }
+    Notification:
+      type: object
+      required: [id, type, title, createdAt, readAt]
+      properties:
+        id: { type: string }
+        userId: { type: string }
+        orgId: { type: [string, "null"] }
+        type: { type: string, description: e.g. session_invite, certificate_expiring }
+        title: { type: string }
+        body: { type: [string, "null"] }
+        link: { type: [string, "null"], description: App-relative path, e.g. /calendar }
+        readAt: { type: [string, "null"], format: date-time }
+        createdAt: { type: string, format: date-time }
+    NotificationList:
+      type: object
+      required: [items, unread]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Notification"
+        unread:
+          type: integer
+          description: Unread count for the bell badge
+    NotificationReadResult:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+    NotificationReadAllResult:
+      type: object
+      required: [ok, updated]
+      properties:
+        ok: { type: boolean }
+        updated: { type: integer }
     HealthStatus:
       type: object
       properties:
@@ -1397,17 +2898,28 @@ components:
         status: { type: string }
     TrainingSession:
       type: object
-      required: [id, title, programme, date, time, mode, attendees, status]
+      required: [id, title, programme, date, time, mode, attendees, status, sequence, canJoin]
       properties:
         id: { type: string }
         title: { type: string }
         programme: { type: string }
-        date: { type: string }
-        time: { type: string }
-        mode: { type: string }
-        location: { type: ["string", "null"] }
-        videoLink: { type: ["string", "null"] }
+        programmeId: { type: ["string", "null"] }
+        courseId: { type: ["string", "null"] }
+        trainer: { type: string }
+        trainerId: { type: ["string", "null"] }
+        date: { type: string, description: "YYYY-MM-DD, derived from startsAt in the session's timezone" }
+        time: { type: string, description: "HH:MM, derived from startsAt in the session's timezone" }
+        startsAt: { type: ["string", "null"], format: date-time }
+        endsAt: { type: ["string", "null"], format: date-time }
+        timezone: { type: string }
+        mode: { type: string, enum: [online, offline] }
+        location: { type: ["string", "null"], description: Withheld (null) from callers who cannot join }
+        joinUrl: { type: ["string", "null"], description: Withheld (null) from callers who cannot join }
+        videoLink: { type: ["string", "null"], description: Legacy alias for joinUrl }
         attendees: { type: integer }
+        capacity: { type: ["integer", "null"], description: Null means unlimited }
+        sequence: { type: integer, description: Bumped on every edit or cancellation for calendar clients }
+        canJoin: { type: boolean, description: Whether this caller may see the join details }
         status: { type: string }
     MessageThread:
       type: object
@@ -1439,11 +2951,13 @@ components:
         urgent: { type: boolean }
     Booking:
       type: object
-      required: [id, trainer, course, date, time, duration, status]
+      required: [id, trainer, trainerId, course, date, time, duration, status]
       properties:
         id: { type: string }
-        trainer: { type: string }
+        trainer: { type: string, description: Display name captured when the booking was made }
+        trainerId: { type: ["string", "null"] }
         course: { type: string }
+        courseId: { type: ["string", "null"] }
         date: { type: string }
         time: { type: string }
         duration: { type: string }
@@ -1451,12 +2965,73 @@ components:
         meetingLink: { type: ["string", "null"] }
     BookingInput:
       type: object
-      required: [trainer, date, time]
+      required: [trainerId, date, time]
       properties:
-        trainer: { type: string }
-        course: { type: string }
+        trainerId: { type: string, description: The trainer's user id. A trainer name is no longer accepted. }
+        courseId: { type: ["string", "null"] }
         date: { type: string }
         time: { type: string }
+    BookableTrainer:
+      type: object
+      required: [id, name, email]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+    PendingVerification:
+      type: object
+      required: [id, status, contentItem]
+      properties:
+        id: { type: string }
+        status: { type: string, enum: [pending_verification] }
+        startedAt: { type: ["string", "null"], format: date-time }
+        evidenceNote: { type: ["string", "null"] }
+        evidenceFileId: { type: ["string", "null"] }
+        contentItem:
+          type: object
+        enrolment:
+          type: object
+    GradingQueueItem:
+      type: object
+      required: [id, attemptId, attemptNumber, learner, assessment, course, answered, answersStored]
+      properties:
+        id: { type: string }
+        attemptId: { type: string }
+        attemptNumber: { type: integer }
+        submittedAt: { type: ["string", "null"], format: date-time }
+        learner:
+          type: object
+          required: [id, name, email]
+          properties:
+            id: { type: string }
+            name: { type: string }
+            email: { type: string }
+        assessment:
+          type: object
+          required: [id, title, type]
+          properties:
+            id: { type: string }
+            title: { type: string }
+            type: { type: string }
+        course:
+          type: object
+          required: [id, title, programmeId]
+          properties:
+            id: { type: string }
+            title: { type: string }
+            programmeId: { type: string }
+        answered: { type: integer, description: Answers already carrying a mark }
+        answersStored: { type: integer }
+    EmailFailure:
+      type: object
+      required: [id, orgId, to, subject, error, createdAt]
+      properties:
+        id: { type: string }
+        orgId: { type: string }
+        to: { type: string }
+        subject: { type: string }
+        error: { type: string }
+        createdAt: { type: string, format: date-time }
     CalendarEvent:
       type: object
       required: [id, title, date, time, type, accent]

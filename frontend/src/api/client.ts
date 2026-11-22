@@ -21,7 +21,12 @@ export function getSessionUser(): { id?: string; role?: string; name?: string; i
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const headers: Record<string, string> = { "content-type": "application/json", ...(init?.headers as Record<string, string> ?? {}) };
+  // A.3: a FormData body sets its own multipart boundary — forcing application/json on it
+  // makes the request unparseable, so the JSON content type is only added for string bodies.
+  const isFormData = typeof FormData !== "undefined" && init?.body instanceof FormData;
+  const headers: Record<string, string> = isFormData
+    ? { ...(init?.headers as Record<string, string> ?? {}) }
+    : { "content-type": "application/json", ...(init?.headers as Record<string, string> ?? {}) };
   const token = getToken();
   if (token) headers.authorization = `Bearer ${token}`;
   const res = await fetch(`/api${path}`, { ...init, headers });
@@ -31,13 +36,19 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let message = `API ${res.status}`;
+    let body: unknown = null;
     try {
-      const body = await res.json();
-      if (body && typeof body.error === "string") message = body.error;
+      body = await res.json();
+      if (body && typeof (body as { error?: unknown }).error === "string") message = String((body as { error: string }).error);
     } catch {
       // non-JSON error body — keep the status-based message
     }
-    throw new Error(message);
+    // The status and parsed body let callers distinguish 409 (new version, already graded),
+    // 403 (own attempt) and 404 (another organization) from a generic failure.
+    const error = new Error(message) as Error & { status?: number; body?: unknown };
+    error.status = res.status;
+    error.body = body;
+    throw error;
   }
   const ct = res.headers.get("content-type") ?? "";
   if (ct.includes("text/csv")) return (await res.text()) as T;

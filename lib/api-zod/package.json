@@ -8,5 +8,8 @@
   },
   "dependencies": {
     "zod": "catalog:"
+  },
+  "scripts": {
+    "prepare": "node -e \"require('fs').writeFileSync('src/index.ts', require('fs').readFileSync('src/index.template.ts'))\""
   }
 }
