@@ -54,6 +54,18 @@ export function findOverdueThreads(threads: SlaThread[], now: Date = new Date())
   });
 }
 
+export function scheduleSlaJob(): NodeJS.Timeout | null {
+  const raw = process.env.SLA_INTERVAL_MS;
+  if (raw === "0") return null;
+  const parsed = Number(raw ?? 600000);
+  const intervalMs = Number.isFinite(parsed) && parsed > 0 ? Math.max(parsed, 60000) : 600000;
+  const timer = setInterval(() => {
+    runSlaJob().catch((error) => console.error("[sla] background run failed:", error));
+  }, intervalMs);
+  timer.unref?.();
+  return timer;
+}
+
 export async function runSlaJob(now: Date = new Date()): Promise<{ escalated: number }> {
   const threads = await db.messageThread.findMany({ where: { isEscalated: false }, include: { participants: { select: { userId: true, role: true } }, programme: { select: { id: true, orgId: true } } } });
   const overdue = findOverdueThreads(threads as SlaThread[], now);

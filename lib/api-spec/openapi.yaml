@@ -627,6 +627,19 @@ paths:
       tags: [engagement]
       summary: List message threads for the active workspace
       description: Stakeholders are denied. Participants and programme admins receive messages; other org staff receive metadata only.
+      parameters:
+        - name: programmeId
+          in: query
+          required: false
+          schema: { type: string }
+        - name: courseId
+          in: query
+          required: false
+          schema: { type: string }
+        - name: slaStatus
+          in: query
+          required: false
+          schema: { type: string, enum: [ok, reply_pending, escalated] }
       responses:
         "200":
           description: Message threads (org staff may have metadataOnly=true and empty messages)
@@ -648,11 +661,13 @@ paths:
           application/json:
             schema:
               type: object
-              required: [subject, participantIds, body]
+              required: [subject, programmeId, participantIds, body]
               properties:
                 subject: { type: string }
                 body: { type: string }
-                programmeId: { type: string, nullable: true }
+                programmeId: { type: string }
+                courseId: { type: string, nullable: true }
+                slaHours: { type: integer, minimum: 1, maximum: 720, default: 24 }
                 participantIds:
                   type: array
                   items: { type: string }
@@ -718,6 +733,111 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ThreadMessage"
+  /threads/{threadId}/sla:
+    patch:
+      operationId: updateThreadSla
+      tags: [engagement]
+      summary: Set the response window for a thread
+      parameters:
+        - name: threadId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [slaHours]
+              properties:
+                slaHours: { type: integer, minimum: 1, maximum: 720 }
+      responses:
+        "200":
+          description: Updated thread
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageThread"
+        "400":
+          description: slaHours outside 1-720
+        "404":
+          description: Thread not found
+  /message-templates:
+    get:
+      operationId: listMessageTemplates
+      tags: [engagement]
+      summary: List active canned responses for the organization
+      responses:
+        "200":
+          description: Canned responses
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MessageTemplate"
+        "403":
+          description: Programme staff access required
+    post:
+      operationId: createMessageTemplate
+      tags: [engagement]
+      summary: Create a canned response
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MessageTemplateInput"
+      responses:
+        "201":
+          description: Created canned response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageTemplate"
+        "400":
+          description: title and body required
+        "403":
+          description: Programme staff access required
+  /message-templates/{templateId}:
+    parameters:
+      - name: templateId
+        in: path
+        required: true
+        schema: { type: string }
+    patch:
+      operationId: updateMessageTemplate
+      tags: [engagement]
+      summary: Update a canned response
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MessageTemplateInput"
+      responses:
+        "200":
+          description: Updated canned response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageTemplate"
+        "403":
+          description: Programme staff access required
+        "404":
+          description: Template not found
+    delete:
+      operationId: deactivateMessageTemplate
+      tags: [engagement]
+      summary: Deactivate a canned response
+      responses:
+        "204":
+          description: Deactivated
+        "403":
+          description: Programme staff access required
+        "404":
+          description: Template not found
   /bookings:
     get:
       operationId: listBookings
@@ -3160,16 +3280,62 @@ components:
         reason: { type: ["string", "null"] }
     MessageThread:
       type: object
-      required: [id, subject, context, participant, preview, updatedAt, unread, urgent]
+      required: [id, subject, context, participant, programmeId, courseId, orgId, updatedAt, urgent, slaHours, isEscalated, metadataOnly, averageResponseTimeHours, slaStatus, slaState]
       properties:
         id: { type: string }
         subject: { type: string }
         context: { type: string }
         participant: { type: string }
+        programmeId: { type: ["string", "null"] }
+        courseId: { type: ["string", "null"] }
+        course:
+          type: ["object", "null"]
+          properties:
+            id: { type: string }
+            title: { type: string }
+        orgId: { type: string }
         preview: { type: string }
-        updatedAt: { type: string }
+        updatedAt: { type: string, format: date-time }
         unread: { type: boolean }
         urgent: { type: boolean }
+        slaHours: { type: integer }
+        isEscalated: { type: boolean }
+        escalatedAt: { type: ["string", "null"], format: date-time }
+        lastLearnerMessageAt: { type: ["string", "null"], format: date-time }
+        lastTrainerResponseAt: { type: ["string", "null"], format: date-time }
+        metadataOnly: { type: boolean }
+        averageResponseTimeHours: { type: ["number", "null"] }
+        slaStatus: { type: string }
+        slaState: { type: string, enum: [ok, reply_pending, escalated] }
+        messages:
+          type: array
+          items: { $ref: "#/components/schemas/ThreadMessage" }
+        participants:
+          type: array
+          items:
+            type: object
+            properties:
+              userId: { type: string }
+              role: { type: string }
+    MessageTemplateInput:
+      type: object
+      required: [title, body]
+      properties:
+        title: { type: string, maxLength: 256 }
+        body: { type: string }
+        isActive: { type: boolean }
+    MessageTemplate:
+      type: object
+      required: [id, orgId, title, body, createdBy, isActive, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        orgId: { type: string }
+        title: { type: string }
+        body: { type: string }
+        createdBy: { type: string }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
     ThreadMessage:
       type: object
       required: [id, threadId, author, body, createdAt, urgent]
