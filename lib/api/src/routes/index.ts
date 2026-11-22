@@ -2860,6 +2860,41 @@ async function loadSessionForStaff(req: AuthedRequest, orgId: string) {
 
 type SessionForStaff = Awaited<ReturnType<typeof loadSessionForStaff>>;
 
+type InviteCursor = { name: string; id: string };
+
+function sessionEligibleUserWhere(session: SessionForStaff, orgId: string, q?: string): Prisma.UserWhereInput {
+  const enrolment: Prisma.UserWhereInput = session.courseId
+    ? { enrolments: { some: { courseId: session.courseId, status: { not: "withdrawn" }, withdrawnAt: null } } }
+    : session.programmeId
+      ? { enrolments: { some: { programmeId: session.programmeId, status: { not: "withdrawn" }, withdrawnAt: null } } }
+      : {};
+  return {
+    orgId,
+    isActive: true,
+    rsvps: { none: { sessionId: session.id } },
+    ...enrolment,
+    ...(q ? { AND: [{ OR: [{ name: { contains: q } }, { email: { contains: q } }] }] } : {}),
+  };
+}
+
+function inviteCursorWhere(cursor: InviteCursor | null): Prisma.UserWhereInput {
+  if (!cursor) return {};
+  return { OR: [{ name: { gt: cursor.name } }, { name: cursor.name, id: { gt: cursor.id } }] };
+}
+
+function encodeInviteCursor(cursor: InviteCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeInviteCursor(raw: string): InviteCursor | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Partial<InviteCursor>;
+    return typeof parsed.name === "string" && typeof parsed.id === "string" ? { name: parsed.name, id: parsed.id } : null;
+  } catch {
+    return null;
+  }
+}
+
 async function sessionInviteDecision(session: SessionForStaff, learnerId: string, orgId: string) {
   const learner = await db.user.findFirst({
     where: { id: learnerId, orgId, isActive: true },
@@ -2952,42 +2987,41 @@ router.get("/sessions/:id/invitable", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   try {
     const session = await loadSessionForStaff(req as AuthedRequest, scope.orgId);
-    const candidates = await db.user.findMany({
-      where: { orgId: scope.orgId, isActive: true },
-      select: { id: true, name: true, email: true },
-      orderBy: { name: "asc" },
-      take: 500,
-    });
-    const ids = candidates.map((user) => user.id);
-    const [rsvps, courseEnrolments, programmeEnrolments] = await Promise.all([
-      db.sessionRSVP.findMany({ where: { sessionId: session.id, learnerId: { in: ids } }, select: { learnerId: true } }),
-      session.courseId
-        ? db.enrolment.findMany({ where: { learnerId: { in: ids }, courseId: session.courseId, status: { not: "withdrawn" }, withdrawnAt: null }, select: { learnerId: true } })
-        : Promise.resolve([] as Array<{ learnerId: string }>),
-      session.programmeId
-        ? db.enrolment.findMany({ where: { learnerId: { in: ids }, programmeId: session.programmeId, status: { not: "withdrawn" }, withdrawnAt: null }, select: { learnerId: true } })
-        : Promise.resolve([] as Array<{ learnerId: string }>),
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (q && q.length < 2) return res.status(400).json({ error: "q must be at least 2 characters" });
+    const requestedLimit = req.query.limit === undefined ? 50 : Number(req.query.limit);
+    if (!Number.isInteger(requestedLimit) || requestedLimit < 1) return res.status(400).json({ error: "limit must be a positive integer" });
+    const limit = Math.min(requestedLimit, 200);
+    const cursorRaw = typeof req.query.cursor === "string" ? req.query.cursor : null;
+    const cursor = cursorRaw ? decodeInviteCursor(cursorRaw) : null;
+    if (cursorRaw && !cursor) return res.status(400).json({ error: "invalid cursor" });
+    const where = sessionEligibleUserWhere(session, scope.orgId, q || undefined);
+    const [total, rows, skippedRows] = await Promise.all([
+      db.user.count({ where }),
+      db.user.findMany({
+        where: { ...where, ...inviteCursorWhere(cursor) },
+        select: { id: true, name: true, email: true },
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+        take: limit + 1,
+      }),
+      db.user.findMany({
+        where: {
+          orgId: scope.orgId,
+          isActive: true,
+          rsvps: { some: { sessionId: session.id } },
+          ...(q ? { AND: [{ OR: [{ name: { contains: q } }, { email: { contains: q } }] }] } : {}),
+        },
+        select: { id: true, name: true, email: true },
+        orderBy: [{ name: "asc" }, { id: "asc" }],
+        take: 50,
+      }),
     ]);
-    const invited = new Set(rsvps.map((row) => row.learnerId));
-    const enrolled = new Set(session.courseId
-      ? courseEnrolments.map((row) => row.learnerId)
-      : session.programmeId
-        ? programmeEnrolments.map((row) => row.learnerId)
-        : ids);
-    const learners: Array<{ learnerId: string; id: string; name: string; email: string; eligible: true; reason: null }> = [];
-    const skipped: Array<{ learnerId: string; name: string; email: string; reason: string }> = [];
-    for (const candidate of candidates) {
-      const reason = invited.has(candidate.id)
-        ? "already_invited"
-        : enrolled.has(candidate.id)
-          ? null
-          : session.courseId
-            ? "not_enrolled_in_course"
-            : "not_enrolled_in_programme";
-      if (reason) skipped.push({ learnerId: candidate.id, name: candidate.name, email: candidate.email, reason });
-      else learners.push({ learnerId: candidate.id, id: candidate.id, name: candidate.name, email: candidate.email, eligible: true, reason: null });
-    }
-    return res.json({ sessionId: session.id, learners, invitable: learners, invitableLearners: learners, skipped });
+    const page = rows.slice(0, limit);
+    const learners = page.map((user) => ({ learnerId: user.id, id: user.id, name: user.name, email: user.email, eligible: true as const, reason: null as null }));
+    const skipped = skippedRows.map((user) => ({ learnerId: user.id, name: user.name, email: user.email, reason: "already_invited" }));
+    const last = page[page.length - 1];
+    const nextCursor = rows.length > limit && last ? encodeInviteCursor({ name: last.name, id: last.id }) : null;
+    return res.json({ sessionId: session.id, q, limit, total, nextCursor, learners, invitable: learners, invitableLearners: learners, skipped });
   } catch (e) {
     return res.status((e as { status?: number }).status ?? 500).json({ error: (e as Error).message });
   }
@@ -3086,18 +3120,44 @@ router.post("/sessions/:id/invite", async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   try {
     const session = await loadSessionForStaff(req as AuthedRequest, scope.orgId);
-    const requested = ((req.body?.learnerIds ?? []) as string[]).map(String).filter(Boolean);
-    const learnerIds = [...new Set(requested)].slice(0, 500);
+    const allEnrolled = req.body?.allEnrolled === true;
+    let requested: string[] = [];
+    if (allEnrolled) {
+      const eligibleWhere = sessionEligibleUserWhere(session, scope.orgId);
+      let cursor: Prisma.UserWhereInput = {};
+      for (;;) {
+        const rows = await db.user.findMany({
+          where: { ...eligibleWhere, ...cursor },
+          select: { id: true, name: true },
+          orderBy: [{ name: "asc" }, { id: "asc" }],
+          take: 500,
+        });
+        if (!rows.length) break;
+        requested.push(...rows.map((row) => row.id));
+        const last = rows[rows.length - 1];
+        cursor = inviteCursorWhere({ name: last.name, id: last.id });
+        if (rows.length < 500) break;
+      }
+    } else {
+      requested = ((req.body?.learnerIds ?? []) as string[]).map(String).filter(Boolean);
+    }
+    const learnerIds = allEnrolled ? requested : [...new Set(requested)].slice(0, 500);
     let invited = 0;
     let newlyInvited = 0;
     const skipped: string[] = [];
     const skippedReasons: Record<string, string> = {};
     const results: Array<{ learnerId: string; outcome: string; reason: string | null }> = [];
-    for (const learnerId of requested.slice(500)) {
-      skippedReasons[learnerId] = "batch_limit_exceeded";
-    }
-    for (const learnerId of requested) {
-      if (requested.indexOf(learnerId) !== requested.lastIndexOf(learnerId)) {
+    if (!allEnrolled) {
+      for (const learnerId of requested.slice(500)) {
+        skippedReasons[learnerId] = "batch_limit_exceeded";
+      }
+      const seen = new Set<string>();
+      const duplicates = new Set<string>();
+      for (const learnerId of requested) {
+        if (seen.has(learnerId)) duplicates.add(learnerId);
+        else seen.add(learnerId);
+      }
+      for (const learnerId of duplicates) {
         skippedReasons[learnerId] ??= "duplicate_request";
       }
     }
@@ -3134,9 +3194,12 @@ router.post("/sessions/:id/invite", async (req, res) => {
     const rejected = results.filter((row) => row.outcome === "skipped");
     return res.json({
       sessionId: session.id,
+      allEnrolled,
+      selectedCount: requested.length,
       invited,
       newlyInvited,
       skipped,
+      skippedCount: skipped.length,
       skippedReasons,
       rejected,
       results,
