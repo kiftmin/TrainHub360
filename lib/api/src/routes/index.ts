@@ -43,6 +43,7 @@ import {
   uploadMaxBytes,
 } from "../services/uploads.js";
 import { recomputeEnrolmentProgress, providerForUrl, isSafeExternalUrl } from "../services/contentProgress.js";
+import { attemptStats, versionChain } from "../services/assessmentAttempts.js";
 import { evaluateEnrolment } from "../services/enrolmentOutcome.js";
 import { enqueueCourseEvaluation, drainEvaluationQueue } from "../services/evaluationQueue.js";
 import { buildIcsCalendar, sessionsForUser } from "../services/ical.js";
@@ -1787,16 +1788,11 @@ router.post("/assessments/:id/attempts", async (req, res) => {
   if (!enrolment || enrolment.status === "withdrawn" || enrolment.withdrawnAt) return res.status(403).json({ error: "enrolment required to take this assessment" });
   if (!assessment.questions.length) return res.status(409).json({ error: "assessment has no questions" });
 
-  const graded = await db.assessmentAttempt.findMany({
-    where: { assessmentId: assessment.id, enrolmentId: enrolment.id, status: { in: ["submitted", "grading", "graded"] } },
-    select: { score: true, status: true },
-  });
   const { passMarkFor, parseOptionIds } = await import("../services/assessment.js");
   const threshold = passMarkFor({ passMark: assessment.passMark, type: assessment.type }, assessment.module.course);
-  const best = graded.reduce<number | null>((max, a) => (a.score === null ? max : max === null ? a.score : Math.max(max, a.score)), null);
-  const passedBefore = best !== null && best >= threshold;
-  if (assessment.maxAttempts && graded.length >= assessment.maxAttempts && !passedBefore) {
-    return res.status(403).json({ error: "no attempts remaining; ask a trainer to reset your attempts", locked: true, bestScore: best, attemptsUsed: graded.length, maxAttempts: assessment.maxAttempts });
+  const stats = await attemptStats(db, assessment, enrolment.id, threshold);
+  if (assessment.maxAttempts && stats.attemptsUsed >= assessment.maxAttempts && !stats.passedBefore) {
+    return res.status(403).json({ error: "no attempts remaining; ask a trainer to reset your attempts", locked: true, bestScore: stats.bestScore, attemptsUsed: stats.attemptsUsed, maxAttempts: assessment.maxAttempts });
   }
 
   // Resuming: an attempt already in progress is returned rather than a second one started, so a
@@ -1815,7 +1811,7 @@ router.post("/assessments/:id/attempts", async (req, res) => {
   }
   if (!attempt) {
     attempt = await db.assessmentAttempt.create({
-      data: { assessmentId: assessment.id, enrolmentId: enrolment.id, learnerId: me.id, attemptNumber: graded.length + 1, startedAt: new Date(), status: "in_progress" },
+      data: { assessmentId: assessment.id, enrolmentId: enrolment.id, learnerId: me.id, attemptNumber: stats.attemptsUsed + 1, startedAt: new Date(), status: "in_progress" },
     });
   }
   const savedAnswers = resumed ? await db.attemptAnswer.findMany({ where: { attemptId: attempt.id } }).catch(() => []) : [];
@@ -1831,11 +1827,54 @@ router.post("/assessments/:id/attempts", async (req, res) => {
     type: assessment.type,
     version: assessment.version,
     maxAttempts: assessment.maxAttempts,
-    attemptsUsed: graded.length,
+    attemptsUsed: stats.attemptsUsed,
     questions: learnerQuestionView(assessment.questions),
     answers: savedAnswers.map((a) => ({ questionId: a.questionId, optionIds: parseOptionIds(a.optionIds ?? null), text: a.answer })),
   });
 });
+
+router.post("/assessments/:id/attempts/reset", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const assessment = await assessmentInOrg(req.params.id, scope.orgId);
+  if (!assessment) return res.status(404).json({ error: "assessment not found" });
+  const enrolmentId = typeof req.body?.enrolmentId === "string" ? req.body.enrolmentId : "";
+  if (!enrolmentId) return res.status(400).json({ error: "enrolmentId required" });
+  const enrolment = await db.enrolment.findFirst({
+    where: {
+      id: enrolmentId,
+      courseId: assessment.module.courseId,
+      programmeId: assessment.module.course.programmeId,
+      status: { not: "withdrawn" },
+      withdrawnAt: null,
+    },
+  }).catch(() => null);
+  if (!enrolment) return res.status(404).json({ error: "enrolment not found for this assessment" });
+
+  const chain = await versionChain(db, assessment);
+  const chainIds = chain.map((node) => node.id);
+  const attempts = await db.assessmentAttempt.findMany({
+    where: { assessmentId: { in: chainIds }, enrolmentId },
+    select: { id: true },
+  });
+  const attemptIds = attempts.map((attempt) => attempt.id);
+  await db.$transaction(async (tx) => {
+    await tx.attemptAnswer.deleteMany({ where: { attemptId: { in: attemptIds } } });
+    await tx.assessmentAttempt.deleteMany({ where: { id: { in: attemptIds } } });
+    await tx.auditLog.create({
+      data: {
+        userId: me.id,
+        action: "ASSESSMENT_ATTEMPTS_RESET",
+        entity: "assessment",
+        entityId: assessment.id,
+        details: `enrolment ${enrolment.id}, ${attemptIds.length} attempt(s) across ${chainIds.length} version(s)`,
+      },
+    }).catch(() => null);
+  });
+  await evaluateEnrolment(enrolment.id, "manual_status");
+  return res.json({ assessmentId: assessment.id, enrolmentId: enrolment.id, reset: attemptIds.length, chainAssessmentIds: chainIds });
+});
+
 router.get("/attempts/:id", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
