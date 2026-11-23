@@ -1390,7 +1390,7 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SessionInvitableResponse"
-        "400": { description: Invalid q, limit or cursor }
+        "400": { description: "Invalid q, limit or cursor" }
         "403": { description: Caller cannot manage this session's programme }
         "404": { description: Session not found in the caller's organization }
   /sessions/{sessionId}/remove:
@@ -2822,7 +2822,7 @@ paths:
               schema:
                 type: object
         "404": { description: Attempt not found }
-        "409": { description: Attempt already submitted, or the time limit has passed }
+        "409": { description: "Attempt already submitted, or the time limit has passed" }
     get:
       operationId: getAttemptAnswersForGrading
       tags: [learning]
@@ -2842,7 +2842,7 @@ paths:
             application/json:
               schema:
                 type: object
-        "403": { description: Not programme staff, or the caller owns the attempt }
+        "403": { description: "Not programme staff, or the caller owns the attempt" }
         "404": { description: Attempt not found in the caller's organization }
   /attempts/{attemptId}/grade:
     post:
@@ -2892,7 +2892,7 @@ paths:
               schema:
                 type: object
         "400": { description: A manual question is unmarked }
-        "403": { description: Not programme staff, or grading your own attempt }
+        "403": { description: "Not programme staff, or grading your own attempt" }
         "404": { description: Attempt not found in the caller's organization }
         "409": { description: Attempt is not awaiting grading }
   /assessments/{assessmentId}/questions/order:
@@ -3035,7 +3035,7 @@ paths:
         "404": { description: Failure not found in the caller's organization }
   /organizations/{orgId}/review-credits/export:
     get:
-      operationId: exportReviewCredits
+      operationId: exportOrganizationReviewCredits
       tags: [review-credit]
       summary: Export review-credit aggregates with manager sign-off state
       description: >
@@ -3061,7 +3061,7 @@ paths:
                   $ref: "#/components/schemas/ReviewCreditExportRow"
             text/csv:
               schema: { type: string }
-        "403": { description: Org staff access required, or a different organization }
+        "403": { description: "Org staff access required, or a different organization" }
 components:
   schemas:
     DirectoryUser:
@@ -3329,7 +3329,7 @@ components:
         name: { type: string }
         email: { type: string }
         eligible: { type: boolean, enum: [true] }
-        reason: { type: ["null"] }
+        reason: { type: ["string", "null"] }
     SessionInvitableResponse:
       type: object
       required: [sessionId, q, limit, total, nextCursor, learners, invitable, invitableLearners, skipped]
@@ -3426,13 +3426,29 @@ components:
         messages:
           type: array
           items: { $ref: "#/components/schemas/ThreadMessage" }
-        participants:
+    ReviewCreditExportRow:
+      type: object
+      required: [learnerId, enrolmentIds, raw, final, managerApprovals, lockedAt]
+      properties:
+        learnerId: { type: string }
+        enrolmentIds:
+          type: array
+          items: { type: string }
+        raw: { type: number }
+        final: { type: number }
+        managerApprovals:
           type: array
           items:
             type: object
+            required: [enrolmentId, signOff, by, at]
             properties:
-              userId: { type: string }
-              role: { type: string }
+              enrolmentId: { type: string }
+              signOff: { type: boolean }
+              by: { type: ["string", "null"] }
+              at: { type: ["string", "null"], format: date-time }
+        lockedAt:
+          type: array
+          items: { type: string, format: date-time }
     MessageTemplateInput:
       type: object
       required: [title, body]

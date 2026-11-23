@@ -7,5 +7,6 @@
  */
 
 export type InviteSessionParticipantsBody = {
-  learnerIds: string[];
+  learnerIds?: string[];
+  allEnrolled?: boolean;
 };

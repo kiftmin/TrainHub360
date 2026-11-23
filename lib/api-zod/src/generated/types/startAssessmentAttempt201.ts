@@ -6,4 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type StartAssessmentAttempt201 = { [key: string]: unknown };
+export type StartAssessmentAttempt201 = {
+  attemptId: string;
+  attemptNumber: number;
+  attemptsUsed: number;
+  maxAttempts: number | null;
+};

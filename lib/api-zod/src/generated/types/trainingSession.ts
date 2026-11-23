@@ -5,18 +5,66 @@
  * TrainHub360 corporate training management API
  * OpenAPI spec version: 0.1.0
  */
+import type { TrainingSessionMode } from './trainingSessionMode';
+import type { TrainingSessionMyRsvpStatus } from './trainingSessionMyRsvpStatus';
 
 export interface TrainingSession {
   id: string;
   title: string;
   programme: string;
+  /** @nullable */
+  programmeId?: string | null;
+  /** @nullable */
+  courseId?: string | null;
+  trainer?: string;
+  /** @nullable */
+  trainerId?: string | null;
+  /** YYYY-MM-DD, derived from startsAt in the session's timezone */
   date: string;
+  /** HH:MM, derived from startsAt in the session's timezone */
   time: string;
-  mode: string;
   /** @nullable */
+  startsAt?: Date | null;
+  /** @nullable */
+  endsAt?: Date | null;
+  timezone?: string;
+  mode: TrainingSessionMode;
+  /**
+     * Withheld (null) from callers who cannot join
+     * @nullable
+     */
   location?: string | null;
-  /** @nullable */
+  /**
+     * Withheld (null) from callers who cannot join
+     * @nullable
+     */
+  joinUrl?: string | null;
+  /**
+     * Legacy alias for joinUrl
+     * @nullable
+     */
   videoLink?: string | null;
   attendees: number;
+  /**
+     * Null means unlimited
+     * @nullable
+     */
+  capacity?: number | null;
+  /** Bumped on every edit or cancellation for calendar clients */
+  sequence: number;
+  /** Whether this caller may see the join details */
+  canJoin: boolean;
   status: string;
+  /** @nullable */
+  myRsvpStatus: TrainingSessionMyRsvpStatus;
+  /**
+     * One-based position in the session waitlist
+     * @nullable
+     */
+  myWaitlistPosition: number | null;
+  /** Authenticated per-session .ics download */
+  icsUrl: string;
+  /** @nullable */
+  cancellationReason: string | null;
+  enrolled: boolean;
 }

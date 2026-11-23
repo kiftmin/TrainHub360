@@ -5,5 +5,36 @@
  * TrainHub360 corporate training management API
  * OpenAPI spec version: 0.1.0
  */
+import type { ListCourseAssessments200ItemChangeKind } from './listCourseAssessments200ItemChangeKind';
+import type { ListCourseAssessments200ItemQuestionsItem } from './listCourseAssessments200ItemQuestionsItem';
+import type { ListCourseAssessments200ItemType } from './listCourseAssessments200ItemType';
 
-export type ListCourseAssessments200Item = { [key: string]: unknown };
+export type ListCourseAssessments200Item = {
+  id: string;
+  moduleId: string;
+  type: ListCourseAssessments200ItemType;
+  title?: string;
+  passMark?: number;
+  /** @nullable */
+  maxAttempts?: number | null;
+  /** @nullable */
+  timeLimitMinutes?: number | null;
+  isPublished: boolean;
+  version?: number;
+  /** @nullable */
+  publishedAt?: Date | null;
+  /** @nullable */
+  supersededAt?: Date | null;
+  /** @nullable */
+  supersedesId?: string | null;
+  /** @nullable */
+  changeKind?: ListCourseAssessments200ItemChangeKind;
+  /** Learner responses never include correct answers, accepted answers, rubrics or option correctness. */
+  questions: ListCourseAssessments200ItemQuestionsItem[];
+  attemptCount: number;
+  /** @nullable */
+  bestScore: number | null;
+  /** @nullable */
+  remainingAttempts: number | null;
+  locked: boolean;
+};

@@ -262,7 +262,7 @@ router.post("/threads/:threadId/messages", async (req, res) => {
 router.get("/bookings", async (req, res) => {
   try {
     const rows = await (await getPool()).request().input("orgId", sqlTypes.NVarChar, orgIdFromRequest(req)).query(`
-      SELECT id, trainer, course, CONVERT(varchar(10), booking_date, 23) date, booking_time time, duration, status, meeting_link meetingLink
+      SELECT id, trainer, trainer_id trainerId, course, course_id courseId, CONVERT(varchar(10), booking_date, 23) date, booking_time time, duration, status, meeting_link meetingLink
       FROM dbo.th_bookings WHERE organization_id = @orgId ORDER BY booking_date, booking_time
     `);
     res.json(ListBookingsResponse.parse(rows.recordset));
@@ -277,17 +277,32 @@ router.post("/bookings", async (req, res) => {
     const orgId = orgIdFromRequest(req);
     const id = `booking_${Date.now()}`;
     const pool = await getPool();
-    await pool.request().input("id", sqlTypes.NVarChar, id).input("orgId", sqlTypes.NVarChar, orgId).input("trainer", sqlTypes.NVarChar, body.trainer).input("course", sqlTypes.NVarChar, body.course || "1:1 coaching").input("date", sqlTypes.Date, body.date).input("time", sqlTypes.NVarChar, body.time).query(`
-      INSERT INTO dbo.th_bookings (id, organization_id, trainer, course, booking_date, booking_time, duration, status, meeting_link)
-      VALUES (@id, @orgId, @trainer, @course, @date, @time, '30 min', 'Requested', NULL)
+    const trainerRows = await pool.request().input("trainerId", sqlTypes.NVarChar, body.trainerId).input("orgId", sqlTypes.NVarChar, orgId).query(`
+      SELECT name FROM dbo.th_users WHERE id = @trainerId AND organization_id = @orgId
+    `);
+    const trainerName = trainerRows.recordset[0]?.name;
+    if (!trainerName) return res.status(404).json({ error: "trainer not found in your organization" });
+    let courseId: string | null = null;
+    let courseTitle = "1:1 coaching";
+    if (body.courseId) {
+      const courseRows = await pool.request().input("courseId", sqlTypes.NVarChar, body.courseId).input("orgId", sqlTypes.NVarChar, orgId).query(`
+        SELECT title FROM dbo.th_courses WHERE id = @courseId AND organization_id = @orgId
+      `);
+      if (!courseRows.recordset[0]) return res.status(404).json({ error: "course not found in your organization" });
+      courseId = body.courseId;
+      courseTitle = courseRows.recordset[0].title;
+    }
+    await pool.request().input("id", sqlTypes.NVarChar, id).input("orgId", sqlTypes.NVarChar, orgId).input("trainer", sqlTypes.NVarChar, trainerName).input("trainerId", sqlTypes.NVarChar, body.trainerId).input("course", sqlTypes.NVarChar, courseTitle).input("courseId", sqlTypes.NVarChar, courseId).input("date", sqlTypes.Date, body.date).input("time", sqlTypes.NVarChar, body.time).query(`
+      INSERT INTO dbo.th_bookings (id, organization_id, trainer, trainer_id, course, course_id, booking_date, booking_time, duration, status, meeting_link)
+      VALUES (@id, @orgId, @trainer, @trainerId, @course, @courseId, @date, @time, '30 min', 'Requested', NULL)
     `);
     const created = await pool.request().input("id", sqlTypes.NVarChar, id).input("orgId", sqlTypes.NVarChar, orgId).query(`
-      SELECT id, trainer, course, CONVERT(varchar(10), booking_date, 23) date, booking_time time, duration, status, meeting_link meetingLink
+      SELECT id, trainer, trainer_id trainerId, course, course_id courseId, CONVERT(varchar(10), booking_date, 23) date, booking_time time, duration, status, meeting_link meetingLink
       FROM dbo.th_bookings WHERE id = @id AND organization_id = @orgId
     `);
-    res.status(201).json(CreateBookingResponse.parse(created.recordset[0]));
+    return res.status(201).json(CreateBookingResponse.parse(created.recordset[0]));
   } catch (error) {
-    dbError(res, error);
+    return dbError(res, error);
   }
 });
 

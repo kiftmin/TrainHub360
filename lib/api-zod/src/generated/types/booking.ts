@@ -8,8 +8,13 @@
 
 export interface Booking {
   id: string;
+  /** Display name captured when the booking was made */
   trainer: string;
+  /** @nullable */
+  trainerId: string | null;
   course: string;
+  /** @nullable */
+  courseId?: string | null;
   date: string;
   time: string;
   duration: string;

@@ -12,4 +12,9 @@ export interface Organization {
   plan: string;
   learnerCount: number;
   programmeCount: number;
+  /**
+     * @minimum 1
+     * @maximum 720
+     */
+  defaultSlaHours?: number;
 }

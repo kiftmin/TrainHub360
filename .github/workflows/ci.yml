@@ -55,6 +55,10 @@ jobs:
       # whoever regenerated the client, so the check is part of the build now.
       - name: Check the OpenAPI spec against the routes
         run: node scripts/check-openapi-drift.mjs
+      - name: Verify generated clients are current
+        run: |
+          pnpm --filter @workspace/api-spec run codegen
+          git diff --exit-code
       - run: pnpm --filter @workspace/api run test
 
   frontend:

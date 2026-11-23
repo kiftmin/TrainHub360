@@ -5,14 +5,40 @@
  * TrainHub360 corporate training management API
  * OpenAPI spec version: 0.1.0
  */
+import type { MessageThreadCourse } from './messageThreadCourse';
+import type { MessageThreadParticipantsItem } from './messageThreadParticipantsItem';
+import type { MessageThreadSlaState } from './messageThreadSlaState';
+import type { ThreadMessage } from './threadMessage';
 
 export interface MessageThread {
   id: string;
   subject: string;
   context: string;
   participant: string;
-  preview: string;
-  updatedAt: string;
-  unread: boolean;
+  /** @nullable */
+  programmeId: string | null;
+  /** @nullable */
+  courseId: string | null;
+  /** @nullable */
+  course?: MessageThreadCourse;
+  orgId: string;
+  preview?: string;
+  updatedAt: Date;
+  unread?: boolean;
   urgent: boolean;
+  slaHours: number;
+  participants?: MessageThreadParticipantsItem[];
+  isEscalated: boolean;
+  /** @nullable */
+  escalatedAt?: Date | null;
+  /** @nullable */
+  lastLearnerMessageAt?: Date | null;
+  /** @nullable */
+  lastTrainerResponseAt?: Date | null;
+  metadataOnly: boolean;
+  /** @nullable */
+  averageResponseTimeHours: number | null;
+  slaStatus: string;
+  slaState: MessageThreadSlaState;
+  messages?: ThreadMessage[];
 }

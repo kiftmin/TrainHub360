@@ -5,5 +5,13 @@
  * TrainHub360 corporate training management API
  * OpenAPI spec version: 0.1.0
  */
+import type { PublishAssessment200ChangeKind } from './publishAssessment200ChangeKind';
 
-export type PublishAssessment200 = { [key: string]: unknown };
+export type PublishAssessment200 = {
+  id?: string;
+  isPublished?: boolean;
+  /** @nullable */
+  publishedAt?: Date | null;
+  /** @nullable */
+  changeKind?: PublishAssessment200ChangeKind;
+};

@@ -20,13 +20,21 @@ export const HealthCheckResponse = zod.object({
 /**
  * @summary Get current workspace context
  */
+export const getWorkspaceResponseOrganizationDefaultSlaHoursDefault = 24;
+export const getWorkspaceResponseOrganizationDefaultSlaHoursMax = 720;
+
+export const getWorkspaceResponseActiveProgrammeSlaHoursMax = 720;
+
+
+
 export const GetWorkspaceResponse = zod.object({
   "organization": zod.object({
   "id": zod.string(),
   "name": zod.string(),
   "plan": zod.string(),
   "learnerCount": zod.number().int(),
-  "programmeCount": zod.number().int()
+  "programmeCount": zod.number().int(),
+  "defaultSlaHours": zod.number().int().min(1).max(getWorkspaceResponseOrganizationDefaultSlaHoursMax).default(getWorkspaceResponseOrganizationDefaultSlaHoursDefault)
 }),
   "activeProgramme": zod.object({
   "id": zod.string(),
@@ -36,7 +44,8 @@ export const GetWorkspaceResponse = zod.object({
   "learnerCount": zod.number().int(),
   "courseCount": zod.number().int(),
   "progress": zod.number(),
-  "owner": zod.string()
+  "owner": zod.string(),
+  "slaHours": zod.number().int().min(1).max(getWorkspaceResponseActiveProgrammeSlaHoursMax).nullish()
 }),
   "user": zod.object({
   "id": zod.string(),
@@ -81,6 +90,10 @@ export const GetDashboardSummaryResponse = zod.object({
 /**
  * @summary List programmes visible to the current user
  */
+export const listProgrammesResponseSlaHoursMax = 720;
+
+
+
 export const ListProgrammesResponseItem = zod.object({
   "id": zod.string(),
   "name": zod.string(),
@@ -89,9 +102,36 @@ export const ListProgrammesResponseItem = zod.object({
   "learnerCount": zod.number().int(),
   "courseCount": zod.number().int(),
   "progress": zod.number(),
-  "owner": zod.string()
+  "owner": zod.string(),
+  "slaHours": zod.number().int().min(1).max(listProgrammesResponseSlaHoursMax).nullish()
 })
 export const ListProgrammesResponse = zod.array(ListProgrammesResponseItem)
+
+
+/**
+ * @summary Create a programme (organization staff)
+ */
+export const CreateProgrammeBody = zod.object({
+  "name": zod.string(),
+  "type": zod.string().optional(),
+  "owner": zod.string().optional().describe('Display name; defaults to the caller')
+})
+
+export const createProgrammeResponseSlaHoursMax = 720;
+
+
+
+export const CreateProgrammeResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "type": zod.string(),
+  "status": zod.string(),
+  "learnerCount": zod.number().int(),
+  "courseCount": zod.number().int(),
+  "progress": zod.number(),
+  "owner": zod.string(),
+  "slaHours": zod.number().int().min(1).max(createProgrammeResponseSlaHoursMax).nullish()
+})
 
 
 /**
@@ -171,6 +211,27 @@ export const ListCourseAttemptsResponse = zod.array(ListCourseAttemptsResponseIt
 
 
 /**
+ * @summary Whether a course-wide re-evaluation is still running (staff only)
+ */
+export const GetCourseEvaluationStatusParams = zod.object({
+  "courseId": zod.coerce.string()
+})
+
+export const GetCourseEvaluationStatusResponse = zod.object({
+  "pending": zod.boolean(),
+  "job": zod.object({
+  "id": zod.string().optional(),
+  "status": zod.string().optional(),
+  "attempts": zod.number().int().optional(),
+  "lastError": zod.string().nullish()
+}).nullish(),
+  "attempts": zod.number().int(),
+  "stale": zod.boolean().describe('The running job has lost its heartbeat'),
+  "lastError": zod.string().nullable()
+})
+
+
+/**
  * @summary List assessments for a course (no correct answers; includes lock state)
  */
 export const ListCourseAssessmentsParams = zod.object({
@@ -178,8 +239,27 @@ export const ListCourseAssessmentsParams = zod.object({
 })
 
 export const ListCourseAssessmentsResponseItem = zod.object({
+  "id": zod.string(),
+  "moduleId": zod.string(),
+  "type": zod.enum(['recall', 'applied']),
+  "title": zod.string().optional(),
+  "passMark": zod.number().int().optional(),
+  "maxAttempts": zod.number().int().nullish(),
+  "timeLimitMinutes": zod.number().int().nullish(),
+  "isPublished": zod.boolean(),
+  "version": zod.number().int().optional(),
+  "publishedAt": zod.coerce.date().nullish(),
+  "supersededAt": zod.coerce.date().nullish(),
+  "supersedesId": zod.string().nullish(),
+  "changeKind": zod.union([zod.literal('minor'),zod.literal('new_paper'),zod.literal(null)]).nullish(),
+  "questions": zod.array(zod.object({
 
-}).passthrough()
+}).passthrough()).describe('Learner responses never include correct answers, accepted answers, rubrics or option correctness.'),
+  "attemptCount": zod.number().int(),
+  "bestScore": zod.number().nullable(),
+  "remainingAttempts": zod.number().int().nullable(),
+  "locked": zod.boolean()
+})
 export const ListCourseAssessmentsResponse = zod.array(ListCourseAssessmentsResponseItem)
 
 
@@ -196,6 +276,7 @@ export const GetAssessmentResponse = zod.object({
 
 
 /**
+ * Editing a live assessment requires confirmNewVersion: true. The edit lands in the one draft that supersedes the live row; the live paper stays available to learners until that draft is published.
  * @summary Update assessment settings (title, passMark, maxAttempts, timeLimitMinutes)
  */
 export const UpdateAssessmentParams = zod.object({
@@ -212,13 +293,18 @@ export const updateAssessmentBodyPassMarkMax = 100;
 export const UpdateAssessmentBody = zod.object({
   "title": zod.string().optional(),
   "passMark": zod.number().int().min(updateAssessmentBodyPassMarkMin).max(updateAssessmentBodyPassMarkMax).optional(),
-  "maxAttempts": zod.number().int().min(1).optional(),
-  "timeLimitMinutes": zod.number().int().min(1).nullish()
+  "maxAttempts": zod.number().int().min(1).nullish(),
+  "timeLimitMinutes": zod.number().int().min(1).nullish(),
+  "confirmNewVersion": zod.boolean().optional()
 })
 
 export const UpdateAssessmentResponse = zod.object({
-
-}).passthrough()
+  "id": zod.string().optional(),
+  "version": zod.number().int().optional(),
+  "isPublished": zod.boolean().optional(),
+  "supersedesId": zod.string().nullish(),
+  "redirectedTo": zod.string().optional().describe('Legacy alias for the new draft id')
+})
 
 
 /**
@@ -273,15 +359,52 @@ export const DeleteQuestionResponse = zod.void()
 
 
 /**
+ * Programme staff only. Answers for a draft that replaces a live paper in the caller's organization. Withdrawn enrolments are excluded.
+ * @summary Count the learners affected by publishing a replacement draft
+ */
+export const GetAssessmentPublishImpactParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const GetAssessmentPublishImpactResponse = zod.object({
+  "enrolled": zod.number().int(),
+  "completed": zod.number().int(),
+  "notCompleted": zod.number().int(),
+  "withAttempts": zod.number().int()
+})
+
+
+/**
+ * A draft that replaces a live version must send changeKind: "minor" carries earlier results forward, "new_paper" requires a retake and notifies not-yet-completed learners. Publishing retires the old row in the same transaction and queues a course-wide re-evaluation.
  * @summary Publish an assessment (blocks further question edits)
  */
 export const PublishAssessmentParams = zod.object({
   "assessmentId": zod.coerce.string()
 })
 
-export const PublishAssessmentResponse = zod.object({
+export const PublishAssessmentBody = zod.object({
+  "changeKind": zod.enum(['minor', 'new_paper']).optional()
+})
 
-}).passthrough()
+export const PublishAssessmentResponse = zod.object({
+  "id": zod.string().optional(),
+  "isPublished": zod.boolean().optional(),
+  "publishedAt": zod.coerce.date().nullish(),
+  "changeKind": zod.union([zod.literal('minor'),zod.literal('new_paper'),zod.literal(null)]).nullish()
+})
+
+
+/**
+ * @summary Discard a draft of a live assessment (the live version is unaffected)
+ */
+export const DiscardAssessmentDraftParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const DiscardAssessmentDraftResponse = zod.object({
+  "discarded": zod.string(),
+  "liveVersion": zod.string()
+})
 
 
 /**
@@ -292,8 +415,31 @@ export const StartAssessmentAttemptParams = zod.object({
 })
 
 export const StartAssessmentAttemptResponse = zod.object({
+  "attemptId": zod.string(),
+  "attemptNumber": zod.number().int(),
+  "attemptsUsed": zod.number().int(),
+  "maxAttempts": zod.number().int().nullable()
+})
 
-}).passthrough()
+
+/**
+ * Deletes the learner's attempts on this assessment and every earlier version carried forward by a minor correction, then re-evaluates the enrolment. A new paper starts a fresh chain and is not affected.
+ * @summary Reset a learner's attempts on an assessment and its carried versions
+ */
+export const ResetAssessmentAttemptsParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const ResetAssessmentAttemptsBody = zod.object({
+  "enrolmentId": zod.string()
+})
+
+export const ResetAssessmentAttemptsResponse = zod.object({
+  "assessmentId": zod.string(),
+  "enrolmentId": zod.string(),
+  "reset": zod.number().int(),
+  "chainAssessmentIds": zod.array(zod.string())
+})
 
 
 /**
@@ -325,13 +471,29 @@ export const ListSessionsResponseItem = zod.object({
   "id": zod.string(),
   "title": zod.string(),
   "programme": zod.string(),
-  "date": zod.string(),
-  "time": zod.string(),
-  "mode": zod.string(),
-  "location": zod.string().nullish(),
-  "videoLink": zod.string().nullish(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "trainer": zod.string().optional(),
+  "trainerId": zod.string().nullish(),
+  "date": zod.string().describe('YYYY-MM-DD, derived from startsAt in the session\'s timezone'),
+  "time": zod.string().describe('HH:MM, derived from startsAt in the session\'s timezone'),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "timezone": zod.string().optional(),
+  "mode": zod.enum(['online', 'offline']),
+  "location": zod.string().nullish().describe('Withheld (null) from callers who cannot join'),
+  "joinUrl": zod.string().nullish().describe('Withheld (null) from callers who cannot join'),
+  "videoLink": zod.string().nullish().describe('Legacy alias for joinUrl'),
   "attendees": zod.number().int(),
-  "status": zod.string()
+  "capacity": zod.number().int().nullish().describe('Null means unlimited'),
+  "sequence": zod.number().int().describe('Bumped on every edit or cancellation for calendar clients'),
+  "canJoin": zod.boolean().describe('Whether this caller may see the join details'),
+  "status": zod.string(),
+  "myRsvpStatus": zod.union([zod.literal('invited'),zod.literal('confirmed'),zod.literal('waitlisted'),zod.literal('declined'),zod.literal('removed'),zod.literal(null)]).nullable(),
+  "myWaitlistPosition": zod.number().int().nullable().describe('One-based position in the session waitlist'),
+  "icsUrl": zod.string().describe('Authenticated per-session .ics download'),
+  "cancellationReason": zod.string().nullable(),
+  "enrolled": zod.boolean()
 })
 export const ListSessionsResponse = zod.array(ListSessionsResponseItem)
 
@@ -361,13 +523,29 @@ export const CreateSessionResponse = zod.object({
   "id": zod.string(),
   "title": zod.string(),
   "programme": zod.string(),
-  "date": zod.string(),
-  "time": zod.string(),
-  "mode": zod.string(),
-  "location": zod.string().nullish(),
-  "videoLink": zod.string().nullish(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "trainer": zod.string().optional(),
+  "trainerId": zod.string().nullish(),
+  "date": zod.string().describe('YYYY-MM-DD, derived from startsAt in the session\'s timezone'),
+  "time": zod.string().describe('HH:MM, derived from startsAt in the session\'s timezone'),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "timezone": zod.string().optional(),
+  "mode": zod.enum(['online', 'offline']),
+  "location": zod.string().nullish().describe('Withheld (null) from callers who cannot join'),
+  "joinUrl": zod.string().nullish().describe('Withheld (null) from callers who cannot join'),
+  "videoLink": zod.string().nullish().describe('Legacy alias for joinUrl'),
   "attendees": zod.number().int(),
-  "status": zod.string()
+  "capacity": zod.number().int().nullish().describe('Null means unlimited'),
+  "sequence": zod.number().int().describe('Bumped on every edit or cancellation for calendar clients'),
+  "canJoin": zod.boolean().describe('Whether this caller may see the join details'),
+  "status": zod.string(),
+  "myRsvpStatus": zod.union([zod.literal('invited'),zod.literal('confirmed'),zod.literal('waitlisted'),zod.literal('declined'),zod.literal('removed'),zod.literal(null)]).nullable(),
+  "myWaitlistPosition": zod.number().int().nullable().describe('One-based position in the session waitlist'),
+  "icsUrl": zod.string().describe('Authenticated per-session .ics download'),
+  "cancellationReason": zod.string().nullable(),
+  "enrolled": zod.boolean()
 })
 
 
@@ -375,26 +553,68 @@ export const CreateSessionResponse = zod.object({
  * Stakeholders are denied. Participants and programme admins receive messages; other org staff receive metadata only.
  * @summary List message threads for the active workspace
  */
+export const ListMessageThreadsQueryParams = zod.object({
+  "programmeId": zod.coerce.string().optional(),
+  "courseId": zod.coerce.string().optional(),
+  "slaStatus": zod.enum(['ok', 'reply_pending', 'escalated']).optional()
+})
+
 export const ListMessageThreadsResponseItem = zod.object({
   "id": zod.string(),
   "subject": zod.string(),
   "context": zod.string(),
   "participant": zod.string(),
-  "preview": zod.string(),
-  "updatedAt": zod.string(),
-  "unread": zod.boolean(),
+  "programmeId": zod.string().nullable(),
+  "courseId": zod.string().nullable(),
+  "course": zod.object({
+  "id": zod.string().optional(),
+  "title": zod.string().optional()
+}).nullish(),
+  "orgId": zod.string(),
+  "preview": zod.string().optional(),
+  "updatedAt": zod.coerce.date(),
+  "unread": zod.boolean().optional(),
+  "urgent": zod.boolean(),
+  "slaHours": zod.number().int(),
+  "participants": zod.array(zod.object({
+  "userId": zod.string().optional(),
+  "role": zod.string().optional()
+})).optional(),
+  "isEscalated": zod.boolean(),
+  "escalatedAt": zod.coerce.date().nullish(),
+  "lastLearnerMessageAt": zod.coerce.date().nullish(),
+  "lastTrainerResponseAt": zod.coerce.date().nullish(),
+  "metadataOnly": zod.boolean(),
+  "averageResponseTimeHours": zod.number().nullable(),
+  "slaStatus": zod.string(),
+  "slaState": zod.enum(['ok', 'reply_pending', 'escalated']),
+  "messages": zod.array(zod.object({
+  "id": zod.string(),
+  "threadId": zod.string(),
+  "author": zod.string(),
+  "body": zod.string(),
+  "createdAt": zod.string(),
   "urgent": zod.boolean()
+})).optional()
 })
 export const ListMessageThreadsResponse = zod.array(ListMessageThreadsResponseItem)
 
 
 /**
+ * slaHours is honoured only for programme admins (including owners) and org staff. For everyone else the value is ignored and the thread uses the programme override, then the organization default, then 24 hours.
  * @summary Start a message thread
  */
+export const createThreadBodySlaHoursDefault = 24;
+export const createThreadBodySlaHoursMax = 720;
+
+
+
 export const CreateThreadBody = zod.object({
   "subject": zod.string(),
   "body": zod.string(),
-  "programmeId": zod.string().nullish(),
+  "programmeId": zod.string(),
+  "courseId": zod.string().nullish(),
+  "slaHours": zod.number().int().min(1).max(createThreadBodySlaHoursMax).default(createThreadBodySlaHoursDefault),
   "participantIds": zod.array(zod.string()),
   "urgent": zod.boolean().optional()
 })
@@ -404,10 +624,38 @@ export const CreateThreadResponse = zod.object({
   "subject": zod.string(),
   "context": zod.string(),
   "participant": zod.string(),
-  "preview": zod.string(),
-  "updatedAt": zod.string(),
-  "unread": zod.boolean(),
+  "programmeId": zod.string().nullable(),
+  "courseId": zod.string().nullable(),
+  "course": zod.object({
+  "id": zod.string().optional(),
+  "title": zod.string().optional()
+}).nullish(),
+  "orgId": zod.string(),
+  "preview": zod.string().optional(),
+  "updatedAt": zod.coerce.date(),
+  "unread": zod.boolean().optional(),
+  "urgent": zod.boolean(),
+  "slaHours": zod.number().int(),
+  "participants": zod.array(zod.object({
+  "userId": zod.string().optional(),
+  "role": zod.string().optional()
+})).optional(),
+  "isEscalated": zod.boolean(),
+  "escalatedAt": zod.coerce.date().nullish(),
+  "lastLearnerMessageAt": zod.coerce.date().nullish(),
+  "lastTrainerResponseAt": zod.coerce.date().nullish(),
+  "metadataOnly": zod.boolean(),
+  "averageResponseTimeHours": zod.number().nullable(),
+  "slaStatus": zod.string(),
+  "slaState": zod.enum(['ok', 'reply_pending', 'escalated']),
+  "messages": zod.array(zod.object({
+  "id": zod.string(),
+  "threadId": zod.string(),
+  "author": zod.string(),
+  "body": zod.string(),
+  "createdAt": zod.string(),
   "urgent": zod.boolean()
+})).optional()
 })
 
 
@@ -454,12 +702,154 @@ export const SendThreadMessageResponse = zod.object({
 
 
 /**
+ * Programme admins of the thread's programme and org staff only. A participant who is not an admin gets 403; a non-participant gets 404 so thread existence is not leaked.
+ * @summary Set the response window for a thread
+ */
+export const UpdateThreadSlaParams = zod.object({
+  "threadId": zod.coerce.string()
+})
+
+export const updateThreadSlaBodySlaHoursMax = 720;
+
+
+
+export const UpdateThreadSlaBody = zod.object({
+  "slaHours": zod.number().int().min(1).max(updateThreadSlaBodySlaHoursMax)
+})
+
+export const UpdateThreadSlaResponse = zod.object({
+  "id": zod.string(),
+  "subject": zod.string(),
+  "context": zod.string(),
+  "participant": zod.string(),
+  "programmeId": zod.string().nullable(),
+  "courseId": zod.string().nullable(),
+  "course": zod.object({
+  "id": zod.string().optional(),
+  "title": zod.string().optional()
+}).nullish(),
+  "orgId": zod.string(),
+  "preview": zod.string().optional(),
+  "updatedAt": zod.coerce.date(),
+  "unread": zod.boolean().optional(),
+  "urgent": zod.boolean(),
+  "slaHours": zod.number().int(),
+  "participants": zod.array(zod.object({
+  "userId": zod.string().optional(),
+  "role": zod.string().optional()
+})).optional(),
+  "isEscalated": zod.boolean(),
+  "escalatedAt": zod.coerce.date().nullish(),
+  "lastLearnerMessageAt": zod.coerce.date().nullish(),
+  "lastTrainerResponseAt": zod.coerce.date().nullish(),
+  "metadataOnly": zod.boolean(),
+  "averageResponseTimeHours": zod.number().nullable(),
+  "slaStatus": zod.string(),
+  "slaState": zod.enum(['ok', 'reply_pending', 'escalated']),
+  "messages": zod.array(zod.object({
+  "id": zod.string(),
+  "threadId": zod.string(),
+  "author": zod.string(),
+  "body": zod.string(),
+  "createdAt": zod.string(),
+  "urgent": zod.boolean()
+})).optional()
+})
+
+
+/**
+ * @summary List active canned responses for the organization
+ */
+export const ListMessageTemplatesResponseItem = zod.object({
+  "id": zod.string(),
+  "orgId": zod.string(),
+  "title": zod.string(),
+  "body": zod.string(),
+  "createdBy": zod.string(),
+  "isActive": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+export const ListMessageTemplatesResponse = zod.array(ListMessageTemplatesResponseItem)
+
+
+/**
+ * @summary Create a canned response
+ */
+export const createMessageTemplateBodyTitleMax = 256;
+
+export const createMessageTemplateBodyBodyMax = 5000;
+
+
+
+export const CreateMessageTemplateBody = zod.object({
+  "title": zod.string().max(createMessageTemplateBodyTitleMax),
+  "body": zod.string().min(1).max(createMessageTemplateBodyBodyMax),
+  "isActive": zod.boolean().optional()
+})
+
+export const CreateMessageTemplateResponse = zod.object({
+  "id": zod.string(),
+  "orgId": zod.string(),
+  "title": zod.string(),
+  "body": zod.string(),
+  "createdBy": zod.string(),
+  "isActive": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Update a canned response
+ */
+export const UpdateMessageTemplateParams = zod.object({
+  "templateId": zod.coerce.string()
+})
+
+export const updateMessageTemplateBodyTitleMax = 256;
+
+export const updateMessageTemplateBodyBodyMax = 5000;
+
+
+
+export const UpdateMessageTemplateBody = zod.object({
+  "title": zod.string().max(updateMessageTemplateBodyTitleMax),
+  "body": zod.string().min(1).max(updateMessageTemplateBodyBodyMax),
+  "isActive": zod.boolean().optional()
+})
+
+export const UpdateMessageTemplateResponse = zod.object({
+  "id": zod.string(),
+  "orgId": zod.string(),
+  "title": zod.string(),
+  "body": zod.string(),
+  "createdBy": zod.string(),
+  "isActive": zod.boolean(),
+  "createdAt": zod.coerce.date(),
+  "updatedAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Deactivate a canned response
+ */
+export const DeactivateMessageTemplateParams = zod.object({
+  "templateId": zod.coerce.string()
+})
+
+export const DeactivateMessageTemplateResponse = zod.void()
+
+
+/**
  * @summary List one-to-one bookings
  */
 export const ListBookingsResponseItem = zod.object({
   "id": zod.string(),
-  "trainer": zod.string(),
+  "trainer": zod.string().describe('Display name captured when the booking was made'),
+  "trainerId": zod.string().nullable(),
   "course": zod.string(),
+  "courseId": zod.string().nullish(),
   "date": zod.string(),
   "time": zod.string(),
   "duration": zod.string(),
@@ -473,16 +863,18 @@ export const ListBookingsResponse = zod.array(ListBookingsResponseItem)
  * @summary Book a one-to-one session
  */
 export const CreateBookingBody = zod.object({
-  "trainer": zod.string(),
-  "course": zod.string().optional(),
+  "trainerId": zod.string().describe('The trainer\'s user id. A trainer name is no longer accepted.'),
+  "courseId": zod.string().nullish(),
   "date": zod.string(),
   "time": zod.string()
 })
 
 export const CreateBookingResponse = zod.object({
   "id": zod.string(),
-  "trainer": zod.string(),
+  "trainer": zod.string().describe('Display name captured when the booking was made'),
+  "trainerId": zod.string().nullable(),
   "course": zod.string(),
+  "courseId": zod.string().nullish(),
   "date": zod.string(),
   "time": zod.string(),
   "duration": zod.string(),
@@ -677,6 +1069,7 @@ export const CreateEnrolmentResponse = zod.object({
 
 
 /**
+ * Programme-scoped whitelist. Moving a completed enrolment back to "enrolled" clears its completion date and source and revokes any active certificate with a CERTIFICATE_REVOKED audit entry. Sign-off is cleared only when an effective score input really changes and the review-credit period is unlocked.
  * @summary Update enrolment (recomputes score, audit-logged)
  */
 export const UpdateEnrolmentParams = zod.object({
@@ -873,20 +1266,219 @@ export const GetReviewCreditsResponse = zod.array(GetReviewCreditsResponseItem)
 
 
 /**
+ * Programme/organization staff only. Pass learnerIds for a targeted batch (max 500) or allEnrolled=true to scan and invite every currently eligible learner server-side.
  * @summary Invite learners (validates org and course/programme enrolment)
  */
 export const InviteSessionParticipantsParams = zod.object({
   "sessionId": zod.coerce.string()
 })
 
+export const inviteSessionParticipantsBodyAllEnrolledDefault = false;
+
 export const InviteSessionParticipantsBody = zod.object({
-  "learnerIds": zod.array(zod.string())
+  "learnerIds": zod.array(zod.string()).optional(),
+  "allEnrolled": zod.boolean().default(inviteSessionParticipantsBodyAllEnrolledDefault)
 })
 
 export const InviteSessionParticipantsResponse = zod.object({
-  "invited": zod.number().int().optional(),
-  "skipped": zod.number().int().optional()
+  "sessionId": zod.string(),
+  "allEnrolled": zod.boolean(),
+  "selectedCount": zod.number().int(),
+  "invited": zod.number().int(),
+  "newlyInvited": zod.number().int(),
+  "skipped": zod.array(zod.string()),
+  "skippedCount": zod.number().int(),
+  "skippedReasons": zod.record(zod.string(), zod.string()),
+  "rejected": zod.array(zod.object({
+  "learnerId": zod.string(),
+  "outcome": zod.enum(['invited', 'already_invited', 'skipped']),
+  "reason": zod.string().nullable()
+})),
+  "results": zod.array(zod.object({
+  "learnerId": zod.string(),
+  "outcome": zod.enum(['invited', 'already_invited', 'skipped']),
+  "reason": zod.string().nullable()
+}))
 })
+
+
+/**
+ * Programme/organization staff only. Learners receive 403 and a session from another organization receives 404.
+ * @summary List a session roster with capacity and status counts
+ */
+export const ListSessionAttendeesParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const listSessionAttendeesResponseTwoAttendeesItemRemovalReasonMax = 1000;
+
+
+
+export const ListSessionAttendeesResponse = zod.object({
+  "sessionId": zod.string(),
+  "capacity": zod.number().int().nullable().describe('Null means unlimited'),
+  "attendeeCount": zod.number().int().describe('Confirmed seats taken'),
+  "seatsTaken": zod.number().int(),
+  "seatsRemaining": zod.number().int().nullish(),
+  "invited": zod.number().int(),
+  "confirmed": zod.number().int(),
+  "waitlisted": zod.number().int(),
+  "declined": zod.number().int(),
+  "removed": zod.number().int().describe('Removed people are shown on the roster but never count toward seats')
+}).and(zod.object({
+  "attendees": zod.array(zod.object({
+  "id": zod.string(),
+  "rsvpId": zod.string(),
+  "learnerId": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "isActive": zod.boolean(),
+  "status": zod.enum(['invited', 'confirmed', 'waitlisted', 'declined', 'removed']),
+  "respondedAt": zod.coerce.date().nullish(),
+  "waitlistedAt": zod.coerce.date().nullish(),
+  "removalReason": zod.string().max(listSessionAttendeesResponseTwoAttendeesItemRemovalReasonMax).nullish(),
+  "removedAt": zod.coerce.date().nullish(),
+  "removedBy": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})),
+  "summary": zod.object({
+  "sessionId": zod.string(),
+  "capacity": zod.number().int().nullable().describe('Null means unlimited'),
+  "attendeeCount": zod.number().int().describe('Confirmed seats taken'),
+  "seatsTaken": zod.number().int(),
+  "seatsRemaining": zod.number().int().nullish(),
+  "invited": zod.number().int(),
+  "confirmed": zod.number().int(),
+  "waitlisted": zod.number().int(),
+  "declined": zod.number().int(),
+  "removed": zod.number().int().describe('Removed people are shown on the roster but never count toward seats')
+})
+}))
+
+
+/**
+ * Query-side filtering over all eligible learners. Results are ordered by name then id; pass the returned nextCursor to fetch the next page. q must be at least 2 characters.
+ * @summary List active organization learners who can still be invited to a session
+ */
+export const ListSessionInvitableLearnersParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const listSessionInvitableLearnersQueryLimitDefault = 50;
+export const listSessionInvitableLearnersQueryLimitMax = 200;
+
+
+
+export const ListSessionInvitableLearnersQueryParams = zod.object({
+  "q": zod.coerce.string().optional().describe('Case-insensitive name\/email substring; minimum 2 characters when present.'),
+  "limit": zod.coerce.number().int().min(1).max(listSessionInvitableLearnersQueryLimitMax).default(listSessionInvitableLearnersQueryLimitDefault),
+  "cursor": zod.coerce.string().optional().describe('Opaque cursor returned by a previous page.')
+})
+
+export const listSessionInvitableLearnersResponseLimitMax = 200;
+
+
+
+export const ListSessionInvitableLearnersResponse = zod.object({
+  "sessionId": zod.string(),
+  "q": zod.string(),
+  "limit": zod.number().int().max(listSessionInvitableLearnersResponseLimitMax),
+  "total": zod.number().int(),
+  "nextCursor": zod.string().nullable(),
+  "learners": zod.array(zod.object({
+  "learnerId": zod.string(),
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "eligible": zod.literal(true),
+  "reason": zod.string().nullable()
+})),
+  "invitable": zod.array(zod.object({
+  "learnerId": zod.string(),
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "eligible": zod.literal(true),
+  "reason": zod.string().nullable()
+})),
+  "invitableLearners": zod.array(zod.object({
+  "learnerId": zod.string(),
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "eligible": zod.literal(true),
+  "reason": zod.string().nullable()
+})),
+  "skipped": zod.array(zod.object({
+  "learnerId": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "reason": zod.string()
+}))
+})
+
+
+/**
+ * Records a declined RSVP instead of deleting history, audits the staff action and reuses the race-safe decline path so a freed confirmed seat promotes the earliest waitlisted learner.
+ * @summary Remove an invitee or attendee and promote the next waitlisted learner
+ */
+export const RemoveSessionAttendeeParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const removeSessionAttendeeBodyReasonMax = 1000;
+
+
+
+export const RemoveSessionAttendeeBody = zod.object({
+  "learnerId": zod.string(),
+  "reason": zod.string().max(removeSessionAttendeeBodyReasonMax).nullish()
+})
+
+export const removeSessionAttendeeResponseTwoAttendeesItemRemovalReasonMax = 1000;
+
+
+
+export const RemoveSessionAttendeeResponse = zod.object({
+  "sessionId": zod.string(),
+  "capacity": zod.number().int().nullable().describe('Null means unlimited'),
+  "attendeeCount": zod.number().int().describe('Confirmed seats taken'),
+  "seatsTaken": zod.number().int(),
+  "seatsRemaining": zod.number().int().nullish(),
+  "invited": zod.number().int(),
+  "confirmed": zod.number().int(),
+  "waitlisted": zod.number().int(),
+  "declined": zod.number().int(),
+  "removed": zod.number().int().describe('Removed people are shown on the roster but never count toward seats')
+}).and(zod.object({
+  "attendees": zod.array(zod.object({
+  "id": zod.string(),
+  "rsvpId": zod.string(),
+  "learnerId": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "isActive": zod.boolean(),
+  "status": zod.enum(['invited', 'confirmed', 'waitlisted', 'declined', 'removed']),
+  "respondedAt": zod.coerce.date().nullish(),
+  "waitlistedAt": zod.coerce.date().nullish(),
+  "removalReason": zod.string().max(removeSessionAttendeeResponseTwoAttendeesItemRemovalReasonMax).nullish(),
+  "removedAt": zod.coerce.date().nullish(),
+  "removedBy": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})),
+  "summary": zod.object({
+  "sessionId": zod.string(),
+  "capacity": zod.number().int().nullable().describe('Null means unlimited'),
+  "attendeeCount": zod.number().int().describe('Confirmed seats taken'),
+  "seatsTaken": zod.number().int(),
+  "seatsRemaining": zod.number().int().nullish(),
+  "invited": zod.number().int(),
+  "confirmed": zod.number().int(),
+  "waitlisted": zod.number().int(),
+  "declined": zod.number().int(),
+  "removed": zod.number().int().describe('Removed people are shown on the roster but never count toward seats')
+})
+}))
 
 
 /**
@@ -938,7 +1530,21 @@ export const GetCalendarFeedResponse = zod.unknown()
 
 
 /**
- * Adds role grants; it never removes another grant, so a person can hold several roles in one programme (a Trainer who is also Programme Admin). Idempotent through the unique grant. A learner grant creates the enrolment.
+ * Programme staff (admin, owner or trainer) only.
+ * @summary List the programme's members and their roles
+ */
+export const ListProgrammeMembersParams = zod.object({
+  "programmeId": zod.coerce.string()
+})
+
+export const ListProgrammeMembersResponseItem = zod.object({
+
+}).passthrough()
+export const ListProgrammeMembersResponse = zod.array(ListProgrammeMembersResponseItem)
+
+
+/**
+ * Adds role grants; it never removes another grant, so a person can hold several roles in one programme (a Trainer who is also Programme Admin). Idempotent through the unique grant. A learner grant creates the enrolment, or reinstates a withdrawn one when the person is being re-added; that also restores thread participation they lost.
  * @summary Add a member with one or more roles
  */
 export const AssignProgrammeMemberParams = zod.object({
@@ -976,6 +1582,18 @@ export const UpdateProgrammeMemberBody = zod.object({
 export const UpdateProgrammeMemberResponse = zod.object({
 
 }).passthrough()
+
+
+/**
+ * Deletes the member's grants in this programme, withdraws their enrolments and unassigns courses they trained. Their thread participation rows are soft-revoked (leftAt/leftReason) so the history survives and a later re-add can restore access. The last programme admin cannot be removed (409).
+ * @summary Remove a member from a programme
+ */
+export const RemoveProgrammeMemberParams = zod.object({
+  "programmeId": zod.coerce.string(),
+  "userId": zod.coerce.string()
+})
+
+export const RemoveProgrammeMemberResponse = zod.unknown()
 
 
 /**
@@ -1347,13 +1965,14 @@ export const ReadinessResponse = zod.unknown()
 
 
 /**
- * @summary Push the session to connected calendars
+ * Outlook/Google API sync is not built. This route answers 501 even for programme staff; the supported calendar approach is GET /sessions/{sessionId}/ics and GET /calendar/feed.ics.
+ * @summary Not implemented — use .ics invitations or the personal feed
  */
 export const SyncSessionCalendarParams = zod.object({
   "sessionId": zod.coerce.string()
 })
 
-export const SyncSessionCalendarResponse = zod.unknown()
+export const SyncSessionCalendarResponse = zod.void()
 
 
 /**
@@ -1399,7 +2018,28 @@ export const UpdateOrganizationParams = zod.object({
   "orgId": zod.coerce.string()
 })
 
-export const UpdateOrganizationResponse = zod.unknown()
+export const updateOrganizationBodyDefaultSlaHoursDefault = 24;
+export const updateOrganizationBodyDefaultSlaHoursMax = 720;
+
+
+
+export const UpdateOrganizationBody = zod.object({
+  "defaultSlaHours": zod.number().int().min(1).max(updateOrganizationBodyDefaultSlaHoursMax).default(updateOrganizationBodyDefaultSlaHoursDefault)
+})
+
+export const updateOrganizationResponseDefaultSlaHoursDefault = 24;
+export const updateOrganizationResponseDefaultSlaHoursMax = 720;
+
+
+
+export const UpdateOrganizationResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "plan": zod.string(),
+  "learnerCount": zod.number().int(),
+  "programmeCount": zod.number().int(),
+  "defaultSlaHours": zod.number().int().min(1).max(updateOrganizationResponseDefaultSlaHoursMax).default(updateOrganizationResponseDefaultSlaHoursDefault)
+})
 
 
 /**
@@ -1607,13 +2247,36 @@ export const UpdateCourseResponse = zod.unknown()
 
 
 /**
+ * slaHours is a nullable override; null uses the organization default.
  * @summary Edit a programme
  */
 export const UpdateProgrammeParams = zod.object({
   "programmeId": zod.coerce.string()
 })
 
-export const UpdateProgrammeResponse = zod.unknown()
+export const updateProgrammeBodySlaHoursMax = 720;
+
+
+
+export const UpdateProgrammeBody = zod.object({
+  "slaHours": zod.number().int().min(1).max(updateProgrammeBodySlaHoursMax).nullish()
+})
+
+export const updateProgrammeResponseSlaHoursMax = 720;
+
+
+
+export const UpdateProgrammeResponse = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "type": zod.string(),
+  "status": zod.string(),
+  "learnerCount": zod.number().int(),
+  "courseCount": zod.number().int(),
+  "progress": zod.number(),
+  "owner": zod.string(),
+  "slaHours": zod.number().int().min(1).max(updateProgrammeResponseSlaHoursMax).nullish()
+})
 
 
 /**
@@ -1624,5 +2287,388 @@ export const UpdateModuleParams = zod.object({
 })
 
 export const UpdateModuleResponse = zod.unknown()
+
+
+/**
+ * Org staff only. Evaluates the configured reminder cadence against the current clock and sends the session and enrolment reminders that are due. Each cadence step is logged, so running it twice in a row does not send the same reminder again.
+ * @summary Run the reminder cadence for the organization now
+ */
+export const RunRemindersResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * A correction, not a cancel-and-reinvite. Every edit bumps sequence, because a calendar client ignores an update whose SEQUENCE did not increase, and confirms the change to confirmed attendees with an updated .ics attachment.
+ * @summary Edit a scheduled session
+ */
+export const UpdateSessionParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+
+export const updateSessionBodyReasonMax = 1000;
+
+
+
+export const UpdateSessionBody = zod.object({
+  "title": zod.string().optional(),
+  "mode": zod.enum(['online', 'offline']).optional(),
+  "capacity": zod.number().int().min(1).nullish().describe('A positive whole number, or null for unlimited'),
+  "trainerId": zod.string().nullish(),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "date": zod.string().optional().describe('YYYY-MM-DD; interpreted in the session\'s timezone'),
+  "time": zod.string().optional().describe('HH:MM; interpreted in the session\'s timezone'),
+  "joinUrl": zod.string().url().nullish().describe('Required for online sessions'),
+  "location": zod.string().nullish().describe('Required for offline sessions'),
+  "reason": zod.string().max(updateSessionBodyReasonMax).nullish().describe('Optional explanation added to attendee notifications')
+})
+
+export const UpdateSessionResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "programme": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "trainer": zod.string().optional(),
+  "trainerId": zod.string().nullish(),
+  "date": zod.string().describe('YYYY-MM-DD, derived from startsAt in the session\'s timezone'),
+  "time": zod.string().describe('HH:MM, derived from startsAt in the session\'s timezone'),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "timezone": zod.string().optional(),
+  "mode": zod.enum(['online', 'offline']),
+  "location": zod.string().nullish().describe('Withheld (null) from callers who cannot join'),
+  "joinUrl": zod.string().nullish().describe('Withheld (null) from callers who cannot join'),
+  "videoLink": zod.string().nullish().describe('Legacy alias for joinUrl'),
+  "attendees": zod.number().int(),
+  "capacity": zod.number().int().nullish().describe('Null means unlimited'),
+  "sequence": zod.number().int().describe('Bumped on every edit or cancellation for calendar clients'),
+  "canJoin": zod.boolean().describe('Whether this caller may see the join details'),
+  "status": zod.string(),
+  "myRsvpStatus": zod.union([zod.literal('invited'),zod.literal('confirmed'),zod.literal('waitlisted'),zod.literal('declined'),zod.literal('removed'),zod.literal(null)]).nullable(),
+  "myWaitlistPosition": zod.number().int().nullable().describe('One-based position in the session waitlist'),
+  "icsUrl": zod.string().describe('Authenticated per-session .ics download'),
+  "cancellationReason": zod.string().nullable(),
+  "enrolled": zod.boolean()
+})
+
+
+/**
+ * Sets status to cancelled, bumps sequence and notifies confirmed attendees with a CANCEL .ics. Cancelling an already-cancelled session returns it unchanged.
+ * @summary Cancel a scheduled session
+ */
+export const CancelSessionParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const cancelSessionBodyReasonMax = 1000;
+
+
+
+export const CancelSessionBody = zod.object({
+  "reason": zod.string().max(cancelSessionBodyReasonMax).nullish().describe('Optional explanation added to attendee notifications')
+})
+
+export const CancelSessionResponse = zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "programme": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "trainer": zod.string().optional(),
+  "trainerId": zod.string().nullish(),
+  "date": zod.string().describe('YYYY-MM-DD, derived from startsAt in the session\'s timezone'),
+  "time": zod.string().describe('HH:MM, derived from startsAt in the session\'s timezone'),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "timezone": zod.string().optional(),
+  "mode": zod.enum(['online', 'offline']),
+  "location": zod.string().nullish().describe('Withheld (null) from callers who cannot join'),
+  "joinUrl": zod.string().nullish().describe('Withheld (null) from callers who cannot join'),
+  "videoLink": zod.string().nullish().describe('Legacy alias for joinUrl'),
+  "attendees": zod.number().int(),
+  "capacity": zod.number().int().nullish().describe('Null means unlimited'),
+  "sequence": zod.number().int().describe('Bumped on every edit or cancellation for calendar clients'),
+  "canJoin": zod.boolean().describe('Whether this caller may see the join details'),
+  "status": zod.string(),
+  "myRsvpStatus": zod.union([zod.literal('invited'),zod.literal('confirmed'),zod.literal('waitlisted'),zod.literal('declined'),zod.literal('removed'),zod.literal(null)]).nullable(),
+  "myWaitlistPosition": zod.number().int().nullable().describe('One-based position in the session waitlist'),
+  "icsUrl": zod.string().describe('Authenticated per-session .ics download'),
+  "cancellationReason": zod.string().nullable(),
+  "enrolled": zod.boolean()
+})
+
+
+/**
+ * Only for people with a right to be in the room: an invitee or attendee (waitlisted included), the session's trainer, or programme/org staff. A cancelled session yields a CANCEL file.
+ * @summary Download one session as a calendar file
+ */
+export const GetSessionIcsParams = zod.object({
+  "sessionId": zod.coerce.string()
+})
+
+export const GetSessionIcsResponse = zod.unknown()
+
+
+/**
+ * Content progress awaiting verification. Org staff see the entire organization; programme trainers/admins see only their own programmes; anyone else gets 403.
+ * @summary Trainer verification queue
+ */
+export const ListPendingVerificationResponseItem = zod.object({
+  "id": zod.string(),
+  "status": zod.enum(['pending_verification']),
+  "startedAt": zod.coerce.date().nullish(),
+  "evidenceNote": zod.string().nullish(),
+  "evidenceFileId": zod.string().nullish(),
+  "contentItem": zod.object({
+
+}).passthrough(),
+  "enrolment": zod.object({
+
+}).passthrough().optional()
+})
+export const ListPendingVerificationResponse = zod.array(ListPendingVerificationResponseItem)
+
+
+/**
+ * Org staff see every active trainer in the organization; a learner sees only trainers with a grant in a programme they are currently enrolled on (a withdrawn enrolment does not count). A learner with no live enrolment gets an empty list.
+ * @summary List trainers the caller may book
+ */
+export const ListBookableTrainersResponseItem = zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string()
+})
+export const ListBookableTrainersResponse = zod.array(ListBookableTrainersResponseItem)
+
+
+/**
+ * Submitted attempts with status "grading", oldest submission first. Programme staff see only their own programmes; org staff see the organization; a caller with no staff grant gets 403. An attempt never appears before it was submitted.
+ * @summary Attempts awaiting a trainer's marks
+ */
+export const ListGradingQueueQueryParams = zod.object({
+  "programmeId": zod.coerce.string().optional()
+})
+
+export const ListGradingQueueResponseItem = zod.object({
+  "id": zod.string(),
+  "attemptId": zod.string(),
+  "attemptNumber": zod.number().int(),
+  "submittedAt": zod.coerce.date().nullish(),
+  "learner": zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string()
+}),
+  "assessment": zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "type": zod.string()
+}),
+  "course": zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "programmeId": zod.string()
+}),
+  "answered": zod.number().int().describe('Answers already carrying a mark'),
+  "answersStored": zod.number().int()
+})
+export const ListGradingQueueResponse = zod.array(ListGradingQueueResponseItem)
+
+
+/**
+ * The owner sees their own answers; staff of the attempt's programme also see the answer key, the rubric and per-answer marks. A score exists only after grading. An attempt in another organization is 404; another learner's attempt is 403.
+ * @summary Read an attempt
+ */
+export const GetAttemptParams = zod.object({
+  "attemptId": zod.coerce.string()
+})
+
+export const GetAttemptResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * The attempt's owner only, while status is in_progress. The time limit is enforced here too, so a learner cannot keep editing by never pressing submit; an expired attempt must be submitted to have what was entered graded.
+ * @summary Save answers without submitting
+ */
+export const SaveAttemptAnswersParams = zod.object({
+  "attemptId": zod.coerce.string()
+})
+
+export const SaveAttemptAnswersBody = zod.object({
+  "answers": zod.array(zod.object({
+  "questionId": zod.string(),
+  "optionIds": zod.array(zod.string()).optional(),
+  "text": zod.string().optional()
+}))
+})
+
+export const SaveAttemptAnswersResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * Requires a trainer/admin/owner grant on the attempt's programme; grading your own attempt is refused. Returns the answer key, the rubric and each stored answer.
+ * @summary Staff view of an attempt for marking
+ */
+export const GetAttemptAnswersForGradingParams = zod.object({
+  "attemptId": zod.coerce.string()
+})
+
+export const GetAttemptAnswersForGradingResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * Programme staff (or org staff) only, never the learner it belongs to. Every manual question must be marked in one call: a half-marked attempt would silently score zero for the rest. Accepts either { grades: [{ questionId, points, comment }] } or the builder's { answers: [{ answerId, pointsAwarded, comment }] }. A graded attempt is final (409).
+ * @summary Mark a queued attempt
+ */
+export const GradeAttemptParams = zod.object({
+  "attemptId": zod.coerce.string()
+})
+
+export const GradeAttemptBody = zod.object({
+  "grades": zod.array(zod.object({
+  "questionId": zod.string(),
+  "points": zod.number(),
+  "comment": zod.string().optional()
+})).optional(),
+  "answers": zod.array(zod.object({
+  "answerId": zod.string(),
+  "pointsAwarded": zod.number(),
+  "comment": zod.string().optional()
+})).optional()
+})
+
+export const GradeAttemptResponse = zod.object({
+
+}).passthrough()
+
+
+/**
+ * The body must list every question in the assessment exactly once. A published assessment cannot be reordered (409 with requiresNewVersion); publish a new version instead.
+ * @summary Reorder questions in a draft assessment
+ */
+export const ReorderAssessmentQuestionsParams = zod.object({
+  "assessmentId": zod.coerce.string()
+})
+
+export const ReorderAssessmentQuestionsBody = zod.object({
+  "ids": zod.array(zod.string())
+})
+
+export const ReorderAssessmentQuestionsResponse = zod.object({
+  "assessmentId": zod.string(),
+  "order": zod.array(zod.string())
+})
+
+
+/**
+ * Programme/org staff only. Applies pendingAssessmentScore with source "assessment" only when an effective input really differs from the stored score; clears sign-off and notifies the manager only for that real change. A pending result held by a locked review-credit period is accepted without moving the locked score or sign-off.
+ * @summary Accept a pending assessment result into the enrolment score
+ */
+export const AcceptAssessmentScoreParams = zod.object({
+  "enrolmentId": zod.coerce.string()
+})
+
+export const AcceptAssessmentScoreResponse = zod.object({
+  "id": zod.string(),
+  "learnerId": zod.string(),
+  "courseId": zod.string(),
+  "status": zod.string(),
+  "enrolmentScore": zod.number().nullish(),
+  "managerSignOff": zod.boolean().nullish()
+})
+
+
+/**
+ * Programme/org staff only. Clears pendingAssessmentScore without touching the applied score, stores the suppressed value in pendingRejectedScore so the same result is not re-pending, and audit-logs the decision. A locked-period rejection leaves sign-off intact.
+ * @summary Discard a pending assessment result
+ */
+export const RejectAssessmentScoreParams = zod.object({
+  "enrolmentId": zod.coerce.string()
+})
+
+export const RejectAssessmentScoreResponse = zod.object({
+  "ok": zod.boolean(),
+  "enrolmentId": zod.string()
+})
+
+
+/**
+ * Org staff only. Newest first; a failure stays until an operator dismisses it after handling.
+ * @summary List failed email sends for the organization
+ */
+export const listEmailFailuresQueryLimitDefault = 50;
+export const listEmailFailuresQueryLimitMax = 200;
+
+export const listEmailFailuresQueryOffsetDefault = 0;
+export const listEmailFailuresQueryOffsetMin = 0;
+
+
+
+export const ListEmailFailuresQueryParams = zod.object({
+  "limit": zod.coerce.number().int().min(1).max(listEmailFailuresQueryLimitMax).default(listEmailFailuresQueryLimitDefault),
+  "offset": zod.coerce.number().int().min(listEmailFailuresQueryOffsetMin).default(listEmailFailuresQueryOffsetDefault)
+})
+
+export const ListEmailFailuresResponse = zod.object({
+  "items": zod.array(zod.object({
+  "id": zod.string(),
+  "orgId": zod.string(),
+  "to": zod.string(),
+  "subject": zod.string(),
+  "error": zod.string(),
+  "createdAt": zod.coerce.date()
+})),
+  "limit": zod.number().int(),
+  "offset": zod.number().int()
+})
+
+
+/**
+ * @summary Dismiss a handled email failure
+ */
+export const DismissEmailFailureParams = zod.object({
+  "failureId": zod.coerce.string()
+})
+
+export const DismissEmailFailureResponse = zod.void()
+
+
+/**
+ * Org staff of that organization only. JSON rows include enrolment ids, manager approvals and lock timestamps; format=csv flattens them to learner/raw/final/signoff.
+ * @summary Export review-credit aggregates with manager sign-off state
+ */
+export const ExportOrganizationReviewCreditsParams = zod.object({
+  "orgId": zod.coerce.string()
+})
+
+export const exportOrganizationReviewCreditsQueryFormatDefault = `json`;
+
+export const ExportOrganizationReviewCreditsQueryParams = zod.object({
+  "format": zod.enum(['json', 'csv']).default(exportOrganizationReviewCreditsQueryFormatDefault)
+})
+
+export const ExportOrganizationReviewCreditsResponseItem = zod.object({
+  "learnerId": zod.string(),
+  "enrolmentIds": zod.array(zod.string()),
+  "raw": zod.number(),
+  "final": zod.number(),
+  "managerApprovals": zod.array(zod.object({
+  "enrolmentId": zod.string(),
+  "signOff": zod.boolean(),
+  "by": zod.string().nullable(),
+  "at": zod.coerce.date().nullable()
+})),
+  "lockedAt": zod.array(zod.coerce.date())
+})
+export const ExportOrganizationReviewCreditsResponse = zod.array(ExportOrganizationReviewCreditsResponseItem)
 
 
