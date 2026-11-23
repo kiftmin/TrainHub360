@@ -27,7 +27,9 @@ type DemoCourse = {
 type DemoBooking = {
   id: string;
   trainer: string;
+  trainerId: string | null;
   course: string;
+  courseId?: string | null;
   date: string;
   time: string;
   duration: string;
@@ -63,7 +65,7 @@ const demoData = {
     { id: "msg_coaching_1", threadId: "thread_coaching", author: "Thabo Maseko", body: "Send me the scenario number and I will walk through the decision point with you.", createdAt: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(), urgent: false },
     { id: "msg_coaching_2", threadId: "thread_coaching", author: "You", body: "I have tried the scenario twice and the feedback is still unclear.", createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(), urgent: true },
   ],
-  bookings: [{ id: "booking_ava", trainer: "Thabo Maseko", course: "Coaching for performance", date: plusDays(2), time: "11:00", duration: "30 min", status: "Confirmed", meetingLink: "https://meet.google.com/trainhub-demo" }] as DemoBooking[],
+  bookings: [{ id: "booking_ava", trainer: "Thabo Maseko", trainerId: "usr_thabo", course: "Coaching for performance", courseId: "course_coaching", date: plusDays(2), time: "11:00", duration: "30 min", status: "Confirmed", meetingLink: "https://meet.google.com/trainhub-demo" }] as DemoBooking[],
   events: [
     { id: "event_coaching", title: "Live coaching lab", date: plusDays(1), time: "09:00", type: "Live session", accent: "teal", location: null, meetingLink: "https://meet.google.com/trainhub-demo" },
     { id: "event_safety", title: "Safety walkthrough", date: plusDays(3), time: "13:00", type: "Physical session", accent: "orange", location: "Johannesburg DC · Floor 2", meetingLink: null },
@@ -121,7 +123,7 @@ class DemoRequest {
     if (query.includes("from dbo.th_messages")) return { recordset: demoData.messages.filter((message) => message.threadId === param("threadId")) };
     if (query.includes("from dbo.th_bookings") && query.includes("where id")) return { recordset: demoData.bookings.filter((booking) => booking.id === param("id")) };
     if (query.includes("insert into dbo.th_bookings")) {
-      demoData.bookings.push({ id: String(param("id")), trainer: String(param("trainer")), course: String(param("course")), date: String(param("date")), time: String(param("time")), duration: "30 min", status: "Requested", meetingLink: null });
+      demoData.bookings.push({ id: String(param("id")), trainer: String(param("trainer")), trainerId: String(param("trainerId")), course: String(param("course")), courseId: param("courseId") ? String(param("courseId")) : null, date: String(param("date")), time: String(param("time")), duration: "30 min", status: "Requested", meetingLink: null });
       return { recordset: [] };
     }
     if (query.includes("from dbo.th_bookings")) return { recordset: demoData.bookings };
@@ -252,6 +254,14 @@ BEGIN
     meeting_link nvarchar(500) NULL
   );
 END;
+IF COL_LENGTH('dbo.th_bookings', 'trainer_id') IS NULL
+BEGIN
+  ALTER TABLE dbo.th_bookings ADD trainer_id nvarchar(64) NULL;
+END;
+IF COL_LENGTH('dbo.th_bookings', 'course_id') IS NULL
+BEGIN
+  ALTER TABLE dbo.th_bookings ADD course_id nvarchar(64) NULL;
+END;
 IF OBJECT_ID('dbo.th_calendar_events', 'U') IS NULL
 BEGIN
   CREATE TABLE dbo.th_calendar_events (
@@ -311,8 +321,8 @@ IF NOT EXISTS (SELECT 1 FROM dbo.th_messages WHERE id = 'msg_coaching_1')
     ('msg_coaching_1', 'org_acme', 'thread_coaching', 'Thabo Maseko', 'Send me the scenario number and I will walk through the decision point with you.', DATEADD(hour, -3, sysdatetime()), 0),
     ('msg_coaching_2', 'org_acme', 'thread_coaching', 'You', 'I have tried the scenario twice and the feedback is still unclear.', DATEADD(hour, -2, sysdatetime()), 1);
 IF NOT EXISTS (SELECT 1 FROM dbo.th_bookings WHERE id = 'booking_ava')
-  INSERT INTO dbo.th_bookings (id, organization_id, trainer, course, booking_date, booking_time, duration, status, meeting_link) VALUES
-    ('booking_ava', 'org_acme', 'Thabo Maseko', 'Coaching for performance', DATEADD(day, 2, CAST(GETDATE() AS date)), '11:00', '30 min', 'Confirmed', 'https://meet.google.com/trainhub-demo');
+  INSERT INTO dbo.th_bookings (id, organization_id, trainer, trainer_id, course, course_id, booking_date, booking_time, duration, status, meeting_link) VALUES
+    ('booking_ava', 'org_acme', 'Thabo Maseko', 'usr_thabo', 'Coaching for performance', 'course_coaching', DATEADD(day, 2, CAST(GETDATE() AS date)), '11:00', '30 min', 'Confirmed', 'https://meet.google.com/trainhub-demo');
 IF NOT EXISTS (SELECT 1 FROM dbo.th_calendar_events WHERE id = 'event_coaching')
   INSERT INTO dbo.th_calendar_events (id, organization_id, title, event_date, event_time, event_type, accent, location, meeting_link) VALUES
     ('event_coaching', 'org_acme', 'Live coaching lab', DATEADD(day, 1, CAST(GETDATE() AS date)), '09:00', 'Live session', 'teal', NULL, 'https://meet.google.com/trainhub-demo'),
