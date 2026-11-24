@@ -59,6 +59,7 @@ paths:
       operationId: getDashboardSummary
       tags: [dashboard]
       summary: Get KPI dashboard summary
+      description: Organisation staff only. Learners and programme-scoped staff receive 403.
       responses:
         "200":
           description: Dashboard KPI summary
@@ -1036,6 +1037,7 @@ paths:
       operationId: getReviewCreditSettings
       tags: [review-credit]
       summary: Get review credit configuration
+      description: Organisation staff only. Learners and programme-scoped staff receive 403.
       responses:
         "200":
           description: Review credit settings
@@ -1065,6 +1067,7 @@ paths:
       operationId: exportReviewCredits
       tags: [review-credit]
       summary: Export review credit evidence as CSV
+      description: Organisation staff only. Learners and programme-scoped staff receive 403.
       responses:
         "200":
           description: CSV export
@@ -1343,6 +1346,7 @@ paths:
       operationId: getKpiSummary
       tags: [analytics]
       summary: KPI aggregates (competencyRate, dropOff, timeToCompetency, trainerUtilization)
+      description: Organisation staff only. Learners and programme-scoped staff receive 403.
       responses:
         "200":
           description: KPI summary
@@ -1399,6 +1403,7 @@ paths:
       operationId: getReviewCredits
       tags: [review-credit]
       summary: REST export of review-credit aggregates for HRIS
+      description: Organisation staff only. Cross-organisation requests receive 403.
       parameters:
         - name: orgId
           in: path
@@ -3319,7 +3324,7 @@ components:
         isOrgStaff: { type: boolean }
     Programme:
       type: object
-      required: [id, name, type, status, learnerCount, courseCount, progress, owner]
+      required: [id, name, type, status, learnerCount, courseCount, progress]
       properties:
         id: { type: string }
         name: { type: string }

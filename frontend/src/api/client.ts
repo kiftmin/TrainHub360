@@ -1,5 +1,7 @@
 import { setAuthTokenGetter } from '@api-client';
 
+export const SESSION_EXPIRED_EVENT = 'th360:session-expired';
+
 setAuthTokenGetter(() => getToken());
 
 export function getToken(): string | null {
@@ -14,6 +16,7 @@ export function setSession(token: string, user: unknown) {
 export function clearSession() {
   localStorage.removeItem("th360_token");
   localStorage.removeItem("th360_user");
+  window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
 }
 
 export function getSessionUser(): { id?: string; role?: string; name?: string; email?: string; initials?: string; isOrgStaff?: boolean } | null {

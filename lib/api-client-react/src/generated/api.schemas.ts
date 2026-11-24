@@ -115,7 +115,7 @@ export interface Programme {
   learnerCount: number;
   courseCount: number;
   progress: number;
-  owner: string;
+  owner?: string;
   /**
      * @minimum 1
      * @maximum 720

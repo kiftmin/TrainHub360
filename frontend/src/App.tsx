@@ -1,5 +1,5 @@
-import { useMemo, useState, type ReactNode } from 'react';
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { useEffect, useState, type ReactNode } from 'react';
+import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Link, Route, Switch, useLocation } from 'wouter';
 import { ErrorBoundary } from '@/components/error-boundary';
 import { Toaster } from '@/components/ui/toaster';
@@ -35,7 +35,9 @@ import {
   type Course,
   type ReviewCreditSettings,
 } from '@/api/hooks';
-import { getToken, clearSession, getSessionUser } from '@/api/client';
+import { SESSION_EXPIRED_EVENT, getToken, clearSession, getSessionUser } from '@/api/client';
+import { canAccessRoute } from '@/auth/routePolicy';
+import { RequireRouteAccess } from '@/components/route-guard';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
 import { Activate } from '@/pages/Activate';
@@ -52,7 +54,13 @@ import {
   ShieldCheck, SlidersHorizontal, Target, UserRound, Users, X, Zap,
 } from 'lucide-react';
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  queryCache: new QueryCache({
+    onError(error) {
+      if ((error as { status?: number }).status === 401) clearSession();
+    },
+  }),
+});
 
 const nav = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -96,14 +104,13 @@ import { ProfilePage } from '@/pages/Profile';
 function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
   const [location, setLocation] = useLocation();
   const go = (href: string) => { setMobileOpen(false); setLocation(href); };
-  const role = getSessionUser()?.role;
-  const isStakeholder = role === 'stakeholder';
-  const isLearner = role === 'learner';
-  const canSeeDirectory = ['owner', 'admin'].includes(role ?? '');
-  const canVerify = ['owner', 'admin', 'trainer'].includes(role ?? '');
-  const visibleNav = isStakeholder ? [] : isLearner ? learnerNav : nav.filter((n) =>
-    (n.href !== '/people' || canSeeDirectory) && (n.href !== '/verification' || canVerify));
-  const visibleAdminNav = isStakeholder || isLearner ? [] : adminNav;
+  const sessionUser = getSessionUser();
+  const isLearner = sessionUser?.role === 'learner';
+  const visibleNav = nav.filter((item) => canAccessRoute(sessionUser, item.href));
+  if (isLearner) {
+    visibleNav.splice(0, visibleNav.length, ...learnerNav.filter((item) => canAccessRoute(sessionUser, item.href)));
+  }
+  const visibleAdminNav = adminNav.filter((item) => canAccessRoute(sessionUser, item.href));
   const allNav = [...visibleNav, ...visibleAdminNav];
   const active = allNav.find((n) => n.href === location) ?? (location.startsWith('/programmes') ? { href: '/programmes', label: 'Programmes' } : null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -168,26 +175,33 @@ function NotFound() {
   return <div className="flex min-h-[70vh] flex-col items-center justify-center text-center"><Gauge className="size-8 text-primary" /><h1 className="mt-4 text-3xl font-extrabold">That page is off the map.</h1><p className="mt-2 text-sm text-muted-foreground">Return to your workspace overview.</p><Link className="mt-5 text-sm font-semibold text-primary hover:underline" href="/">Back to overview</Link></div>;
 }
 
+function Home() {
+  return getSessionUser()?.role === 'stakeholder' ? <StakeholderDashboard /> : <Overview />;
+}
+
+function Protected({ path, children }: { path: string; children: ReactNode }) {
+  return <RequireRouteAccess path={path}>{children}</RequireRouteAccess>;
+}
+
 function Router() {
-  if (getSessionUser()?.role === 'stakeholder') return <StakeholderDashboard />;
   return <Switch>
-    <Route path="/" component={Overview} />
-    <Route path="/learning" component={Learning} />
-    <Route path="/programmes" component={Programmes} />
-    <Route path="/programmes/:id">{(params) => <ProgrammeDetail id={params.id} />}</Route>
-    <Route path="/people" component={People} />
-    <Route path="/my-learning" component={MyLearning} />
-    <Route path="/assessments" component={Assessments} />
-    <Route path="/assessments/grading" component={GradingQueuePage} />
-    <Route path="/assessments/grading/:attemptId">{(params) => <GradingAttemptPage attemptId={params.attemptId} />}</Route>
-    <Route path="/verification" component={VerificationPage} />
-    <Route path="/calendar" component={CalendarPage} />
-    <Route path="/messages" component={Messages} />
-    <Route path="/reports" component={Reports} />
-    <Route path="/governance" component={Governance} />
-    <Route path="/review-credit" component={ReviewCredit} />
-    <Route path="/settings" component={SettingsPage} />
-    <Route path="/profile" component={ProfilePage} />
+    <Route path="/"><Protected path="/"><Home /></Protected></Route>
+    <Route path="/learning"><Protected path="/learning"><Learning /></Protected></Route>
+    <Route path="/programmes"><Protected path="/programmes"><Programmes /></Protected></Route>
+    <Route path="/programmes/:id">{(params) => <Protected path="/programmes/:id"><ProgrammeDetail id={params.id} /></Protected>}</Route>
+    <Route path="/people"><Protected path="/people"><People /></Protected></Route>
+    <Route path="/my-learning"><Protected path="/my-learning"><MyLearning /></Protected></Route>
+    <Route path="/assessments"><Protected path="/assessments"><Assessments /></Protected></Route>
+    <Route path="/assessments/grading"><Protected path="/assessments/grading"><GradingQueuePage /></Protected></Route>
+    <Route path="/assessments/grading/:attemptId">{(params) => <Protected path="/assessments/grading/:attemptId"><GradingAttemptPage attemptId={params.attemptId} /></Protected>}</Route>
+    <Route path="/verification"><Protected path="/verification"><VerificationPage /></Protected></Route>
+    <Route path="/calendar"><Protected path="/calendar"><CalendarPage /></Protected></Route>
+    <Route path="/messages"><Protected path="/messages"><Messages /></Protected></Route>
+    <Route path="/reports"><Protected path="/reports"><Reports /></Protected></Route>
+    <Route path="/governance"><Protected path="/governance"><Governance /></Protected></Route>
+    <Route path="/review-credit"><Protected path="/review-credit"><ReviewCredit /></Protected></Route>
+    <Route path="/settings"><Protected path="/settings"><SettingsPage /></Protected></Route>
+    <Route path="/profile"><Protected path="/profile"><ProfilePage /></Protected></Route>
     <Route component={NotFound} />
   </Switch>;
 }
@@ -200,6 +214,11 @@ function RoutedErrorBoundary({ children }: { children: ReactNode }) {
 export function App() {
   const [authed, setAuthed] = useState(() => !!getToken());
   const [registering, setRegistering] = useState(false);
+  useEffect(() => {
+    const expire = () => setAuthed(false);
+    window.addEventListener(SESSION_EXPIRED_EVENT, expire);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expire);
+  }, []);
   // Activation and password-reset links arrive from an email with ?token=…, so they must
   // render before any session exists. wouter is not mounted on the signed-out screen, so
   // read the path here. Round 7 gap 4 added /reset-password: the email already linked to it,

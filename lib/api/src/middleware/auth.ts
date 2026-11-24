@@ -19,15 +19,16 @@ export async function authMiddleware(req: AuthedRequest, res: Response, next: Ne
   // Fail closed: a DB outage is a 503, never an unauthenticated request. A
   // missing/inactive account or stale token version is a 401. This also makes
   // role changes and deactivation apply to live sessions immediately.
-  let account: { isActive: boolean; tokenVersion: number } | null;
+  let account: { isActive: boolean; tokenVersion: number; orgId: string | null } | null;
   try {
-    account = await db.user.findUnique({ where: { id: payload.sub }, select: { isActive: true, tokenVersion: true } });
+    account = await db.user.findUnique({ where: { id: payload.sub }, select: { isActive: true, tokenVersion: true, orgId: true } });
   } catch {
     return res.status(503).json({ error: "authentication service unavailable" });
   }
   if (!account || account.isActive === false) return res.status(401).json({ error: "account is not active" });
   if ((payload.tv ?? 0) !== account.tokenVersion) return res.status(401).json({ error: "session expired — please log in again" });
-  req.user = { id: payload.sub, role: payload.role, orgId: payload.orgId, tokenVersion: account.tokenVersion };
+  if (payload.orgId && payload.orgId !== account.orgId) return res.status(401).json({ error: "session organisation mismatch" });
+  req.user = { id: payload.sub, role: payload.role, orgId: account.orgId ?? undefined, tokenVersion: account.tokenVersion };
   next();
 }
 export function signToken(user: { id: string; role: string; orgId?: string; tokenVersion?: number }) {

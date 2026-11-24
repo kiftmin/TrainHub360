@@ -44,7 +44,7 @@ export const GetWorkspaceResponse = zod.object({
   "learnerCount": zod.number().int(),
   "courseCount": zod.number().int(),
   "progress": zod.number(),
-  "owner": zod.string(),
+  "owner": zod.string().optional(),
   "slaHours": zod.number().int().min(1).max(getWorkspaceResponseActiveProgrammeSlaHoursMax).nullish()
 }),
   "user": zod.object({
@@ -60,6 +60,7 @@ export const GetWorkspaceResponse = zod.object({
 
 
 /**
+ * Organisation staff only. Learners and programme-scoped staff receive 403.
  * @summary Get KPI dashboard summary
  */
 export const GetDashboardSummaryResponse = zod.object({
@@ -248,7 +249,7 @@ export const ListProgrammesResponseItem = zod.object({
   "learnerCount": zod.number().int(),
   "courseCount": zod.number().int(),
   "progress": zod.number(),
-  "owner": zod.string(),
+  "owner": zod.string().optional(),
   "slaHours": zod.number().int().min(1).max(listProgrammesResponseSlaHoursMax).nullish()
 })
 export const ListProgrammesResponse = zod.array(ListProgrammesResponseItem)
@@ -275,7 +276,7 @@ export const CreateProgrammeResponse = zod.object({
   "learnerCount": zod.number().int(),
   "courseCount": zod.number().int(),
   "progress": zod.number(),
-  "owner": zod.string(),
+  "owner": zod.string().optional(),
   "slaHours": zod.number().int().min(1).max(createProgrammeResponseSlaHoursMax).nullish()
 })
 
@@ -1203,6 +1204,7 @@ export const ListCalendarEventsResponse = zod.array(ListCalendarEventsResponseIt
 
 
 /**
+ * Organisation staff only. Learners and programme-scoped staff receive 403.
  * @summary Get review credit configuration
  */
 export const GetReviewCreditSettingsResponse = zod.object({
@@ -1243,6 +1245,7 @@ export const UpdateReviewCreditSettingsResponse = zod.object({
 
 
 /**
+ * Organisation staff only. Learners and programme-scoped staff receive 403.
  * @summary Export review credit evidence as CSV
  */
 export const ExportReviewCreditsResponse = zod.unknown()
@@ -1495,6 +1498,7 @@ export const CreateAssessmentResponse = zod.object({
 
 
 /**
+ * Organisation staff only. Learners and programme-scoped staff receive 403.
  * @summary KPI aggregates (competencyRate, dropOff, timeToCompetency, trainerUtilization)
  */
 export const GetKpiSummaryResponse = zod.object({
@@ -1557,6 +1561,7 @@ export const AiHelpResponse = zod.object({
 
 
 /**
+ * Organisation staff only. Cross-organisation requests receive 403.
  * @summary REST export of review-credit aggregates for HRIS
  */
 export const GetReviewCreditsParams = zod.object({
@@ -2668,7 +2673,7 @@ export const UpdateProgrammeResponse = zod.object({
   "learnerCount": zod.number().int(),
   "courseCount": zod.number().int(),
   "progress": zod.number(),
-  "owner": zod.string(),
+  "owner": zod.string().optional(),
   "slaHours": zod.number().int().min(1).max(updateProgrammeResponseSlaHoursMax).nullish()
 })
 

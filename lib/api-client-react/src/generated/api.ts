@@ -351,6 +351,7 @@ export const getGetDashboardSummaryUrl = () => {
 }
 
 /**
+ * Organisation staff only. Learners and programme-scoped staff receive 403.
  * @summary Get KPI dashboard summary
  */
 export const getDashboardSummary = async ( options?: Parameters<typeof customFetch>[1]): Promise<DashboardSummary> => {
@@ -3268,6 +3269,7 @@ export const getGetReviewCreditSettingsUrl = () => {
 }
 
 /**
+ * Organisation staff only. Learners and programme-scoped staff receive 403.
  * @summary Get review credit configuration
  */
 export const getReviewCreditSettings = async ( options?: Parameters<typeof customFetch>[1]): Promise<ReviewCreditSettings> => {
@@ -3416,6 +3418,7 @@ export const getExportReviewCreditsUrl = () => {
 }
 
 /**
+ * Organisation staff only. Learners and programme-scoped staff receive 403.
  * @summary Export review credit evidence as CSV
  */
 export const exportReviewCredits = async ( options?: Parameters<typeof customFetch>[1]): Promise<string> => {
@@ -4530,6 +4533,7 @@ export const getGetKpiSummaryUrl = () => {
 }
 
 /**
+ * Organisation staff only. Learners and programme-scoped staff receive 403.
  * @summary KPI aggregates (competencyRate, dropOff, timeToCompetency, trainerUtilization)
  */
 export const getKpiSummary = async ( options?: Parameters<typeof customFetch>[1]): Promise<DashboardSummary> => {
@@ -4826,6 +4830,7 @@ export const getGetReviewCreditsUrl = (orgId: string,) => {
 }
 
 /**
+ * Organisation staff only. Cross-organisation requests receive 403.
  * @summary REST export of review-credit aggregates for HRIS
  */
 export const getReviewCredits = async (orgId: string, options?: Parameters<typeof customFetch>[1]): Promise<ReviewCreditRow[]> => {
