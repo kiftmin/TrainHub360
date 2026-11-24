@@ -6,8 +6,9 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type ResetPasswordBody = {
-  token: string;
-  /** @minLength 12 */
-  password: string;
-};
+export interface CreateOrganizationResponse {
+  orgId: string;
+  domainVerified: boolean;
+  /** @nullable */
+  verificationToken?: string | null;
+}

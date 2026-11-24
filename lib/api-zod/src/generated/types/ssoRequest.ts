@@ -7,5 +7,6 @@
  */
 
 export interface SsoRequest {
+  orgId: string;
   samlAssertion: string;
 }

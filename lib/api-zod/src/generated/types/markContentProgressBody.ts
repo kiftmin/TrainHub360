@@ -9,5 +9,10 @@ import type { MarkContentProgressBodyStatus } from './markContentProgressBodySta
 
 export type MarkContentProgressBody = {
   status?: MarkContentProgressBodyStatus;
-  evidenceNote?: string;
+  /** @nullable */
+  evidenceNote?: string | null;
+  /** @nullable */
+  evidenceFileId?: string | null;
+  /** @nullable */
+  evidenceFileKey?: string | null;
 };

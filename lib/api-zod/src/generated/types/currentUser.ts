@@ -12,4 +12,5 @@ export interface CurrentUser {
   email: string;
   role: string;
   initials: string;
+  isOrgStaff?: boolean;
 }

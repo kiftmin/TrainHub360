@@ -42,6 +42,8 @@ model Organization {
   cohorts                              Cohort[]
   sessions                             Session[]
   bookings                             Booking[]
+  trainerAvailabilities                TrainerAvailability[] @relation("AvailabilityOrganization")
+  trainerAvailabilityExceptions        TrainerAvailabilityException[] @relation("AvailabilityExceptionOrganization")
   threads                              MessageThread[]
   messageTemplates                     MessageTemplate[]
   calendarEvents                       CalendarEvent[]
@@ -70,6 +72,8 @@ model Programme {
   enrolments   Enrolment[]
   threads      MessageThread[]
   sessions     Session[]   @relation("SessionProgramme")
+  trainerAvailabilities TrainerAvailability[] @relation("AvailabilityProgramme")
+  trainerAvailabilityExceptions TrainerAvailabilityException[] @relation("AvailabilityExceptionProgramme")
 
   @@map("programmes")
 }
@@ -100,6 +104,8 @@ model Course {
   feedback         CourseFeedback[]
   bookings         Booking[]
   sessions         Session[]     @relation("SessionCourse")
+  trainerAvailabilities TrainerAvailability[] @relation("AvailabilityCourse")
+  trainerAvailabilityExceptions TrainerAvailabilityException[] @relation("AvailabilityExceptionCourse")
   threads          MessageThread[]
 
   @@map("courses")
@@ -344,6 +350,9 @@ model User {
   deleteRequestsApproved DeleteRequest[] @relation("DeleteApprover")
   sessionsAsTrainer Session[] @relation("SessionTrainer")
   bookingsAsTrainer Booking[] @relation("BookingTrainer")
+  bookingsAsLearner Booking[] @relation("BookingLearner")
+  trainerAvailabilities TrainerAvailability[] @relation("AvailabilityTrainer")
+  trainerAvailabilityExceptions TrainerAvailabilityException[] @relation("AvailabilityExceptionTrainer")
   coursesAsTrainer Course[] @relation("CourseTrainer")
   threadParticipants ThreadParticipant[]
   messagesAuthored Message[] @relation("MessageAuthor")
@@ -488,22 +497,81 @@ model Message {
 }
 
 model Booking {
-  id          String  @id @default(cuid())
-  trainer     String
-  trainerId   String? @map("trainer_id")
-  trainerRef  User?   @relation("BookingTrainer", fields: [trainerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  course      String  @default("")
-  courseId    String? @map("course_id")
-  courseRef   Course? @relation(fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  orgId       String? @map("org_id")
-  organization Organization? @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
-  date        String
-  time        String
-  duration    String  @default("30m")
-  status      String  @default("confirmed")
-  meetingLink String? @map("meeting_link")
+  id                String  @id @default(cuid())
+  trainer           String
+  trainerId         String? @map("trainer_id")
+  trainerRef        User?   @relation("BookingTrainer", fields: [trainerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  learnerId         String? @map("learner_id")
+  learner           User?   @relation("BookingLearner", fields: [learnerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  course            String  @default("")
+  courseId          String? @map("course_id")
+  courseRef         Course? @relation(fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  availabilityId    String? @map("availability_id")
+  availability      TrainerAvailability? @relation("BookingAvailability", fields: [availabilityId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgId             String? @map("org_id")
+  organization      Organization? @relation(fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  date              String
+  time              String
+  startsAt          DateTime? @map("starts_at")
+  endsAt            DateTime? @map("ends_at")
+  timeZone          String  @default("UTC") @map("time_zone")
+  durationMinutes   Int     @default(30) @map("duration_minutes")
+  duration          String  @default("30m")
+  status            String  @default("confirmed")
+  cancelledAt       DateTime? @map("cancelled_at")
+  cancelledBy       String? @map("cancelled_by")
+  cancellationReason String? @map("cancellation_reason") @db.NVarChar(1000)
+  meetingLink       String? @map("meeting_link")
 
+  @@index([learnerId, startsAt])
+  @@index([trainerId, startsAt, status])
   @@map("bookings")
+}
+
+model TrainerAvailability {
+  id             String    @id @default(cuid())
+  trainerId      String    @map("trainer_id")
+  trainer        User      @relation("AvailabilityTrainer", fields: [trainerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgId          String    @map("org_id")
+  organization   Organization @relation("AvailabilityOrganization", fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  programmeId    String?   @map("programme_id")
+  programme      Programme? @relation("AvailabilityProgramme", fields: [programmeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  courseId       String?   @map("course_id")
+  course         Course?   @relation("AvailabilityCourse", fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  dayOfWeek      Int       @map("day_of_week")
+  startTime      String    @map("start_time") @db.NVarChar(5)
+  endTime        String    @map("end_time") @db.NVarChar(5)
+  timeZone       String    @default("UTC") @map("time_zone") @db.NVarChar(64)
+  slotMinutes    Int       @default(30) @map("slot_minutes")
+  isActive       Boolean   @default(true) @map("is_active")
+  validFrom      DateTime? @map("valid_from") @db.Date
+  validTo        DateTime? @map("valid_to") @db.Date
+  createdAt      DateTime  @default(now()) @map("created_at")
+  bookings       Booking[] @relation("BookingAvailability")
+
+  @@index([trainerId, dayOfWeek, isActive])
+  @@map("trainer_availability")
+}
+
+model TrainerAvailabilityException {
+  id          String    @id @default(cuid())
+  trainerId   String    @map("trainer_id")
+  trainer     User      @relation("AvailabilityExceptionTrainer", fields: [trainerId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  orgId       String    @map("org_id")
+  organization Organization @relation("AvailabilityExceptionOrganization", fields: [orgId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  programmeId String?   @map("programme_id")
+  programme   Programme? @relation("AvailabilityExceptionProgramme", fields: [programmeId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  courseId    String?   @map("course_id")
+  course      Course?   @relation("AvailabilityExceptionCourse", fields: [courseId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  date        DateTime  @db.Date
+  startsAt    DateTime? @map("starts_at")
+  endsAt      DateTime? @map("ends_at")
+  isAvailable Boolean   @default(false) @map("is_available")
+  reason      String?   @db.NVarChar(1000)
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@index([trainerId, date])
+  @@map("trainer_availability_exceptions")
 }
 
 model DeleteRequest {

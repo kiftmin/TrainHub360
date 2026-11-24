@@ -29,8 +29,6 @@ import {
   useThreadMessages,
   useSendMessage,
   useBookings,
-  useCreateBooking,
-  useBookableTrainers,
   useCalendarEvents,
   useReviewCreditSettings,
   useUpdateReviewCreditSettings,
@@ -41,6 +39,13 @@ import {
   type Course,
   type ReviewCreditSettings,
 } from '@/api/hooks';
+import {
+  getListBookingSlotsQueryKey,
+  useCancelBooking,
+  useCreateBooking as useApiCreateBooking,
+  useListBookingSlots,
+  useListBookableTrainers,
+} from '@api-client';
 import { getToken, clearSession, getSessionUser } from '@/api/client';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
@@ -79,9 +84,10 @@ export function CalendarPage() {
   const programmes = useProgrammes();
   const bookings = useBookings();
   const events = useCalendarEvents();
-  const trainers = useBookableTrainers();
+  const trainers = useListBookableTrainers();
   const courses = useCourses();
-  const create = useCreateBooking();
+  const create = useApiCreateBooking();
+  const cancel = useCancelBooking();
   const createSession = useCreateSession();
   const rsvp = useRsvpSession();
   const generateIcal = useGenerateIcalToken();
@@ -117,21 +123,45 @@ export function CalendarPage() {
   };
   // Round 8 / B.1: a booking points at a trainer and course by id, so the booking cannot drift
   // to a different person when someone is renamed.
-  const [form, setForm] = useState({ trainerId: '', courseId: '', date: '', time: '' });
+  const [form, setForm] = useState({ trainerId: '', courseId: '', date: '', startsAt: '', availabilityId: '' });
   const [bookingError, setBookingError] = useState<string | null>(null);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  const slots = useListBookingSlots(
+    { trainerId: form.trainerId, from: form.date || undefined, to: form.date || undefined },
+    { query: {
+      queryKey: getListBookingSlotsQueryKey({ trainerId: form.trainerId, from: form.date || undefined, to: form.date || undefined }),
+      enabled: Boolean(form.trainerId && form.date),
+    } },
+  );
   const book = () => {
     setBookingError(null);
-    if (!form.trainerId || !form.date || !form.time) { setBookingError('Pick a trainer, date and time.'); return; }
-    create.mutate({ trainerId: form.trainerId, courseId: form.courseId || undefined, date: form.date, time: form.time }, {
-      onSuccess: () => { qc.invalidateQueries({ queryKey: ['bookings'] }); setOpen(false); setForm({ trainerId: '', courseId: '', date: '', time: '' }); },
+    if (!form.trainerId || !form.date || !form.startsAt) { setBookingError('Pick a trainer, date and available time.'); return; }
+    create.mutate({ data: {
+      trainerId: form.trainerId, courseId: form.courseId || undefined,
+      availabilityId: form.availabilityId || undefined, startsAt: form.startsAt,
+    } }, {
+      onSuccess: () => {
+        qc.invalidateQueries({ queryKey: ['bookings'] });
+        qc.invalidateQueries({ queryKey: ['/api/bookings/slots'] });
+        setOpen(false);
+        setForm({ trainerId: '', courseId: '', date: '', startsAt: '', availabilityId: '' });
+      },
       onError: (e) => setBookingError((e as Error).message),
     });
   };
+  const cancelBooking = (bookingId: string) => cancel.mutate({ bookingId }, {
+    onSuccess: () => {
+      setCancelError(null);
+      qc.invalidateQueries({ queryKey: ['bookings'] });
+      qc.invalidateQueries({ queryKey: ['/api/bookings/slots'] });
+    },
+    onError: (e) => setCancelError((e as Error).message),
+  });
   const loading = sessions.isLoading || bookings.isLoading || events.isLoading;
   const failed = sessions.isError || bookings.isError || events.isError;
   const learnerSessions = (sessions.data || []).filter((s) => s.enrolled || ['invited', 'confirmed', 'waitlisted'].includes(s.myRsvpStatus ?? ''));
   return <div className="page-in">
-    <PageHeading eyebrow="Schedule & support" title="Make the next step easy." detail="One operational view for live training, online sessions, and focused 1:1 support." action={<><Button variant="outline" onClick={() => setSessionOpen(true)}><CalendarDays className="size-4" />Schedule session</Button><Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus className="size-4" />Book 1:1</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Book a 1:1 session</DialogTitle></DialogHeader><div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={form.trainerId} onChange={(e) => setForm({ ...form, trainerId: e.target.value })} data-testid="select-booking-trainer"><option value="">Select a trainer</option>{(trainers.data || []).map((t) => <option key={t.id} value={t.id}>{t.name} - {t.email}</option>)}</select>{!trainers.isLoading && !(trainers.data || []).length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainer is available in your programmes yet.</span>}</label><label className="block text-xs font-semibold">Course (optional)<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={form.courseId} onChange={(e) => setForm({ ...form, courseId: e.target.value })} data-testid="select-booking-course"><option value="">No specific course</option>{(courses.data || []).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</select></label><label className="block text-xs font-semibold">Date<Input className="mt-2" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} /></label><label className="block text-xs font-semibold">Time<Input className="mt-2" type="time" value={form.time} onChange={(e) => setForm({ ...form, time: e.target.value })} /></label>{bookingError && <p className="text-xs text-destructive">{bookingError}</p>}<Button className="w-full" onClick={book} disabled={create.isPending}>{create.isPending ? 'Booking-' : 'Confirm booking'}</Button></div></DialogContent></Dialog></>} />
+    <PageHeading eyebrow="Schedule & support" title="Make the next step easy." detail="One operational view for live training, online sessions, and focused 1:1 support." action={<><Button variant="outline" onClick={() => setSessionOpen(true)}><CalendarDays className="size-4" />Schedule session</Button><Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button><Plus className="size-4" />Book 1:1</Button></DialogTrigger><DialogContent><DialogHeader><DialogTitle>Book a 1:1 session</DialogTitle></DialogHeader><div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={form.trainerId} onChange={(e) => setForm({ ...form, trainerId: e.target.value, startsAt: '', availabilityId: '' })} data-testid="select-booking-trainer"><option value="">Select a trainer</option>{(trainers.data || []).map((t) => <option key={t.id} value={t.id}>{t.name} - {t.email}</option>)}</select>{!trainers.isLoading && !(trainers.data || []).length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainer is available in your programmes yet.</span>}</label><label className="block text-xs font-semibold">Course (optional)<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={form.courseId} onChange={(e) => setForm({ ...form, courseId: e.target.value })} data-testid="select-booking-course"><option value="">No specific course</option>{(courses.data || []).map((c) => <option key={c.id} value={c.id}>{c.title}</option>)}</select></label><label className="block text-xs font-semibold">Date<Input className="mt-2" type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value, startsAt: '', availabilityId: '' })} data-testid="input-booking-date" /></label><label className="block text-xs font-semibold">Available time<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={form.startsAt} onChange={(e) => { const slot = (slots.data?.slots || []).find((item) => item.startsAt === e.target.value); setForm({ ...form, startsAt: e.target.value, availabilityId: slot?.availabilityId || '' }); }} disabled={!form.trainerId || !form.date} data-testid="select-booking-slot"><option value="">{form.trainerId && form.date ? 'Select an available slot' : 'Choose a trainer and date first'}</option>{(slots.data?.slots || []).map((slot) => <option key={`${slot.availabilityId || 'none'}-${slot.startsAt}`} value={slot.startsAt} disabled={!slot.available}>{new Date(slot.startsAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}{slot.available ? '' : ' (unavailable)'}</option>)}</select>{form.trainerId && form.date && !(slots.data?.slots || []).length && !slots.isLoading && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No release slots for this date.</span>}</label>{bookingError && <p className="text-xs text-destructive">{bookingError}</p>}<Button className="w-full" onClick={book} disabled={create.isPending}>{create.isPending ? 'Booking-' : 'Confirm booking'}</Button></div></DialogContent></Dialog></>} />
     <Dialog open={sessionOpen} onOpenChange={setSessionOpen}>
       <DialogContent>
         <DialogHeader><DialogTitle>Schedule a session</DialogTitle></DialogHeader>
@@ -169,7 +199,8 @@ export function CalendarPage() {
         </div>
       </section>
       <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Booked coaching</p><div className="flex items-center justify-between gap-2"><h2 className="mt-1 text-base font-bold">{bookings.data?.length || 0} sessions</h2><Button size="sm" variant="outline" onClick={addToCalendar} disabled={generateIcal.isPending} data-testid="button-ical-feed">{generateIcal.isPending ? 'Preparing-' : 'Subscribe (.ics)'}</Button></div>
-        <div className="mt-4 space-y-2">{(bookings.data || []).slice(0, 5).map((b) => <div key={b.id} className="rounded-lg bg-secondary/55 p-3"><p className="text-sm font-semibold">{b.trainer}</p><p className="text-xs text-muted-foreground">{b.course} - {fmtDate(b.date)} - {b.time}</p></div>)}
+        {cancelError && <p className="mt-2 text-xs text-destructive">{cancelError}</p>}
+        <div className="mt-4 space-y-2">{(bookings.data || []).slice(0, 5).map((b) => <div key={b.id} className="flex items-center gap-2 rounded-lg bg-secondary/55 p-3"><div className="min-w-0 flex-1"><p className="text-sm font-semibold">{b.trainer}</p><p className="text-xs text-muted-foreground">{b.course} - {fmtDate(b.date)} - {b.time} - {b.status}</p></div><Button size="sm" variant="ghost" onClick={() => cancelBooking(b.id)} disabled={cancel.isPending || b.status === 'cancelled'} data-testid={`cancel-booking-${b.id}`}>{b.status === 'cancelled' ? 'Cancelled' : 'Cancel'}</Button></div>)}
         {!bookings.data?.length && <EmptyState title="No 1:1s booked" detail="Book focused support with a trainer." />}</div>
       </section>
     </div>}

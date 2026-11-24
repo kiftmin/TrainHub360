@@ -43,6 +43,8 @@ import {
   uploadMaxBytes,
 } from "../services/uploads.js";
 import { recomputeEnrolmentProgress, providerForUrl, isSafeExternalUrl } from "../services/contentProgress.js";
+import { buildLearnerDashboard } from "../services/learnerDashboard.js";
+import { availableSlotsForTrainer, bookingConflicts } from "../services/bookingSlots.js";
 import { attemptStats, versionChain } from "../services/assessmentAttempts.js";
 import { evaluateEnrolment } from "../services/enrolmentOutcome.js";
 import { enqueueCourseEvaluation, drainEvaluationQueue } from "../services/evaluationQueue.js";
@@ -336,6 +338,13 @@ async function kpiPayload(orgId: string) {
 }
 router.get("/dashboard/summary", async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
 router.get("/kpi/summary", async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
+router.get("/me/learner-dashboard", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const dashboard = await buildLearnerDashboard(me.id, scope.orgId);
+  if (!dashboard) return res.status(404).json({ error: "learner not found" });
+  return res.json(dashboard);
+});
 
 async function assertProgrammeInOrg(programmeId: string, orgId: string) {
   const p = await db.programme.findFirst({ where: { id: programmeId, orgId } });
@@ -363,9 +372,25 @@ async function assertCourseInOrg(courseId: string, orgId: string) {
 }
 
 router.get("/enrolments", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const only = await stakeholderProgrammes(req as AuthedRequest);
-  res.json(await db.enrolment.findMany({ where: { programme: scope, ...(only ? { programmeId: { in: only } } : {}) }, take: 200 }));
+  const orgStaff = await isOrgStaff(me.id);
+  const stakeholder = await stakeholderProgrammes(req as AuthedRequest);
+  if (orgStaff) {
+    return void res.json(await db.enrolment.findMany({ where: { programme: scope }, take: 200 }));
+  }
+  if (stakeholder) {
+    return void res.json(await db.enrolment.findMany({ where: { programme: { orgId: scope.orgId, id: { in: stakeholder } } }, take: 200 }));
+  }
+  const grants = await db.userRole.findMany({
+    where: { userId: me.id, programmeId: { not: null }, role: { name: { in: ["admin", "owner", "trainer"] } } },
+    select: { programmeId: true },
+  }).catch(() => [] as Array<{ programmeId: string | null }>);
+  const programmeIds = grants.map((g) => g.programmeId).filter((id): id is string => !!id);
+  const where = programmeIds.length
+    ? { programme: { orgId: scope.orgId }, OR: [{ learnerId: me.id }, { programmeId: { in: programmeIds } }] }
+    : { learnerId: me.id, programme: { orgId: scope.orgId } };
+  return void res.json(await db.enrolment.findMany({ where, take: 200 }));
 });
 router.post("/enrolments", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
@@ -3923,8 +3948,13 @@ router.delete("/message-templates/:id", async (req, res) => {
 });
 
 router.get("/bookings", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  res.json(await db.booking.findMany({ where: { orgId: scope.orgId }, take: 200 }).catch(() => []));
+  const orgStaff = await isOrgStaff(me.id);
+  const where = orgStaff
+    ? { orgId: scope.orgId }
+    : { orgId: scope.orgId, OR: [{ learnerId: me.id }, { trainerId: me.id }] };
+  res.json(await db.booking.findMany({ where, take: 200 }).catch(() => []));
 });
 // Round 8 / B.1: the bookable trainers for the caller. Org staff see every trainer; a learner
 // sees only trainers who hold a grant in a programme they are currently enrolled on.
@@ -3954,6 +3984,97 @@ router.get("/bookings/trainers", async (req, res) => {
   for (const g of grants) if (!seen.has(g.userId)) seen.set(g.userId, { id: g.userId, name: g.user.name, email: g.user.email });
   return res.json([...seen.values()].sort((a, b) => a.name.localeCompare(b.name)));
 });
+async function bookableProgrammeIds(userId: string, orgId: string, orgStaff: boolean): Promise<string[] | null> {
+  if (orgStaff) return null;
+  const rows = await db.enrolment.findMany({
+    where: { learnerId: userId, status: { not: "withdrawn" }, withdrawnAt: null, programme: { orgId } },
+    select: { programmeId: true },
+  }).catch(() => [] as Array<{ programmeId: string | null }>);
+  return rows.map((row) => row.programmeId).filter((id): id is string => !!id);
+}
+
+router.get("/bookings/slots", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const trainerId = String(req.query.trainerId ?? "").trim();
+  if (!trainerId) return res.status(400).json({ error: "trainerId is required" });
+  const orgStaff = await isOrgStaff(me.id);
+  const programmeIds = await bookableProgrammeIds(me.id, scope.orgId, orgStaff);
+  const grant = await db.userRole.findFirst({
+    where: {
+      userId: trainerId,
+      role: { name: "trainer" },
+      user: { orgId: scope.orgId, isActive: true },
+      ...(programmeIds ? { programmeId: { in: programmeIds } } : { programmeId: { not: null } }),
+    },
+    select: { userId: true },
+  }).catch(() => null);
+  if (!grant) return res.status(404).json({ error: "trainer not found in your organization" });
+  const today = new Date().toISOString().slice(0, 10);
+  const inTwoWeeks = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10);
+  const result = await availableSlotsForTrainer({
+    orgId: scope.orgId,
+    trainerId,
+    from: String(req.query.from ?? today),
+    to: String(req.query.to ?? inTwoWeeks),
+    programmeIds,
+  });
+  if ("error" in result) return res.status(400).json({ error: result.error });
+  return res.json({ trainerId, timeZone: "UTC", slots: result.slots });
+});
+
+router.get("/bookings/availability", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const orgStaff = await isOrgStaff(me.id);
+  const rows = await db.trainerAvailability.findMany({
+    where: { orgId: scope.orgId, ...(orgStaff ? {} : { trainerId: me.id }) },
+    orderBy: { trainerId: "asc" },
+    take: 500,
+  }).catch(() => []);
+  return res.json(rows);
+});
+
+router.post("/bookings/availability", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const trainerId = String(req.body?.trainerId ?? "").trim();
+  const programmeId = req.body?.programmeId ? String(req.body.programmeId) : null;
+  const courseId = req.body?.courseId ? String(req.body.courseId) : null;
+  const dayOfWeek = Number(req.body?.dayOfWeek);
+  const startTime = String(req.body?.startTime ?? "").trim();
+  const endTime = String(req.body?.endTime ?? "").trim();
+  const slotMinutes = Math.min(Math.max(Number(req.body?.slotMinutes) || 30, 15), 240);
+  const timePattern = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (!trainerId || !Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6 || !timePattern.test(startTime) || !timePattern.test(endTime)) {
+    return res.status(400).json({ error: "trainerId, dayOfWeek, startTime and endTime are required" });
+  }
+  const mayManage = (await isOrgStaff(me.id)) || me.id === trainerId || (programmeId ? await isProgrammeStaff(me.id, programmeId) : false);
+  if (!mayManage) return res.status(403).json({ error: "only staff or the trainer may set availability" });
+  const trainer = await db.userRole.findFirst({
+    where: { userId: trainerId, role: { name: "trainer" }, user: { orgId: scope.orgId, isActive: true } },
+    select: { userId: true },
+  }).catch(() => null);
+  if (!trainer) return res.status(404).json({ error: "trainer not found in your organization" });
+  if (programmeId) await assertProgrammeInOrg(programmeId, scope.orgId);
+  if (courseId) await assertCourseInOrg(courseId, scope.orgId);
+  const row = await db.trainerAvailability.create({ data: {
+    trainerId,
+    orgId: scope.orgId,
+    programmeId,
+    courseId,
+    dayOfWeek,
+    startTime,
+    endTime,
+    slotMinutes,
+    timeZone: String(req.body?.timeZone ?? "UTC").slice(0, 64),
+    validFrom: req.body?.validFrom ? new Date(String(req.body.validFrom)) : null,
+    validTo: req.body?.validTo ? new Date(String(req.body.validTo)) : null,
+    isActive: req.body?.isActive !== false,
+  } });
+  return res.status(201).json(row);
+});
+
 router.post("/bookings", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
@@ -3967,7 +4088,8 @@ router.post("/bookings", async (req, res) => {
   }).catch(() => null);
   if (!grant) return res.status(404).json({ error: "trainer not found in your organization" });
   const programmeId = grant.programmeId!;
-  if (!(await isOrgStaff(me.id))) {
+  const orgStaff = await isOrgStaff(me.id);
+  if (!orgStaff) {
     const myGrant = await db.userRole.findFirst({ where: { userId: me.id, programmeId }, select: { id: true } }).catch(() => null);
     if (!myGrant) {
       const enrolment = await db.enrolment.findFirst({ where: { learnerId: me.id, programmeId, status: { not: "withdrawn" }, withdrawnAt: null }, select: { id: true } }).catch(() => null);
@@ -3982,9 +4104,79 @@ router.post("/bookings", async (req, res) => {
     courseId = course.id;
     courseTitle = course.title;
   }
-  return res.status(201).json(await db.booking.create({
-    data: { trainer: grant.user.name, trainerId: grant.userId, course: courseTitle, courseId, orgId: scope.orgId, date: String(req.body?.date ?? ""), time: String(req.body?.time ?? "") },
-  }));
+  const availabilityId = req.body?.availabilityId ? String(req.body.availabilityId) : null;
+  const requestedStart = req.body?.startsAt ? new Date(String(req.body.startsAt)) : null;
+  const date = String(req.body?.date ?? requestedStart?.toISOString().slice(0, 10) ?? "");
+  const time = String(req.body?.time ?? requestedStart?.toISOString().slice(11, 16) ?? "");
+  let startsAt: Date | null = requestedStart && Number.isFinite(requestedStart.getTime()) ? requestedStart : null;
+  let endsAt: Date | null = null;
+  let durationMinutes = Math.min(Math.max(Number(req.body?.durationMinutes) || 30, 15), 240);
+  let timeZone = String(req.body?.timeZone ?? "UTC").slice(0, 64);
+  if (availabilityId || requestedStart) {
+    if (!availabilityId || !startsAt) return res.status(400).json({ error: "availabilityId and startsAt are required" });
+    const day = startsAt.toISOString().slice(0, 10);
+    const programmeIds = await bookableProgrammeIds(me.id, scope.orgId, orgStaff);
+    const slots = await availableSlotsForTrainer({ orgId: scope.orgId, trainerId, from: day, to: day, programmeIds });
+    if ("error" in slots) return res.status(400).json({ error: slots.error });
+    const slot = slots.slots.find((item) => item.available && item.availabilityId === availabilityId && item.startsAt === startsAt!.toISOString());
+    if (!slot) return res.status(409).json({ error: "that slot is no longer available" });
+    startsAt = new Date(slot.startsAt);
+    endsAt = new Date(slot.endsAt);
+    durationMinutes = slot.durationMinutes;
+    timeZone = slot.timeZone;
+  } else {
+    const parsedStart = new Date(`${date}T${time}:00`);
+    startsAt = Number.isFinite(parsedStart.getTime()) ? parsedStart : null;
+    endsAt = startsAt ? new Date(startsAt.getTime() + durationMinutes * 60_000) : null;
+  }
+  if (!startsAt || !endsAt) return res.status(400).json({ error: "a valid date and time are required" });
+
+  const created = await db.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT id FROM users WITH (UPDLOCK,HOLDLOCK) WHERE id = ${trainerId}`;
+    if (await bookingConflicts({ trainerId, learnerId: me.id, startsAt, endsAt })) {
+      const err = new Error("this slot is no longer available") as Error & { status?: number };
+      err.status = 409;
+      throw err;
+    }
+    return tx.booking.create({
+      data: {
+        trainer: grant.user.name,
+        trainerId: grant.userId,
+        learnerId: me.id,
+        course: courseTitle,
+        courseId,
+        orgId: scope.orgId,
+        date,
+        time,
+        startsAt,
+        endsAt,
+        timeZone,
+        durationMinutes,
+        duration: `${durationMinutes}m`,
+        availabilityId,
+      },
+    });
+  });
+  return res.status(201).json(created);
+});
+
+router.post("/bookings/:id/cancel", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const booking = await db.booking.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
+  if (!booking) return res.status(404).json({ error: "booking not found" });
+  const staff = (await isOrgStaff(me.id)) || (await hasAnyProgrammeStaffGrant(me.id));
+  if (!staff && booking.learnerId !== me.id && booking.trainerId !== me.id) return res.status(403).json({ error: "you cannot cancel this booking" });
+  const updated = await db.booking.update({
+    where: { id: booking.id },
+    data: {
+      status: "cancelled",
+      cancelledAt: new Date(),
+      cancelledBy: me.id,
+      cancellationReason: req.body?.reason ? String(req.body.reason).slice(0, 1000) : null,
+    },
+  });
+  return res.json(updated);
 });
 // Round 8 / D.2: a feed token is a bearer credential in a URL, so the database keeps only its
 // SHA-256. The plaintext exists once, in the response to the rotation call.
@@ -4107,11 +4299,26 @@ router.post("/notifications/read-all", async (req, res) => {
 router.get("/certificates", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  if (me.role === "learner") {
-    res.json(await db.certificate.findMany({ where: { learnerId: me.id }, include: { course: { select: { title: true } } }, orderBy: { issuedAt: "desc" }, take: 200 }).catch(() => []));
-  } else {
-    res.json(await db.certificate.findMany({ where: { course: { programme: { orgId: scope.orgId } } }, include: { course: { select: { title: true } }, learner: { select: { name: true, email: true } } }, orderBy: { expiresAt: "asc" }, take: 500 }).catch(() => []));
+  const staff = (await isOrgStaff(me.id)) || (await hasAnyProgrammeStaffGrant(me.id));
+  if (!staff) {
+    return void res.json(await db.certificate.findMany({ where: { learnerId: me.id, course: { programme: { orgId: scope.orgId } } }, include: { course: { select: { title: true } } }, orderBy: { issuedAt: "desc" }, take: 200 }).catch(() => []));
   }
+  return void res.json(await db.certificate.findMany({ where: { course: { programme: { orgId: scope.orgId } } }, include: { course: { select: { title: true } }, learner: { select: { name: true, email: true } } }, orderBy: { expiresAt: "asc" }, take: 500 }).catch(() => []));
+});
+router.get("/certificates/:id/print", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const certificate = await db.certificate.findFirst({
+    where: { id: req.params.id, course: { programme: { orgId: scope.orgId } } },
+    include: { course: { select: { title: true } }, learner: { select: { name: true } } },
+  }).catch(() => null);
+  if (!certificate) return res.status(404).json({ error: "certificate not found" });
+  const staff = (await isOrgStaff(me.id)) || (await hasAnyProgrammeStaffGrant(me.id));
+  if (!staff && certificate.learnerId !== me.id) return res.status(403).json({ error: "this certificate belongs to another learner" });
+  const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  const revoked = certificate.status === "revoked";
+  const expired = !!certificate.expiresAt && +certificate.expiresAt <= Date.now();
+  return void res.type("html").send(`<!doctype html><html><head><meta charset="utf-8"><title>Certificate ${escape(certificate.certificateNumber)}</title><style>body{font-family:Arial,sans-serif;margin:48px;color:#111}.frame{border:2px solid #111;padding:48px;text-align:center}.muted{color:#666;font-size:14px}.invalid{color:#a00;font-weight:bold}</style></head><body><div class="frame"><h1>TrainHub360 Certificate</h1><p class="muted">${revoked ? "REVOKED" : expired ? "EXPIRED" : "ACTIVE"}</p><h2>${escape(certificate.learner.name)}</h2><p>has completed</p><h3>${escape(certificate.course.title)}</h3><p>Issued ${certificate.issuedAt.toISOString().slice(0, 10)}</p><p>Expires ${certificate.expiresAt ? certificate.expiresAt.toISOString().slice(0, 10) : "No expiry"}</p><p class="muted">Certificate ${escape(certificate.certificateNumber)}</p>${revoked || expired ? '<p class="invalid">This certificate is not active.</p>' : ""}</div></body></html>`);
 });
 router.post("/certificates/check-expiry", requireOrgStaff(), async (req, res) => {
   const { runCertificateExpiryJob } = await import("../jobs/certificateExpiryJob.js");

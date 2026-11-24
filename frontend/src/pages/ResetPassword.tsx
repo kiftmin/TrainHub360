@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { KeyRound, ShieldCheck, CheckCircle2 } from 'lucide-react';
+import { useResetPassword } from '@api-client';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 
@@ -20,6 +21,7 @@ export function ResetPassword({ onDone }: { onDone: () => void }) {
   const [state, setState] = useState<State>('checking');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const resetPassword = useResetPassword();
 
   useEffect(() => {
     const fromUrl = new URLSearchParams(window.location.search).get('token') ?? '';
@@ -36,13 +38,7 @@ export function ResetPassword({ onDone }: { onDone: () => void }) {
     }
     setBusy(true);
     try {
-      const res = await fetch('/api/auth/reset-password', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ token, newPassword: password }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(body.error || `Reset failed (${res.status})`);
+      await resetPassword.mutateAsync({ data: { token, newPassword: password } });
       setState('done');
     } catch (err) {
       setError((err as Error).message);

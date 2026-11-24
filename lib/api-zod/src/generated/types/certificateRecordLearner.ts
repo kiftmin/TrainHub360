@@ -6,4 +6,7 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type MarkContentProgress200 = { [key: string]: unknown };
+export type CertificateRecordLearner = {
+  name?: string;
+  email?: string;
+};

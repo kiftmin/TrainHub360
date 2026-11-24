@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ShieldCheck } from "lucide-react";
+import { useCreateOrganization } from "@api-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
@@ -7,6 +8,7 @@ export function Register({ onDone, onBack }: { onDone: () => void; onBack: () =>
   const [form, setForm] = useState({ name: "", adminName: "", adminEmail: "", domain: "", adminPassword: "" });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const createOrganization = useCreateOrganization();
   const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => setForm({ ...form, [k]: e.target.value });
 
   async function submit(e: React.FormEvent) {
@@ -14,13 +16,7 @@ export function Register({ onDone, onBack }: { onDone: () => void; onBack: () =>
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/organizations", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(form),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? `Registration failed (${res.status})`);
+      await createOrganization.mutateAsync({ data: form });
       onDone();
     } catch (err) {
       setError((err as Error).message);

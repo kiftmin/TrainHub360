@@ -130,6 +130,7 @@ export interface CurrentUser {
   email: string;
   role: string;
   initials: string;
+  isOrgStaff?: boolean;
 }
 
 export interface Workspace {
@@ -516,14 +517,30 @@ export interface Booking {
   /** Display name captured when the booking was made */
   trainer: string;
   /** @nullable */
-  trainerId: string | null;
+  trainerId?: string | null;
+  /** @nullable */
+  learnerId?: string | null;
   course: string;
   /** @nullable */
   courseId?: string | null;
+  /** @nullable */
+  availabilityId?: string | null;
   date: string;
   time: string;
+  /** @nullable */
+  startsAt?: string | null;
+  /** @nullable */
+  endsAt?: string | null;
+  timeZone?: string;
+  durationMinutes?: number;
   duration: string;
   status: string;
+  /** @nullable */
+  cancelledAt?: string | null;
+  /** @nullable */
+  cancelledBy?: string | null;
+  /** @nullable */
+  cancellationReason?: string | null;
   /** @nullable */
   meetingLink?: string | null;
 }
@@ -533,8 +550,84 @@ export interface BookingInput {
   trainerId: string;
   /** @nullable */
   courseId?: string | null;
-  date: string;
-  time: string;
+  /** @nullable */
+  availabilityId?: string | null;
+  /** @nullable */
+  startsAt?: string | null;
+  date?: string;
+  time?: string;
+  /**
+     * @minimum 15
+     * @maximum 240
+     */
+  durationMinutes?: number;
+  timeZone?: string;
+}
+
+export interface BookingSlot {
+  /** @nullable */
+  availabilityId: string | null;
+  startsAt: string;
+  endsAt: string;
+  timeZone: string;
+  durationMinutes: number;
+  available: boolean;
+}
+
+export interface BookingSlotsResponse {
+  trainerId: string;
+  timeZone: string;
+  slots: BookingSlot[];
+}
+
+export interface TrainerAvailability {
+  id: string;
+  trainerId: string;
+  orgId: string;
+  /** @nullable */
+  programmeId?: string | null;
+  /** @nullable */
+  courseId?: string | null;
+  /**
+     * @minimum 0
+     * @maximum 6
+     */
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+  timeZone: string;
+  slotMinutes: number;
+  isActive: boolean;
+  /** @nullable */
+  validFrom?: string | null;
+  /** @nullable */
+  validTo?: string | null;
+}
+
+export interface TrainerAvailabilityInput {
+  trainerId: string;
+  /** @nullable */
+  programmeId?: string | null;
+  /** @nullable */
+  courseId?: string | null;
+  /**
+     * @minimum 0
+     * @maximum 6
+     */
+  dayOfWeek: number;
+  startTime: string;
+  endTime: string;
+  /**
+     * @minimum 15
+     * @maximum 240
+     */
+  slotMinutes?: number;
+  timeZone?: string;
+  /** @nullable */
+  validFrom?: string | null;
+  /** @nullable */
+  validTo?: string | null;
+  isActive?: boolean;
 }
 
 export interface BookableTrainer {
@@ -674,7 +767,31 @@ export interface AuthResponse {
 }
 
 export interface SsoRequest {
+  orgId: string;
   samlAssertion: string;
+}
+
+export interface SetPasswordRequest {
+  token: string;
+  /** @minLength 8 */
+  newPassword: string;
+}
+
+export interface CreateOrganizationRequest {
+  name: string;
+  adminName: string;
+  adminEmail: string;
+  /** @nullable */
+  domain?: string | null;
+  /** @minLength 8 */
+  adminPassword: string;
+}
+
+export interface CreateOrganizationResponse {
+  orgId: string;
+  domainVerified: boolean;
+  /** @nullable */
+  verificationToken?: string | null;
 }
 
 export interface Enrolment {
@@ -772,6 +889,297 @@ export interface ReviewCreditRow {
   learnerId: string;
   raw: number;
   final: number;
+}
+
+export interface ContentItemProgress {
+  status: string;
+  /** @nullable */
+  completedAt: string | null;
+  /** @nullable */
+  verifiedAt: string | null;
+}
+
+export interface CourseContentItem {
+  id: string;
+  type: string;
+  title: string;
+  /** @nullable */
+  description?: string | null;
+  order: number;
+  required: boolean;
+  /** @nullable */
+  estimatedMinutes?: number | null;
+  body?: string;
+  /** @nullable */
+  fileName?: string | null;
+  /** @nullable */
+  mimeType?: string | null;
+  /** @nullable */
+  sizeBytes?: number | null;
+  /** @nullable */
+  url?: string | null;
+  /** @nullable */
+  provider?: string | null;
+  completionMode: string;
+  isArchived?: boolean;
+  progress: ContentItemProgress;
+}
+
+export interface CourseContentModule {
+  id: string;
+  title: string;
+  order: number;
+  contentItems: CourseContentItem[];
+}
+
+export interface CourseContent {
+  courseId: string;
+  progress: number;
+  modules: CourseContentModule[];
+}
+
+export type ContentProgressUpdateEnrolmentOutcome = { [key: string]: unknown };
+
+export interface ContentProgressUpdate {
+  id: string;
+  enrolmentId: string;
+  contentItemId: string;
+  status: string;
+  /** @nullable */
+  startedAt?: string | null;
+  /** @nullable */
+  completedAt?: string | null;
+  /** @nullable */
+  evidenceNote?: string | null;
+  /** @nullable */
+  evidenceFileKey?: string | null;
+  /** @nullable */
+  evidenceFileId?: string | null;
+  /** @nullable */
+  verifiedBy?: string | null;
+  /** @nullable */
+  verifiedAt?: string | null;
+  enrolmentProgress: number;
+  enrolmentOutcome?: ContentProgressUpdateEnrolmentOutcome;
+}
+
+export type CertificateRecordCourse = {
+  title?: string;
+};
+
+export type CertificateRecordLearner = {
+  name?: string;
+  email?: string;
+};
+
+export interface CertificateRecord {
+  id: string;
+  certificateNumber: string;
+  learnerId?: string;
+  courseId: string;
+  /** @nullable */
+  enrolmentId?: string | null;
+  /** @nullable */
+  attemptId?: string | null;
+  issuedAt: string;
+  /** @nullable */
+  expiresAt: string | null;
+  status: string;
+  course?: CertificateRecordCourse;
+  learner?: CertificateRecordLearner;
+}
+
+export interface LearnerDashboardLearner {
+  id: string;
+  name: string;
+  email: string;
+  /** @nullable */
+  department?: string | null;
+  /** @nullable */
+  jobFunction?: string | null;
+}
+
+export interface LearnerDashboardSummary {
+  assignedCourses: number;
+  completedCourses: number;
+  overallProgress: number;
+  outstandingActivities: number;
+  pendingVerifications: number;
+  unreadNotifications: number;
+  unreadMessages: number;
+}
+
+export interface LearnerModuleProgress {
+  id: string;
+  title: string;
+  total: number;
+  completed: number;
+  progress: number;
+}
+
+export interface LearnerAssessmentState {
+  id: string;
+  title: string;
+  type: string;
+  passMark: number;
+  /** @nullable */
+  maxAttempts: number | null;
+  attemptsUsed: number;
+  /** @nullable */
+  bestScore: number | null;
+  passed: boolean;
+}
+
+export type LearnerCourseProgressCounts = {
+  totalContent: number;
+  completedContent: number;
+  inProgressContent: number;
+  requiredOutstanding: number;
+  pendingVerification: number;
+  assessmentsOutstanding: number;
+  awaitingGrading: number;
+};
+
+export interface LearnerCourseProgress {
+  enrolmentId: string;
+  courseId: string;
+  title: string;
+  programmeId: string;
+  programmeName: string;
+  status: string;
+  progress: number;
+  /** @nullable */
+  dueDate?: string | null;
+  /** @nullable */
+  deadlineDate?: string | null;
+  /** @nullable */
+  completionDate?: string | null;
+  /** @nullable */
+  completionSource?: string | null;
+  competent: boolean;
+  competenceStatus: string;
+  counts: LearnerCourseProgressCounts;
+  modules: LearnerModuleProgress[];
+  assessments: LearnerAssessmentState[];
+  /** @nullable */
+  nextContentItemId?: string | null;
+}
+
+export interface LearnerUpcomingSession {
+  id: string;
+  title: string;
+  startsAt: string;
+  /** @nullable */
+  endsAt: string | null;
+  timezone: string;
+  mode: string;
+  trainer: string;
+  /** @nullable */
+  courseId: string | null;
+  /** @nullable */
+  programmeId: string | null;
+  /** @nullable */
+  myRsvpStatus: string | null;
+  icsUrl: string;
+}
+
+export interface LearnerLatestResult {
+  attemptId: string;
+  assessmentId: string;
+  assessmentTitle: string;
+  assessmentType: string;
+  courseTitle: string;
+  attemptNumber: number;
+  status: string;
+  /** @nullable */
+  submittedAt: string | null;
+  /** @nullable */
+  gradedAt: string | null;
+  /** @nullable */
+  score: number | null;
+  /** @nullable */
+  percent: number | null;
+  /** @nullable */
+  passed: boolean | null;
+  passMark: number;
+  awaitingGrading: boolean;
+}
+
+export interface LearnerCertificate {
+  id: string;
+  certificateNumber: string;
+  courseId: string;
+  courseTitle: string;
+  /** @nullable */
+  enrolmentId: string | null;
+  issuedAt: string;
+  /** @nullable */
+  expiresAt: string | null;
+  status: string;
+  active: boolean;
+  printUrl: string;
+}
+
+export interface LearnerPendingVerification {
+  id: string;
+  contentItemId: string;
+  contentTitle: string;
+  courseId: string;
+  courseTitle: string;
+  enrolmentId: string;
+  /** @nullable */
+  submittedAt: string | null;
+}
+
+export interface LearnerNextAction {
+  id: string;
+  type: string;
+  title: string;
+  detail: string;
+  href: string;
+  priority: number;
+}
+
+export interface LearnerDashboardNotification {
+  id: string;
+  type: string;
+  title: string;
+  /** @nullable */
+  body: string | null;
+  /** @nullable */
+  link: string | null;
+  createdAt: string;
+}
+
+export interface LearnerMessageSummary {
+  id: string;
+  subject: string;
+  /** @nullable */
+  courseId: string | null;
+  /** @nullable */
+  courseTitle: string | null;
+  urgent: boolean;
+  /** @nullable */
+  lastMessageAt: string | null;
+  /** @nullable */
+  lastMessagePreview: string | null;
+  slaStatus: string;
+  slaState: string;
+  awaitingTrainerResponse: boolean;
+  href: string;
+}
+
+export interface LearnerDashboard {
+  learner: LearnerDashboardLearner;
+  summary: LearnerDashboardSummary;
+  courses: LearnerCourseProgress[];
+  upcomingSessions: LearnerUpcomingSession[];
+  latestResults: LearnerLatestResult[];
+  certificates: LearnerCertificate[];
+  pendingVerifications: LearnerPendingVerification[];
+  nextActions: LearnerNextAction[];
+  notifications: LearnerDashboardNotification[];
+  messages: LearnerMessageSummary[];
 }
 
 export type CreateProgrammeBody = {
@@ -1070,6 +1478,16 @@ export type UpdateThreadSlaBody = {
   slaHours: number;
 };
 
+export type ListBookingSlotsParams = {
+trainerId: string;
+from?: string;
+to?: string;
+};
+
+export type CancelBookingBody = {
+  reason?: string;
+};
+
 export type ListNotificationsParams = {
 /**
  * Only notifications that have not been read
@@ -1244,22 +1662,24 @@ export type UploadContent201 = {
   checksum?: string;
 };
 
-export type GetCourseContent200 = { [key: string]: unknown };
-
 export type MarkContentProgressBodyStatus = typeof MarkContentProgressBodyStatus[keyof typeof MarkContentProgressBodyStatus];
 
 
 export const MarkContentProgressBodyStatus = {
+  not_started: 'not_started',
   in_progress: 'in_progress',
   completed: 'completed',
 } as const;
 
 export type MarkContentProgressBody = {
   status?: MarkContentProgressBodyStatus;
-  evidenceNote?: string;
+  /** @nullable */
+  evidenceNote?: string | null;
+  /** @nullable */
+  evidenceFileId?: string | null;
+  /** @nullable */
+  evidenceFileKey?: string | null;
 };
-
-export type MarkContentProgress200 = { [key: string]: unknown };
 
 export type VerifyContentProgressBody = {
   verified?: boolean;
@@ -1312,20 +1732,8 @@ export type BulkRemoveProgrammeMembers200 = {
   pendingRequestId?: string | null;
 };
 
-export type ActivateAccountBody = {
-  token: string;
-  /** @minLength 12 */
-  password: string;
-};
-
 export type RequestPasswordResetBody = {
   email: string;
-};
-
-export type ResetPasswordBody = {
-  token: string;
-  /** @minLength 12 */
-  password: string;
 };
 
 export type UpdateOrganizationBody = {

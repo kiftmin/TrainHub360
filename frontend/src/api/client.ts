@@ -1,3 +1,7 @@
+import { setAuthTokenGetter } from '@api-client';
+
+setAuthTokenGetter(() => getToken());
+
 export function getToken(): string | null {
   return localStorage.getItem("th360_token");
 }
@@ -12,7 +16,7 @@ export function clearSession() {
   localStorage.removeItem("th360_user");
 }
 
-export function getSessionUser(): { id?: string; role?: string; name?: string; isOrgStaff?: boolean } | null {
+export function getSessionUser(): { id?: string; role?: string; name?: string; email?: string; initials?: string; isOrgStaff?: boolean } | null {
   try {
     return JSON.parse(localStorage.getItem("th360_user") ?? "null");
   } catch {

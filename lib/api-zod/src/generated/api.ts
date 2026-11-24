@@ -52,7 +52,8 @@ export const GetWorkspaceResponse = zod.object({
   "name": zod.string(),
   "email": zod.string(),
   "role": zod.string(),
-  "initials": zod.string()
+  "initials": zod.string(),
+  "isOrgStaff": zod.boolean().optional()
 }),
   "dataSource": zod.string()
 })
@@ -83,6 +84,151 @@ export const GetDashboardSummaryResponse = zod.object({
   "course": zod.string(),
   "expires": zod.string(),
   "status": zod.string()
+}))
+})
+
+
+/**
+ * Aggregates only the authenticated learner's enrolments and organisation records.
+ * @summary Get the authenticated learner's dashboard
+ */
+export const GetLearnerDashboardResponse = zod.object({
+  "learner": zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "email": zod.string(),
+  "department": zod.string().nullish(),
+  "jobFunction": zod.string().nullish()
+}),
+  "summary": zod.object({
+  "assignedCourses": zod.number().int(),
+  "completedCourses": zod.number().int(),
+  "overallProgress": zod.number().int(),
+  "outstandingActivities": zod.number().int(),
+  "pendingVerifications": zod.number().int(),
+  "unreadNotifications": zod.number().int(),
+  "unreadMessages": zod.number().int()
+}),
+  "courses": zod.array(zod.object({
+  "enrolmentId": zod.string(),
+  "courseId": zod.string(),
+  "title": zod.string(),
+  "programmeId": zod.string(),
+  "programmeName": zod.string(),
+  "status": zod.string(),
+  "progress": zod.number().int(),
+  "dueDate": zod.string().nullish(),
+  "deadlineDate": zod.string().nullish(),
+  "completionDate": zod.string().nullish(),
+  "completionSource": zod.string().nullish(),
+  "competent": zod.boolean(),
+  "competenceStatus": zod.string(),
+  "counts": zod.object({
+  "totalContent": zod.number().int(),
+  "completedContent": zod.number().int(),
+  "inProgressContent": zod.number().int(),
+  "requiredOutstanding": zod.number().int(),
+  "pendingVerification": zod.number().int(),
+  "assessmentsOutstanding": zod.number().int(),
+  "awaitingGrading": zod.number().int()
+}),
+  "modules": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "total": zod.number().int(),
+  "completed": zod.number().int(),
+  "progress": zod.number().int()
+})),
+  "assessments": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "type": zod.string(),
+  "passMark": zod.number().int(),
+  "maxAttempts": zod.number().int().nullable(),
+  "attemptsUsed": zod.number().int(),
+  "bestScore": zod.number().nullable(),
+  "passed": zod.boolean()
+})),
+  "nextContentItemId": zod.string().nullish()
+})),
+  "upcomingSessions": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "startsAt": zod.coerce.date(),
+  "endsAt": zod.coerce.date().nullable(),
+  "timezone": zod.string(),
+  "mode": zod.string(),
+  "trainer": zod.string(),
+  "courseId": zod.string().nullable(),
+  "programmeId": zod.string().nullable(),
+  "myRsvpStatus": zod.string().nullable(),
+  "icsUrl": zod.string()
+})),
+  "latestResults": zod.array(zod.object({
+  "attemptId": zod.string(),
+  "assessmentId": zod.string(),
+  "assessmentTitle": zod.string(),
+  "assessmentType": zod.string(),
+  "courseTitle": zod.string(),
+  "attemptNumber": zod.number().int(),
+  "status": zod.string(),
+  "submittedAt": zod.coerce.date().nullable(),
+  "gradedAt": zod.coerce.date().nullable(),
+  "score": zod.number().nullable(),
+  "percent": zod.number().nullable(),
+  "passed": zod.boolean().nullable(),
+  "passMark": zod.number(),
+  "awaitingGrading": zod.boolean()
+})),
+  "certificates": zod.array(zod.object({
+  "id": zod.string(),
+  "certificateNumber": zod.string(),
+  "courseId": zod.string(),
+  "courseTitle": zod.string(),
+  "enrolmentId": zod.string().nullable(),
+  "issuedAt": zod.coerce.date(),
+  "expiresAt": zod.coerce.date().nullable(),
+  "status": zod.string(),
+  "active": zod.boolean(),
+  "printUrl": zod.string()
+})),
+  "pendingVerifications": zod.array(zod.object({
+  "id": zod.string(),
+  "contentItemId": zod.string(),
+  "contentTitle": zod.string(),
+  "courseId": zod.string(),
+  "courseTitle": zod.string(),
+  "enrolmentId": zod.string(),
+  "submittedAt": zod.coerce.date().nullable()
+})),
+  "nextActions": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.string(),
+  "title": zod.string(),
+  "detail": zod.string(),
+  "href": zod.string(),
+  "priority": zod.number().int()
+})),
+  "notifications": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.string(),
+  "title": zod.string(),
+  "body": zod.string().nullable(),
+  "link": zod.string().nullable(),
+  "createdAt": zod.coerce.date()
+})),
+  "messages": zod.array(zod.object({
+  "id": zod.string(),
+  "subject": zod.string(),
+  "courseId": zod.string().nullable(),
+  "courseTitle": zod.string().nullable(),
+  "urgent": zod.boolean(),
+  "lastMessageAt": zod.coerce.date().nullable(),
+  "lastMessagePreview": zod.string().nullable(),
+  "slaStatus": zod.string(),
+  "slaState": zod.string(),
+  "awaitingTrainerResponse": zod.boolean(),
+  "href": zod.string()
 }))
 })
 
@@ -847,13 +993,22 @@ export const DeactivateMessageTemplateResponse = zod.void()
 export const ListBookingsResponseItem = zod.object({
   "id": zod.string(),
   "trainer": zod.string().describe('Display name captured when the booking was made'),
-  "trainerId": zod.string().nullable(),
+  "trainerId": zod.string().nullish(),
+  "learnerId": zod.string().nullish(),
   "course": zod.string(),
   "courseId": zod.string().nullish(),
+  "availabilityId": zod.string().nullish(),
   "date": zod.string(),
   "time": zod.string(),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "timeZone": zod.string().optional(),
+  "durationMinutes": zod.number().int().optional(),
   "duration": zod.string(),
   "status": zod.string(),
+  "cancelledAt": zod.coerce.date().nullish(),
+  "cancelledBy": zod.string().nullish(),
+  "cancellationReason": zod.string().nullish(),
   "meetingLink": zod.string().nullish()
 })
 export const ListBookingsResponse = zod.array(ListBookingsResponseItem)
@@ -862,23 +1017,171 @@ export const ListBookingsResponse = zod.array(ListBookingsResponseItem)
 /**
  * @summary Book a one-to-one session
  */
+export const createBookingBodyDurationMinutesMin = 15;
+export const createBookingBodyDurationMinutesMax = 240;
+
+
+
 export const CreateBookingBody = zod.object({
   "trainerId": zod.string().describe('The trainer\'s user id. A trainer name is no longer accepted.'),
   "courseId": zod.string().nullish(),
-  "date": zod.string(),
-  "time": zod.string()
+  "availabilityId": zod.string().nullish(),
+  "startsAt": zod.coerce.date().nullish(),
+  "date": zod.string().optional(),
+  "time": zod.string().optional(),
+  "durationMinutes": zod.number().int().min(createBookingBodyDurationMinutesMin).max(createBookingBodyDurationMinutesMax).optional(),
+  "timeZone": zod.string().optional()
 })
 
 export const CreateBookingResponse = zod.object({
   "id": zod.string(),
   "trainer": zod.string().describe('Display name captured when the booking was made'),
-  "trainerId": zod.string().nullable(),
+  "trainerId": zod.string().nullish(),
+  "learnerId": zod.string().nullish(),
   "course": zod.string(),
   "courseId": zod.string().nullish(),
+  "availabilityId": zod.string().nullish(),
   "date": zod.string(),
   "time": zod.string(),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "timeZone": zod.string().optional(),
+  "durationMinutes": zod.number().int().optional(),
   "duration": zod.string(),
   "status": zod.string(),
+  "cancelledAt": zod.coerce.date().nullish(),
+  "cancelledBy": zod.string().nullish(),
+  "cancellationReason": zod.string().nullish(),
+  "meetingLink": zod.string().nullish()
+})
+
+
+/**
+ * @summary Available one-to-one booking slots for an eligible trainer
+ */
+export const ListBookingSlotsQueryParams = zod.object({
+  "trainerId": zod.coerce.string(),
+  "from": zod.date().optional(),
+  "to": zod.date().optional()
+})
+
+export const ListBookingSlotsResponse = zod.object({
+  "trainerId": zod.string(),
+  "timeZone": zod.string(),
+  "slots": zod.array(zod.object({
+  "availabilityId": zod.string().nullable(),
+  "startsAt": zod.coerce.date(),
+  "endsAt": zod.coerce.date(),
+  "timeZone": zod.string(),
+  "durationMinutes": zod.number().int(),
+  "available": zod.boolean()
+}))
+})
+
+
+/**
+ * @summary Recurring trainer availability rules
+ */
+export const listTrainerAvailabilityResponseDayOfWeekMin = 0;
+export const listTrainerAvailabilityResponseDayOfWeekMax = 6;
+
+
+
+export const ListTrainerAvailabilityResponseItem = zod.object({
+  "id": zod.string(),
+  "trainerId": zod.string(),
+  "orgId": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "dayOfWeek": zod.number().int().min(listTrainerAvailabilityResponseDayOfWeekMin).max(listTrainerAvailabilityResponseDayOfWeekMax),
+  "startTime": zod.string(),
+  "endTime": zod.string(),
+  "timeZone": zod.string(),
+  "slotMinutes": zod.number().int(),
+  "isActive": zod.boolean(),
+  "validFrom": zod.coerce.date().nullish(),
+  "validTo": zod.coerce.date().nullish()
+})
+export const ListTrainerAvailabilityResponse = zod.array(ListTrainerAvailabilityResponseItem)
+
+
+/**
+ * @summary Create a recurring availability rule
+ */
+export const createTrainerAvailabilityBodyDayOfWeekMin = 0;
+export const createTrainerAvailabilityBodyDayOfWeekMax = 6;
+
+export const createTrainerAvailabilityBodySlotMinutesMin = 15;
+export const createTrainerAvailabilityBodySlotMinutesMax = 240;
+
+
+
+export const CreateTrainerAvailabilityBody = zod.object({
+  "trainerId": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "dayOfWeek": zod.number().int().min(createTrainerAvailabilityBodyDayOfWeekMin).max(createTrainerAvailabilityBodyDayOfWeekMax),
+  "startTime": zod.string(),
+  "endTime": zod.string(),
+  "slotMinutes": zod.number().int().min(createTrainerAvailabilityBodySlotMinutesMin).max(createTrainerAvailabilityBodySlotMinutesMax).optional(),
+  "timeZone": zod.string().optional(),
+  "validFrom": zod.coerce.date().nullish(),
+  "validTo": zod.coerce.date().nullish(),
+  "isActive": zod.boolean().optional()
+})
+
+export const createTrainerAvailabilityResponseDayOfWeekMin = 0;
+export const createTrainerAvailabilityResponseDayOfWeekMax = 6;
+
+
+
+export const CreateTrainerAvailabilityResponse = zod.object({
+  "id": zod.string(),
+  "trainerId": zod.string(),
+  "orgId": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "dayOfWeek": zod.number().int().min(createTrainerAvailabilityResponseDayOfWeekMin).max(createTrainerAvailabilityResponseDayOfWeekMax),
+  "startTime": zod.string(),
+  "endTime": zod.string(),
+  "timeZone": zod.string(),
+  "slotMinutes": zod.number().int(),
+  "isActive": zod.boolean(),
+  "validFrom": zod.coerce.date().nullish(),
+  "validTo": zod.coerce.date().nullish()
+})
+
+
+/**
+ * @summary Cancel a booking
+ */
+export const CancelBookingParams = zod.object({
+  "bookingId": zod.coerce.string()
+})
+
+export const CancelBookingBody = zod.object({
+  "reason": zod.string().optional()
+})
+
+export const CancelBookingResponse = zod.object({
+  "id": zod.string(),
+  "trainer": zod.string().describe('Display name captured when the booking was made'),
+  "trainerId": zod.string().nullish(),
+  "learnerId": zod.string().nullish(),
+  "course": zod.string(),
+  "courseId": zod.string().nullish(),
+  "availabilityId": zod.string().nullish(),
+  "date": zod.string(),
+  "time": zod.string(),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "timeZone": zod.string().optional(),
+  "durationMinutes": zod.number().int().optional(),
+  "duration": zod.string(),
+  "status": zod.string(),
+  "cancelledAt": zod.coerce.date().nullish(),
+  "cancelledBy": zod.string().nullish(),
+  "cancellationReason": zod.string().nullish(),
   "meetingLink": zod.string().nullish()
 })
 
@@ -949,7 +1252,7 @@ export const ExportReviewCreditsResponse = zod.unknown()
  * @summary Login with email/password (JWT)
  */
 export const LoginBody = zod.object({
-  "email": zod.string(),
+  "email": zod.string().email(),
   "password": zod.string()
 })
 
@@ -960,7 +1263,8 @@ export const LoginResponse = zod.object({
   "name": zod.string(),
   "email": zod.string(),
   "role": zod.string(),
-  "initials": zod.string()
+  "initials": zod.string(),
+  "isOrgStaff": zod.boolean().optional()
 })
 })
 
@@ -969,6 +1273,7 @@ export const LoginResponse = zod.object({
  * @summary SSO/SAML token exchange
  */
 export const SsoLoginBody = zod.object({
+  "orgId": zod.string(),
   "samlAssertion": zod.string()
 })
 
@@ -979,7 +1284,8 @@ export const SsoLoginResponse = zod.object({
   "name": zod.string(),
   "email": zod.string(),
   "role": zod.string(),
-  "initials": zod.string()
+  "initials": zod.string(),
+  "isOrgStaff": zod.boolean().optional()
 })
 })
 
@@ -1705,8 +2011,36 @@ export const GetCourseContentParams = zod.object({
 })
 
 export const GetCourseContentResponse = zod.object({
-
-}).passthrough()
+  "courseId": zod.string(),
+  "progress": zod.number(),
+  "modules": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "order": zod.number().int(),
+  "contentItems": zod.array(zod.object({
+  "id": zod.string(),
+  "type": zod.string(),
+  "title": zod.string(),
+  "description": zod.string().nullish(),
+  "order": zod.number().int(),
+  "required": zod.boolean(),
+  "estimatedMinutes": zod.number().int().nullish(),
+  "body": zod.string().optional(),
+  "fileName": zod.string().nullish(),
+  "mimeType": zod.string().nullish(),
+  "sizeBytes": zod.number().int().nullish(),
+  "url": zod.string().nullish(),
+  "provider": zod.string().nullish(),
+  "completionMode": zod.string(),
+  "isArchived": zod.boolean().optional(),
+  "progress": zod.object({
+  "status": zod.string(),
+  "completedAt": zod.coerce.date().nullable(),
+  "verifiedAt": zod.coerce.date().nullable()
+})
+}))
+}))
+})
 
 
 /**
@@ -1717,13 +2051,29 @@ export const MarkContentProgressParams = zod.object({
 })
 
 export const MarkContentProgressBody = zod.object({
-  "status": zod.enum(['in_progress', 'completed']).optional(),
-  "evidenceNote": zod.string().optional()
+  "status": zod.enum(['not_started', 'in_progress', 'completed']).optional(),
+  "evidenceNote": zod.string().nullish(),
+  "evidenceFileId": zod.string().nullish(),
+  "evidenceFileKey": zod.string().nullish()
 })
 
 export const MarkContentProgressResponse = zod.object({
+  "id": zod.string(),
+  "enrolmentId": zod.string(),
+  "contentItemId": zod.string(),
+  "status": zod.string(),
+  "startedAt": zod.coerce.date().nullish(),
+  "completedAt": zod.coerce.date().nullish(),
+  "evidenceNote": zod.string().nullish(),
+  "evidenceFileKey": zod.string().nullish(),
+  "evidenceFileId": zod.string().nullish(),
+  "verifiedBy": zod.string().nullish(),
+  "verifiedAt": zod.coerce.date().nullish(),
+  "enrolmentProgress": zod.number(),
+  "enrolmentOutcome": zod.object({
 
-}).passthrough()
+}).passthrough().optional()
+})
 
 
 /**
@@ -1919,13 +2269,13 @@ export const RejectDeleteRequestResponse = zod.unknown()
  * Single use, 7-day expiry, same password policy as reset. The token is rejected after use or expiry.
  * @summary Set a password with an activation token
  */
-export const activateAccountBodyPasswordMin = 12;
+export const activateAccountBodyNewPasswordMin = 8;
 
 
 
 export const ActivateAccountBody = zod.object({
   "token": zod.string(),
-  "password": zod.string().min(activateAccountBodyPasswordMin)
+  "newPassword": zod.string().min(activateAccountBodyNewPasswordMin)
 })
 
 export const ActivateAccountResponse = zod.unknown()
@@ -1946,13 +2296,13 @@ export const RequestPasswordResetResponse = zod.unknown()
  * Bumps tokenVersion, so every existing session for that user is invalid.
  * @summary Reset a password with a token
  */
-export const resetPasswordBodyPasswordMin = 12;
+export const resetPasswordBodyNewPasswordMin = 8;
 
 
 
 export const ResetPasswordBody = zod.object({
   "token": zod.string(),
-  "password": zod.string().min(resetPasswordBodyPasswordMin)
+  "newPassword": zod.string().min(resetPasswordBodyNewPasswordMin)
 })
 
 export const ResetPasswordResponse = zod.unknown()
@@ -2000,15 +2350,41 @@ export const CheckCertificateExpiryResponse = zod.unknown()
 
 
 /**
+ * @summary Print a certificate owned by the caller
+ */
+export const PrintCertificateParams = zod.object({
+  "id": zod.coerce.string()
+})
+
+export const PrintCertificateResponse = zod.unknown()
+
+
+/**
  * @summary Lock a review-credit period
  */
 export const LockReviewCreditsResponse = zod.unknown()
 
 
 /**
- * @summary Create an organization (platform administration)
+ * @summary Create an organization (self-service registration)
  */
-export const CreateOrganizationResponse = zod.void()
+export const createOrganizationBodyAdminPasswordMin = 8;
+
+
+
+export const CreateOrganizationBody = zod.object({
+  "name": zod.string(),
+  "adminName": zod.string(),
+  "adminEmail": zod.string().email(),
+  "domain": zod.string().nullish(),
+  "adminPassword": zod.string().min(createOrganizationBodyAdminPasswordMin)
+})
+
+export const CreateOrganizationResponse = zod.object({
+  "orgId": zod.string(),
+  "domainVerified": zod.boolean(),
+  "verificationToken": zod.string().nullish()
+})
 
 
 /**
@@ -2088,7 +2464,25 @@ export const DeleteCalendarConnectionResponse = zod.unknown()
 /**
  * @summary Certificates the caller may see
  */
-export const ListCertificatesResponse = zod.unknown()
+export const ListCertificatesResponseItem = zod.object({
+  "id": zod.string(),
+  "certificateNumber": zod.string(),
+  "learnerId": zod.string().optional(),
+  "courseId": zod.string(),
+  "enrolmentId": zod.string().nullish(),
+  "attemptId": zod.string().nullish(),
+  "issuedAt": zod.coerce.date(),
+  "expiresAt": zod.coerce.date().nullable(),
+  "status": zod.string(),
+  "course": zod.object({
+  "title": zod.string().optional()
+}).optional(),
+  "learner": zod.object({
+  "name": zod.string().optional(),
+  "email": zod.string().optional()
+}).optional()
+})
+export const ListCertificatesResponse = zod.array(ListCertificatesResponseItem)
 
 
 /**

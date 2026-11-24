@@ -108,6 +108,8 @@ export function Messages() {
   const newCourses = useCourses(newProgrammeId || undefined, newOpen && !!newProgrammeId);
   const meId = session?.id;
   const canSetNewSla = !!session?.isOrgStaff || !!members.data?.some((m) => m.userId === meId && ['owner', 'admin'].includes(m.role));
+  const isLearner = session?.role === 'learner';
+  const participantOptions = (members.data || []).filter((m) => m.userId !== meId && (!isLearner || ['trainer', 'facilitator'].includes(m.role)));
   const submitThread = () => {
     if (!newSubject.trim() || !newBody.trim() || !newProgrammeId || !newParticipants.length) {
       setNewError('Subject, programme, body and at least one participant are required.');
@@ -160,11 +162,12 @@ export function Messages() {
             </select></label>
             {canSetNewSla && <label className="block text-xs font-semibold">Response window (hours)<Input className="mt-2" type="number" min={1} max={720} value={newSlaHours} onChange={(e) => setNewSlaHours(e.target.value)} data-testid="input-new-thread-sla-hours" /></label>}
             <label className="block text-xs font-semibold">Subject<Input className="mt-2" value={newSubject} onChange={(e) => setNewSubject(e.target.value)} data-testid="input-thread-subject" /></label>
-            <div className="block text-xs font-semibold">Participants
+            <div className="block text-xs font-semibold">{isLearner ? 'Trainers' : 'Participants'}
               <div className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-md border border-border/70 p-1" data-testid="list-thread-participants">
                 {!newProgrammeId ? <p className="p-2 text-xs font-normal text-muted-foreground">Choose a programme first.</p>
                 : members.isLoading ? <p className="p-2 text-xs font-normal text-muted-foreground">Loading members-</p>
-                : (members.data || []).filter((m) => m.userId !== meId).map((m) => (
+                : !participantOptions.length ? <p className="p-2 text-xs font-normal text-muted-foreground">{isLearner ? 'No trainer is available in this programme yet.' : 'No other members are available.'}</p>
+                : participantOptions.map((m) => (
                   <label key={`${m.userId}-${m.role}`} className="flex items-center gap-2 rounded px-2 py-1.5 text-xs font-normal hover:bg-secondary/50">
                     <input type="checkbox" checked={newParticipants.includes(m.userId)} onChange={(e) => setNewParticipants(e.target.checked ? [...new Set([...newParticipants, m.userId])] : newParticipants.filter((x) => x !== m.userId))} />
                     <span className="font-semibold">{m.name}</span><span className="text-muted-foreground">{m.email} - {m.role}</span>

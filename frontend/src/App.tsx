@@ -49,7 +49,7 @@ import {
   Activity, ArrowUpRight, BarChart3, Bell, BookOpen, CalendarDays, Check, ChevronDown,
   CircleAlert, ClipboardCheck, Clock3, Download, FileCheck2, Gauge, GraduationCap, LayoutDashboard,
   Menu, MessageSquare, MoreHorizontal, Plus, RefreshCw, Search, Send, Settings2,
-  ShieldCheck, SlidersHorizontal, Target, Users, X, Zap,
+  ShieldCheck, SlidersHorizontal, Target, UserRound, Users, X, Zap,
 } from 'lucide-react';
 
 const queryClient = new QueryClient();
@@ -71,6 +71,12 @@ const adminNav = [
   { href: '/review-credit', label: 'Review credit', icon: Zap },
   { href: '/settings', label: 'Settings', icon: Settings2 },
 ];
+const learnerNav = [
+  { href: '/my-learning', label: 'My learning', icon: Target },
+  { href: '/calendar', label: 'Calendar', icon: CalendarDays },
+  { href: '/messages', label: 'Messages', icon: MessageSquare },
+  { href: '/profile', label: 'Profile', icon: UserRound },
+];
 import { Overview } from '@/pages/Overview';
 import { Learning } from '@/pages/Learning';
 import { Programmes, ProgrammeDetail } from '@/pages/Programmes';
@@ -85,16 +91,19 @@ import { Reports } from '@/pages/Reports';
 import { Governance } from '@/pages/Governance';
 import { ReviewCredit } from '@/pages/ReviewCredit';
 import { SettingsPage } from '@/pages/Settings';
+import { ProfilePage } from '@/pages/Profile';
 
 function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => void }) {
   const [location, setLocation] = useLocation();
   const go = (href: string) => { setMobileOpen(false); setLocation(href); };
-  const isStakeholder = getSessionUser()?.role === 'stakeholder';
-  const canSeeDirectory = ['owner', 'admin'].includes(getSessionUser()?.role ?? '');
-  const canVerify = ['owner', 'admin', 'trainer'].includes(getSessionUser()?.role ?? '');
-  const visibleNav = isStakeholder ? [] : nav.filter((n) =>
+  const role = getSessionUser()?.role;
+  const isStakeholder = role === 'stakeholder';
+  const isLearner = role === 'learner';
+  const canSeeDirectory = ['owner', 'admin'].includes(role ?? '');
+  const canVerify = ['owner', 'admin', 'trainer'].includes(role ?? '');
+  const visibleNav = isStakeholder ? [] : isLearner ? learnerNav : nav.filter((n) =>
     (n.href !== '/people' || canSeeDirectory) && (n.href !== '/verification' || canVerify));
-  const visibleAdminNav = isStakeholder ? [] : adminNav;
+  const visibleAdminNav = isStakeholder || isLearner ? [] : adminNav;
   const allNav = [...visibleNav, ...visibleAdminNav];
   const active = allNav.find((n) => n.href === location) ?? (location.startsWith('/programmes') ? { href: '/programmes', label: 'Programmes' } : null);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -144,11 +153,14 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
         <div className="flex items-center gap-2">
           <button className="hidden rounded-md border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground md:flex md:items-center md:gap-2"><Search className="size-3.5" />Search <kbd className="rounded border border-border px-1 font-mono text-[9px]">⌘ K</kbd></button>
           <NotificationBell onNavigate={go} />
-          <div className="ml-1 grid size-8 place-items-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground">{user?.initials || 'TH'}</div>
+          <button onClick={() => go('/profile')} className="ml-1 grid size-8 place-items-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground" aria-label="Open profile" data-testid="header-profile">{user?.initials || 'TH'}</button>
         </div>
       </header>
-      <main className="mx-auto max-w-[1480px] px-5 py-8 md:px-8">{children}</main>
+      <main className={cn('mx-auto max-w-[1480px] px-5 pt-8 md:px-8', isLearner ? 'pb-24 lg:pb-8' : 'pb-8')}>{children}</main>
     </div>
+    {isLearner && <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-border/80 bg-background/95 backdrop-blur-xl lg:hidden" aria-label="Learner mobile navigation" data-testid="mobile-learner-nav">
+      {learnerNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} aria-current={location === href ? 'page' : undefined} className={cn('flex min-h-16 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold', location === href ? 'text-primary' : 'text-muted-foreground')} data-testid={`mobile-nav-${label.toLowerCase().replace(' ', '-')}`}><Icon className="size-5" /><span>{label}</span></button>)}
+    </nav>}
   </div>;
 }
 
@@ -175,6 +187,7 @@ function Router() {
     <Route path="/governance" component={Governance} />
     <Route path="/review-credit" component={ReviewCredit} />
     <Route path="/settings" component={SettingsPage} />
+    <Route path="/profile" component={ProfilePage} />
     <Route component={NotFound} />
   </Switch>;
 }

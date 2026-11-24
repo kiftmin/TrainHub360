@@ -6,8 +6,6 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type ActivateAccountBody = {
-  token: string;
-  /** @minLength 12 */
-  password: string;
+export type CancelBookingBody = {
+  reason?: string;
 };

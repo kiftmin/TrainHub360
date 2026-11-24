@@ -7,6 +7,8 @@ info:
 servers:
   - url: /api
     description: Base API path
+security:
+  - bearerAuth: []
 tags:
   - name: health
     description: Health operations
@@ -64,6 +66,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardSummary"
+  /me/learner-dashboard:
+    get:
+      operationId: getLearnerDashboard
+      tags: [dashboard]
+      summary: Get the authenticated learner's dashboard
+      description: Aggregates only the authenticated learner's enrolments and organisation records.
+      responses:
+        "200":
+          description: Learner dashboard
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LearnerDashboard"
+        "401":
+          description: Authentication required
+        "404":
+          description: Learner not found
   /programmes:
     get:
       operationId: listProgrammes
@@ -907,6 +926,97 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Booking"
+  /bookings/slots:
+    get:
+      operationId: listBookingSlots
+      tags: [engagement]
+      summary: Available one-to-one booking slots for an eligible trainer
+      parameters:
+        - name: trainerId
+          in: query
+          required: true
+          schema: { type: string }
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Generated slots
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookingSlotsResponse"
+        "400":
+          description: Invalid trainer or date range
+        "404":
+          description: Trainer not available to this learner
+  /bookings/availability:
+    get:
+      operationId: listTrainerAvailability
+      tags: [engagement]
+      summary: Recurring trainer availability rules
+      responses:
+        "200":
+          description: Availability rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TrainerAvailability"
+    post:
+      operationId: createTrainerAvailability
+      tags: [engagement]
+      summary: Create a recurring availability rule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrainerAvailabilityInput"
+      responses:
+        "201":
+          description: Created rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainerAvailability"
+        "403":
+          description: Not allowed to manage this trainer's availability
+  /bookings/{bookingId}/cancel:
+    post:
+      operationId: cancelBooking
+      tags: [engagement]
+      summary: Cancel a booking
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        "200":
+          description: Cancelled booking
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Booking"
+        "403":
+          description: Not allowed to cancel this booking
+        "404":
+          description: Booking not found
   /calendar:
     get:
       operationId: listCalendarEvents
@@ -1795,7 +1905,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/CourseContent"
         "403":
           description: Not enrolled
   /content/{contentId}/progress:
@@ -1815,15 +1925,17 @@ paths:
             schema:
               type: object
               properties:
-                status: { type: string, enum: [in_progress, completed] }
-                evidenceNote: { type: string }
+                status: { type: string, enum: [not_started, in_progress, completed] }
+                evidenceNote: { type: [string, "null"] }
+                evidenceFileId: { type: [string, "null"] }
+                evidenceFileKey: { type: [string, "null"] }
       responses:
         "200":
           description: Updated progress and course progress
           content:
             application/json:
               schema:
-                type: object
+                $ref: "#/components/schemas/ContentProgressUpdate"
   /content-progress/{progressId}/verify:
     post:
       operationId: verifyContentProgress
@@ -2104,11 +2216,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [token, password]
-              properties:
-                token: { type: string }
-                password: { type: string, minLength: 12 }
+              $ref: "#/components/schemas/SetPasswordRequest"
       responses:
         "200":
           description: Activated
@@ -2143,11 +2251,7 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              required: [token, password]
-              properties:
-                token: { type: string }
-                password: { type: string, minLength: 12 }
+              $ref: "#/components/schemas/SetPasswordRequest"
       responses:
         "200":
           description: Reset
@@ -2212,6 +2316,26 @@ paths:
       responses:
         "200":
           description: Expiry check result
+  /certificates/{id}/print:
+    get:
+      operationId: printCertificate
+      tags: [learning]
+      summary: Print a certificate owned by the caller
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Printable certificate
+          content:
+            text/html:
+              schema: { type: string }
+        "403":
+          description: Certificate belongs to another learner
+        "404":
+          description: Certificate not found
   /review-credits/lock:
     post:
       operationId: lockReviewCredits
@@ -2225,10 +2349,24 @@ paths:
     post:
       operationId: createOrganization
       tags: [governance]
-      summary: Create an organization (platform administration)
+      summary: Create an organization (self-service registration)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrganizationRequest"
       responses:
         "201":
           description: Created organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOrganizationResponse"
+        "400":
+          description: Missing required registration fields
+        "409":
+          description: Admin email already registered
   /organizations/{orgId}:
     patch:
       operationId: updateOrganization
@@ -2320,6 +2458,12 @@ paths:
       responses:
         "200":
           description: Certificates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CertificateRecord"
   /recognitions:
     get:
       operationId: listRecognitions
@@ -3063,6 +3207,11 @@ paths:
               schema: { type: string }
         "403": { description: "Org staff access required, or a different organization" }
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   schemas:
     DirectoryUser:
       type: object
@@ -3167,6 +3316,7 @@ components:
         email: { type: string }
         role: { type: string }
         initials: { type: string }
+        isOrgStaff: { type: boolean }
     Programme:
       type: object
       required: [id, name, type, status, learnerCount, courseCount, progress, owner]
@@ -3486,26 +3636,91 @@ components:
         urgent: { type: boolean }
     Booking:
       type: object
-      required: [id, trainer, trainerId, course, date, time, duration, status]
+      required: [id, trainer, course, date, time, duration, status]
       properties:
         id: { type: string }
         trainer: { type: string, description: Display name captured when the booking was made }
         trainerId: { type: ["string", "null"] }
+        learnerId: { type: ["string", "null"] }
         course: { type: string }
         courseId: { type: ["string", "null"] }
+        availabilityId: { type: ["string", "null"] }
         date: { type: string }
         time: { type: string }
+        startsAt: { type: ["string", "null"], format: date-time }
+        endsAt: { type: ["string", "null"], format: date-time }
+        timeZone: { type: string }
+        durationMinutes: { type: integer }
         duration: { type: string }
         status: { type: string }
+        cancelledAt: { type: ["string", "null"], format: date-time }
+        cancelledBy: { type: ["string", "null"] }
+        cancellationReason: { type: ["string", "null"] }
         meetingLink: { type: ["string", "null"] }
     BookingInput:
       type: object
-      required: [trainerId, date, time]
+      required: [trainerId]
       properties:
         trainerId: { type: string, description: The trainer's user id. A trainer name is no longer accepted. }
         courseId: { type: ["string", "null"] }
+        availabilityId: { type: ["string", "null"] }
+        startsAt: { type: ["string", "null"], format: date-time }
         date: { type: string }
         time: { type: string }
+        durationMinutes: { type: integer, minimum: 15, maximum: 240 }
+        timeZone: { type: string }
+    BookingSlot:
+      type: object
+      required: [availabilityId, startsAt, endsAt, timeZone, durationMinutes, available]
+      properties:
+        availabilityId: { type: ["string", "null"] }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: string, format: date-time }
+        timeZone: { type: string }
+        durationMinutes: { type: integer }
+        available: { type: boolean }
+    BookingSlotsResponse:
+      type: object
+      required: [trainerId, timeZone, slots]
+      properties:
+        trainerId: { type: string }
+        timeZone: { type: string }
+        slots:
+          type: array
+          items:
+            $ref: "#/components/schemas/BookingSlot"
+    TrainerAvailability:
+      type: object
+      required: [id, trainerId, orgId, dayOfWeek, startTime, endTime, timeZone, slotMinutes, isActive]
+      properties:
+        id: { type: string }
+        trainerId: { type: string }
+        orgId: { type: string }
+        programmeId: { type: ["string", "null"] }
+        courseId: { type: ["string", "null"] }
+        dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+        startTime: { type: string }
+        endTime: { type: string }
+        timeZone: { type: string }
+        slotMinutes: { type: integer }
+        isActive: { type: boolean }
+        validFrom: { type: ["string", "null"], format: date-time }
+        validTo: { type: ["string", "null"], format: date-time }
+    TrainerAvailabilityInput:
+      type: object
+      required: [trainerId, dayOfWeek, startTime, endTime]
+      properties:
+        trainerId: { type: string }
+        programmeId: { type: ["string", "null"] }
+        courseId: { type: ["string", "null"] }
+        dayOfWeek: { type: integer, minimum: 0, maximum: 6 }
+        startTime: { type: string }
+        endTime: { type: string }
+        slotMinutes: { type: integer, minimum: 15, maximum: 240 }
+        timeZone: { type: string }
+        validFrom: { type: ["string", "null"], format: date-time }
+        validTo: { type: ["string", "null"], format: date-time }
+        isActive: { type: boolean }
     BookableTrainer:
       type: object
       required: [id, name, email]
@@ -3625,7 +3840,7 @@ components:
       type: object
       required: [email, password]
       properties:
-        email: { type: string }
+        email: { type: string, format: email }
         password: { type: string }
     AuthResponse:
       type: object
@@ -3635,9 +3850,32 @@ components:
         user: { $ref: "#/components/schemas/CurrentUser" }
     SsoRequest:
       type: object
-      required: [samlAssertion]
+      required: [orgId, samlAssertion]
       properties:
+        orgId: { type: string }
         samlAssertion: { type: string }
+    SetPasswordRequest:
+      type: object
+      required: [token, newPassword]
+      properties:
+        token: { type: string }
+        newPassword: { type: string, minLength: 8 }
+    CreateOrganizationRequest:
+      type: object
+      required: [name, adminEmail, adminName, adminPassword]
+      properties:
+        name: { type: string }
+        adminName: { type: string }
+        adminEmail: { type: string, format: email }
+        domain: { type: ["string", "null"] }
+        adminPassword: { type: string, minLength: 8 }
+    CreateOrganizationResponse:
+      type: object
+      required: [orgId, domainVerified]
+      properties:
+        orgId: { type: string }
+        domainVerified: { type: boolean }
+        verificationToken: { type: ["string", "null"] }
     Enrolment:
       type: object
       required: [id, learnerId, courseId, status]
@@ -3726,3 +3964,302 @@ components:
         learnerId: { type: string }
         raw: { type: number }
         final: { type: number }
+    ContentItemProgress:
+      type: object
+      required: [status, completedAt, verifiedAt]
+      properties:
+        status: { type: string }
+        completedAt: { type: [string, "null"], format: date-time }
+        verifiedAt: { type: [string, "null"], format: date-time }
+    CourseContentItem:
+      type: object
+      required: [id, type, title, order, required, completionMode, progress]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        title: { type: string }
+        description: { type: [string, "null"] }
+        order: { type: integer }
+        required: { type: boolean }
+        estimatedMinutes: { type: [integer, "null"] }
+        body: { type: string }
+        fileName: { type: [string, "null"] }
+        mimeType: { type: [string, "null"] }
+        sizeBytes: { type: [integer, "null"] }
+        url: { type: [string, "null"] }
+        provider: { type: [string, "null"] }
+        completionMode: { type: string }
+        isArchived: { type: boolean }
+        progress:
+          $ref: "#/components/schemas/ContentItemProgress"
+    CourseContentModule:
+      type: object
+      required: [id, title, order, contentItems]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        order: { type: integer }
+        contentItems:
+          type: array
+          items:
+            $ref: "#/components/schemas/CourseContentItem"
+    CourseContent:
+      type: object
+      required: [courseId, progress, modules]
+      properties:
+        courseId: { type: string }
+        progress: { type: number }
+        modules:
+          type: array
+          items:
+            $ref: "#/components/schemas/CourseContentModule"
+    ContentProgressUpdate:
+      type: object
+      required: [id, enrolmentId, contentItemId, status, enrolmentProgress]
+      properties:
+        id: { type: string }
+        enrolmentId: { type: string }
+        contentItemId: { type: string }
+        status: { type: string }
+        startedAt: { type: [string, "null"], format: date-time }
+        completedAt: { type: [string, "null"], format: date-time }
+        evidenceNote: { type: [string, "null"] }
+        evidenceFileKey: { type: [string, "null"] }
+        evidenceFileId: { type: [string, "null"] }
+        verifiedBy: { type: [string, "null"] }
+        verifiedAt: { type: [string, "null"], format: date-time }
+        enrolmentProgress: { type: number }
+        enrolmentOutcome: { type: object }
+    CertificateRecord:
+      type: object
+      required: [id, certificateNumber, courseId, issuedAt, expiresAt, status]
+      properties:
+        id: { type: string }
+        certificateNumber: { type: string }
+        learnerId: { type: string }
+        courseId: { type: string }
+        enrolmentId: { type: [string, "null"] }
+        attemptId: { type: [string, "null"] }
+        issuedAt: { type: string, format: date-time }
+        expiresAt: { type: [string, "null"], format: date-time }
+        status: { type: string }
+        course:
+          type: object
+          properties:
+            title: { type: string }
+        learner:
+          type: object
+          properties:
+            name: { type: string }
+            email: { type: string }
+    LearnerDashboardLearner:
+      type: object
+      required: [id, name, email]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        email: { type: string }
+        department: { type: [string, "null"] }
+        jobFunction: { type: [string, "null"] }
+    LearnerDashboardSummary:
+      type: object
+      required: [assignedCourses, completedCourses, overallProgress, outstandingActivities, pendingVerifications, unreadNotifications, unreadMessages]
+      properties:
+        assignedCourses: { type: integer }
+        completedCourses: { type: integer }
+        overallProgress: { type: integer }
+        outstandingActivities: { type: integer }
+        pendingVerifications: { type: integer }
+        unreadNotifications: { type: integer }
+        unreadMessages: { type: integer }
+    LearnerModuleProgress:
+      type: object
+      required: [id, title, total, completed, progress]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        total: { type: integer }
+        completed: { type: integer }
+        progress: { type: integer }
+    LearnerAssessmentState:
+      type: object
+      required: [id, title, type, passMark, maxAttempts, attemptsUsed, bestScore, passed]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        type: { type: string }
+        passMark: { type: integer }
+        maxAttempts: { type: [integer, "null"] }
+        attemptsUsed: { type: integer }
+        bestScore: { type: [number, "null"] }
+        passed: { type: boolean }
+    LearnerCourseProgress:
+      type: object
+      required: [enrolmentId, courseId, title, programmeId, programmeName, status, progress, competent, competenceStatus, counts, modules, assessments]
+      properties:
+        enrolmentId: { type: string }
+        courseId: { type: string }
+        title: { type: string }
+        programmeId: { type: string }
+        programmeName: { type: string }
+        status: { type: string }
+        progress: { type: integer }
+        dueDate: { type: [string, "null"] }
+        deadlineDate: { type: [string, "null"] }
+        completionDate: { type: [string, "null"] }
+        completionSource: { type: [string, "null"] }
+        competent: { type: boolean }
+        competenceStatus: { type: string }
+        counts:
+          type: object
+          required: [totalContent, completedContent, inProgressContent, requiredOutstanding, pendingVerification, assessmentsOutstanding, awaitingGrading]
+          properties:
+            totalContent: { type: integer }
+            completedContent: { type: integer }
+            inProgressContent: { type: integer }
+            requiredOutstanding: { type: integer }
+            pendingVerification: { type: integer }
+            assessmentsOutstanding: { type: integer }
+            awaitingGrading: { type: integer }
+        modules:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerModuleProgress"
+        assessments:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerAssessmentState"
+        nextContentItemId: { type: [string, "null"] }
+    LearnerUpcomingSession:
+      type: object
+      required: [id, title, startsAt, endsAt, timezone, mode, trainer, courseId, programmeId, myRsvpStatus, icsUrl]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        startsAt: { type: string, format: date-time }
+        endsAt: { type: [string, "null"], format: date-time }
+        timezone: { type: string }
+        mode: { type: string }
+        trainer: { type: string }
+        courseId: { type: [string, "null"] }
+        programmeId: { type: [string, "null"] }
+        myRsvpStatus: { type: [string, "null"] }
+        icsUrl: { type: string }
+    LearnerLatestResult:
+      type: object
+      required: [attemptId, assessmentId, assessmentTitle, assessmentType, courseTitle, attemptNumber, status, submittedAt, gradedAt, score, percent, passed, passMark, awaitingGrading]
+      properties:
+        attemptId: { type: string }
+        assessmentId: { type: string }
+        assessmentTitle: { type: string }
+        assessmentType: { type: string }
+        courseTitle: { type: string }
+        attemptNumber: { type: integer }
+        status: { type: string }
+        submittedAt: { type: [string, "null"], format: date-time }
+        gradedAt: { type: [string, "null"], format: date-time }
+        score: { type: [number, "null"] }
+        percent: { type: [number, "null"] }
+        passed: { type: [boolean, "null"] }
+        passMark: { type: number }
+        awaitingGrading: { type: boolean }
+    LearnerCertificate:
+      type: object
+      required: [id, certificateNumber, courseId, courseTitle, enrolmentId, issuedAt, expiresAt, status, active, printUrl]
+      properties:
+        id: { type: string }
+        certificateNumber: { type: string }
+        courseId: { type: string }
+        courseTitle: { type: string }
+        enrolmentId: { type: [string, "null"] }
+        issuedAt: { type: string, format: date-time }
+        expiresAt: { type: [string, "null"], format: date-time }
+        status: { type: string }
+        active: { type: boolean }
+        printUrl: { type: string }
+    LearnerPendingVerification:
+      type: object
+      required: [id, contentItemId, contentTitle, courseId, courseTitle, enrolmentId, submittedAt]
+      properties:
+        id: { type: string }
+        contentItemId: { type: string }
+        contentTitle: { type: string }
+        courseId: { type: string }
+        courseTitle: { type: string }
+        enrolmentId: { type: string }
+        submittedAt: { type: [string, "null"], format: date-time }
+    LearnerNextAction:
+      type: object
+      required: [id, type, title, detail, href, priority]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        title: { type: string }
+        detail: { type: string }
+        href: { type: string }
+        priority: { type: integer }
+    LearnerDashboardNotification:
+      type: object
+      required: [id, type, title, body, link, createdAt]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        title: { type: string }
+        body: { type: [string, "null"] }
+        link: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+    LearnerMessageSummary:
+      type: object
+      required: [id, subject, courseId, courseTitle, urgent, lastMessageAt, lastMessagePreview, slaStatus, slaState, awaitingTrainerResponse, href]
+      properties:
+        id: { type: string }
+        subject: { type: string }
+        courseId: { type: [string, "null"] }
+        courseTitle: { type: [string, "null"] }
+        urgent: { type: boolean }
+        lastMessageAt: { type: [string, "null"], format: date-time }
+        lastMessagePreview: { type: [string, "null"] }
+        slaStatus: { type: string }
+        slaState: { type: string }
+        awaitingTrainerResponse: { type: boolean }
+        href: { type: string }
+    LearnerDashboard:
+      type: object
+      required: [learner, summary, courses, upcomingSessions, latestResults, certificates, pendingVerifications, nextActions, notifications, messages]
+      properties:
+        learner:
+          $ref: "#/components/schemas/LearnerDashboardLearner"
+        summary:
+          $ref: "#/components/schemas/LearnerDashboardSummary"
+        courses:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerCourseProgress"
+        upcomingSessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerUpcomingSession"
+        latestResults:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerLatestResult"
+        certificates:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerCertificate"
+        pendingVerifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerPendingVerification"
+        nextActions:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerNextAction"
+        notifications:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerDashboardNotification"
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/LearnerMessageSummary"

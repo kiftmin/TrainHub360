@@ -6,4 +6,11 @@
  * OpenAPI spec version: 0.1.0
  */
 
-export type GetCourseContent200 = { [key: string]: unknown };
+export interface LearnerNextAction {
+  id: string;
+  type: string;
+  title: string;
+  detail: string;
+  href: string;
+  priority: number;
+}

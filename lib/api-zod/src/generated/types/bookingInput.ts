@@ -11,6 +11,16 @@ export interface BookingInput {
   trainerId: string;
   /** @nullable */
   courseId?: string | null;
-  date: string;
-  time: string;
+  /** @nullable */
+  availabilityId?: string | null;
+  /** @nullable */
+  startsAt?: Date | null;
+  date?: string;
+  time?: string;
+  /**
+     * @minimum 15
+     * @maximum 240
+     */
+  durationMinutes?: number;
+  timeZone?: string;
 }

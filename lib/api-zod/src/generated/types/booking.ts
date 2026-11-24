@@ -11,14 +11,30 @@ export interface Booking {
   /** Display name captured when the booking was made */
   trainer: string;
   /** @nullable */
-  trainerId: string | null;
+  trainerId?: string | null;
+  /** @nullable */
+  learnerId?: string | null;
   course: string;
   /** @nullable */
   courseId?: string | null;
+  /** @nullable */
+  availabilityId?: string | null;
   date: string;
   time: string;
+  /** @nullable */
+  startsAt?: Date | null;
+  /** @nullable */
+  endsAt?: Date | null;
+  timeZone?: string;
+  durationMinutes?: number;
   duration: string;
   status: string;
+  /** @nullable */
+  cancelledAt?: Date | null;
+  /** @nullable */
+  cancelledBy?: string | null;
+  /** @nullable */
+  cancellationReason?: string | null;
   /** @nullable */
   meetingLink?: string | null;
 }

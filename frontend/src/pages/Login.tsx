@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { ShieldCheck, KeyRound } from "lucide-react";
+import { useLogin, useRequestPasswordReset, useSsoLogin } from "@api-client";
 import { setSession } from "../api/client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,19 +20,16 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
   const [ssoAssertion, setSsoAssertion] = useState("");
   const [ssoBusy, setSsoBusy] = useState(false);
   const [ssoError, setSsoError] = useState<string | null>(null);
+  const login = useLogin();
+  const ssoLogin = useSsoLogin();
+  const requestReset = useRequestPasswordReset();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      if (!res.ok) throw new Error(`Login failed (${res.status})`);
-      const data = await res.json();
+      const data = await login.mutateAsync({ data: { email, password } });
       setSession(data.accessToken, data.user);
       onDone();
     } catch (err) {
@@ -46,16 +44,7 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
     setSsoBusy(true);
     setSsoError(null);
     try {
-      const res = await fetch("/api/auth/sso", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ orgId: ssoOrgId, samlAssertion: ssoAssertion }),
-      });
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || `SSO login failed (${res.status})`);
-      }
-      const data = await res.json();
+      const data = await ssoLogin.mutateAsync({ data: { orgId: ssoOrgId, samlAssertion: ssoAssertion } });
       setSession(data.accessToken, data.user);
       onDone();
     } catch (err) {
@@ -71,11 +60,7 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
     setError(null);
     setNotice(null);
     try {
-      await fetch("/api/auth/forgot-password", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email }),
-      });
+      await requestReset.mutateAsync({ data: { email } });
       // Round 7 gap 4: the email carries the token in its link and the frontend has a
       // /reset-password page now, so there is nothing to paste and nothing to look up in a
       // console the backend no longer writes to.
