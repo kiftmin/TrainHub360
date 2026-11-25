@@ -38,6 +38,17 @@ export interface EnrolmentOutcome {
   certificateIssued: boolean;
 }
 
+export function competenceFromEvidence(options: {
+  requiredContentIds: string[];
+  completedContentIds: Iterable<string>;
+  liveAppliedPassed: boolean[];
+}): boolean {
+  const completed = new Set(options.completedContentIds);
+  return options.requiredContentIds.every((id) => completed.has(id))
+    && options.liveAppliedPassed.length > 0
+    && options.liveAppliedPassed.every(Boolean);
+}
+
 interface OutcomeCore {
   enrolment: {
     id: string;
@@ -132,7 +143,11 @@ async function computeOutcome(
     });
   }
 
-  const competent = contentComplete && applied.length > 0 && liveApplied.every((a) => a.passed);
+  const competent = competenceFromEvidence({
+    requiredContentIds: required.map((r) => r.id),
+    completedContentIds: completed,
+    liveAppliedPassed: liveApplied.map((a) => a.passed),
+  });
   // [CONFIRM] 2026-11-21: standing score is the average of each live applied
   // assessment's best graded percentage; an assessment with no graded attempt is 0.
   // It is computed from data, never as max(previous, new), so a superseded version

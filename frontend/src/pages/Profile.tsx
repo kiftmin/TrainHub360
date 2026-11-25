@@ -3,7 +3,7 @@ import { getGetLearnerDashboardQueryKey, useGetLearnerDashboard, useGetWorkspace
 import { getSessionUser } from '@/api/client';
 import { Badge } from '@/components/ui/badge';
 import { PageHeading, Skeleton, Status, initials, pct } from '@/components/shared';
-import { BookOpen, CalendarDays, Mail, MessageSquare, ShieldCheck, Target } from 'lucide-react';
+import { Bell, CalendarDays, Mail, MessageSquare, ShieldCheck, Target } from 'lucide-react';
 
 export function ProfilePage() {
   const session = getSessionUser();
@@ -55,7 +55,8 @@ export function ProfilePage() {
             <div className="rounded-lg bg-secondary/55 p-3"><p className="text-xs text-muted-foreground">Completed</p><p className="mt-1 text-xl font-bold" data-testid="profile-completed">{summary.completedCourses}</p></div>
             <div className="rounded-lg bg-secondary/55 p-3"><p className="text-xs text-muted-foreground">Overall</p><p className="mt-1 text-xl font-bold" data-testid="profile-progress">{pct(summary.overallProgress)}</p></div>
             <div className="rounded-lg bg-secondary/55 p-3"><p className="text-xs text-muted-foreground">Outstanding</p><p className="mt-1 text-xl font-bold" data-testid="profile-outstanding">{summary.outstandingActivities}</p></div>
-            <div className="col-span-2 rounded-lg bg-secondary/55 p-3"><p className="flex items-center gap-2 text-xs text-muted-foreground"><BookOpen className="size-3.5" />Unread learning updates</p><p className="mt-1 text-sm font-semibold">{summary.unreadNotifications} notifications - {summary.unreadMessages} messages</p></div>
+            <div className="col-span-2 rounded-lg bg-secondary/55 p-3"><p className="flex items-center gap-2 text-xs text-muted-foreground"><Bell className="size-3.5" />Unread notifications</p><p className="mt-1 text-sm font-semibold">{summary.unreadNotifications} unread</p></div>
+            <div className="col-span-2 rounded-lg bg-secondary/55 p-3"><p className="flex items-center gap-2 text-xs text-muted-foreground"><MessageSquare className="size-3.5" />Message replies</p><p className="mt-1 text-sm font-semibold">{summary.awaitingTrainerReplies} awaiting trainer - {summary.awaitingLearnerReplies} awaiting you</p></div>
           </div>
             : <p className="mt-4 text-sm text-muted-foreground">Your learning summary is available from the learner view.</p>}
       </section>

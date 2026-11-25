@@ -630,6 +630,41 @@ export interface TrainerAvailabilityInput {
   isActive?: boolean;
 }
 
+export interface TrainerAvailabilityException {
+  id: string;
+  trainerId: string;
+  /** @nullable */
+  programmeId?: string | null;
+  /** @nullable */
+  courseId?: string | null;
+  date: string;
+  /** @nullable */
+  startsAt: string | null;
+  /** @nullable */
+  endsAt: string | null;
+  isAvailable: boolean;
+  /** @nullable */
+  reason?: string | null;
+  createdAt: string;
+}
+
+export interface TrainerAvailabilityExceptionInput {
+  /** Required for create; ignored on update. */
+  trainerId?: string;
+  /** @nullable */
+  programmeId?: string | null;
+  /** @nullable */
+  courseId?: string | null;
+  date: string;
+  /** @nullable */
+  startsAt?: string | null;
+  /** @nullable */
+  endsAt?: string | null;
+  isAvailable: boolean;
+  /** @nullable */
+  reason?: string | null;
+}
+
 export interface BookableTrainer {
   id: string;
   name: string;
@@ -1006,7 +1041,14 @@ export interface LearnerDashboardSummary {
   outstandingActivities: number;
   pendingVerifications: number;
   unreadNotifications: number;
+  /** Always 0: per-message read state is not stored. Use awaitingTrainerReplies for actionable messages. */
   unreadMessages: number;
+  /** Threads whose latest message is from the learner and still needs a trainer reply. */
+  awaitingTrainerReplies: number;
+  /** Threads whose latest message is from a trainer and is waiting on the learner. */
+  awaitingLearnerReplies: number;
+  /** False until per-message read state exists; unreadMessages is therefore not an unread count. */
+  unreadMessageTracking: boolean;
 }
 
 export interface LearnerModuleProgress {
@@ -1151,6 +1193,14 @@ export interface LearnerDashboardNotification {
   createdAt: string;
 }
 
+export type LearnerMessageSummarySlaState = typeof LearnerMessageSummarySlaState[keyof typeof LearnerMessageSummarySlaState];
+
+
+export const LearnerMessageSummarySlaState = {
+  ok: 'ok',
+  reply_pending: 'reply_pending',
+} as const;
+
 export interface LearnerMessageSummary {
   id: string;
   subject: string;
@@ -1163,8 +1213,14 @@ export interface LearnerMessageSummary {
   lastMessageAt: string | null;
   /** @nullable */
   lastMessagePreview: string | null;
+  /**
+     * Average observed learner-message to trainer-reply gap in this thread.
+     * @nullable
+     */
+  averageResponseTimeHours: number | null;
+  /** Learner-safe response status; staff escalation details are never included. */
   slaStatus: string;
-  slaState: string;
+  slaState: LearnerMessageSummarySlaState;
   awaitingTrainerResponse: boolean;
   href: string;
 }
@@ -1482,6 +1538,11 @@ export type ListBookingSlotsParams = {
 trainerId: string;
 from?: string;
 to?: string;
+};
+
+export type ListTrainerAvailabilityExceptionsParams = {
+trainerId?: string;
+date?: string;
 };
 
 export type CancelBookingBody = {

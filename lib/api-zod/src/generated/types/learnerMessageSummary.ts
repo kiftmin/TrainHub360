@@ -5,6 +5,7 @@
  * TrainHub360 corporate training management API
  * OpenAPI spec version: 0.1.0
  */
+import type { LearnerMessageSummarySlaState } from './learnerMessageSummarySlaState';
 
 export interface LearnerMessageSummary {
   id: string;
@@ -18,8 +19,14 @@ export interface LearnerMessageSummary {
   lastMessageAt: Date | null;
   /** @nullable */
   lastMessagePreview: string | null;
+  /**
+     * Average observed learner-message to trainer-reply gap in this thread.
+     * @nullable
+     */
+  averageResponseTimeHours: number | null;
+  /** Learner-safe response status; staff escalation details are never included. */
   slaStatus: string;
-  slaState: string;
+  slaState: LearnerMessageSummarySlaState;
   awaitingTrainerResponse: boolean;
   href: string;
 }

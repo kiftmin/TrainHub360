@@ -21,7 +21,7 @@ const workspace = {
 
 const dashboard = {
   learner: { id: "u1", name: "Test Learner", email: "learner@example.com", department: "Operations", jobFunction: "Technician" },
-  summary: { assignedCourses: 3, completedCourses: 1, overallProgress: 42, outstandingActivities: 2, pendingVerifications: 0, unreadNotifications: 0, unreadMessages: 0 },
+  summary: { assignedCourses: 3, completedCourses: 1, overallProgress: 42, outstandingActivities: 2, pendingVerifications: 0, unreadNotifications: 0, unreadMessages: 0, awaitingTrainerReplies: 0, awaitingLearnerReplies: 0, unreadMessageTracking: false },
   courses: [], upcomingSessions: [], latestResults: [], certificates: [], pendingVerifications: [], nextActions: [], notifications: [], messages: [],
 };
 

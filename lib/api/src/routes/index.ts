@@ -44,7 +44,8 @@ import {
 } from "../services/uploads.js";
 import { recomputeEnrolmentProgress, providerForUrl, isSafeExternalUrl } from "../services/contentProgress.js";
 import { buildLearnerDashboard } from "../services/learnerDashboard.js";
-import { availableSlotsForTrainer, bookingConflicts } from "../services/bookingSlots.js";
+import { availableSlotsForTrainer, bookingConflicts, bookingLocalFields } from "../services/bookingSlots.js";
+import { addDays, localDateKey, resolveTimeZone, zonedTimeToUtc } from "../services/timeZone.js";
 import { attemptStats, versionChain } from "../services/assessmentAttempts.js";
 import { evaluateEnrolment } from "../services/enrolmentOutcome.js";
 import { enqueueCourseEvaluation, drainEvaluationQueue } from "../services/evaluationQueue.js";
@@ -4041,8 +4042,14 @@ router.get("/bookings/slots", async (req, res) => {
     select: { userId: true },
   }).catch(() => null);
   if (!grant) return res.status(404).json({ error: "trainer not found in your organization" });
-  const today = new Date().toISOString().slice(0, 10);
-  const inTwoWeeks = new Date(Date.now() + 14 * 86_400_000).toISOString().slice(0, 10);
+  const timeZoneRule = await db.trainerAvailability.findFirst({
+    where: { trainerId, orgId: scope.orgId, isActive: true },
+    select: { timeZone: true },
+    orderBy: { createdAt: "asc" },
+  }).catch(() => null);
+  const timeZone = resolveTimeZone(timeZoneRule?.timeZone);
+  const today = localDateKey(new Date(), timeZone);
+  const inTwoWeeks = localDateKey(new Date(Date.now() + 14 * 86_400_000), timeZone);
   const result = await availableSlotsForTrainer({
     orgId: scope.orgId,
     trainerId,
@@ -4051,7 +4058,7 @@ router.get("/bookings/slots", async (req, res) => {
     programmeIds,
   });
   if ("error" in result) return res.status(400).json({ error: result.error });
-  return res.json({ trainerId, timeZone: "UTC", slots: result.slots });
+  return res.json({ trainerId, timeZone: result.timeZone, slots: result.slots });
 });
 
 router.get("/bookings/availability", async (req, res) => {
@@ -4106,6 +4113,189 @@ router.post("/bookings/availability", async (req, res) => {
   return res.status(201).json(row);
 });
 
+type ExceptionFields = {
+  trainerId: string;
+  programmeId: string | null;
+  courseId: string | null;
+  date: string;
+  startsAt: Date | null;
+  endsAt: Date | null;
+  isAvailable: boolean;
+  reason: string | null;
+};
+
+async function parseExceptionFields(body: any, orgId: string, fallback?: any): Promise<{ error: string } | { fields: ExceptionFields }> {
+  const trainerId = body?.trainerId !== undefined ? String(body.trainerId ?? "").trim() : String(fallback?.trainerId ?? "").trim();
+  const programmeId = body?.programmeId !== undefined ? (body.programmeId ? String(body.programmeId) : null) : fallback?.programmeId ?? null;
+  const courseId = body?.courseId !== undefined ? (body.courseId ? String(body.courseId) : null) : fallback?.courseId ?? null;
+  const isAvailable = body?.isAvailable !== undefined ? body.isAvailable === true : fallback?.isAvailable === true;
+  const dateRaw = body?.date !== undefined ? String(body.date ?? "").trim() : fallback?.date ? new Date(fallback.date).toISOString().slice(0, 10) : "";
+  if (!trainerId) return { error: "trainerId is required" };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateRaw)) return { error: "date must be YYYY-MM-DD" };
+  const startRaw = body?.startsAt !== undefined ? body.startsAt : fallback?.startsAt ?? null;
+  const endRaw = body?.endsAt !== undefined ? body.endsAt : fallback?.endsAt ?? null;
+  let startsAt: Date | null = null;
+  let endsAt: Date | null = null;
+  if (startRaw) {
+    const parsed = new Date(String(startRaw));
+    if (!Number.isFinite(parsed.getTime())) return { error: "startsAt must be a valid timestamp" };
+    startsAt = parsed;
+  }
+  if (endRaw) {
+    const parsed = new Date(String(endRaw));
+    if (!Number.isFinite(parsed.getTime())) return { error: "endsAt must be a valid timestamp" };
+    endsAt = parsed;
+  }
+  if (Boolean(startsAt) !== Boolean(endsAt)) return { error: "startsAt and endsAt must be supplied together" };
+  if (isAvailable && (!startsAt || !endsAt)) return { error: "available exceptions require startsAt and endsAt" };
+  if (startsAt && endsAt) {
+    const minutes = (endsAt.getTime() - startsAt.getTime()) / 60_000;
+    if (minutes <= 0 || minutes < 15 || minutes > 480) return { error: "exception duration must be between 15 and 480 minutes" };
+  }
+  const timeZoneRule = await db.trainerAvailability.findFirst({
+    where: { trainerId, orgId, isActive: true },
+    select: { timeZone: true },
+    orderBy: { createdAt: "asc" },
+  }).catch(() => null);
+  const timeZone = resolveTimeZone(timeZoneRule?.timeZone);
+  if (startsAt && localDateKey(startsAt, timeZone) !== dateRaw) return { error: "startsAt must be on date in the trainer's timezone" };
+  if (endsAt) {
+    const endDay = localDateKey(endsAt, timeZone);
+    if (endDay !== dateRaw && endDay !== addDays(dateRaw, 1)) return { error: "endsAt must be on date or the following day in the trainer's timezone" };
+  }
+  return {
+    fields: {
+      trainerId,
+      programmeId,
+      courseId,
+      date: dateRaw,
+      startsAt,
+      endsAt,
+      isAvailable,
+      reason: body?.reason !== undefined ? (body.reason ? String(body.reason).slice(0, 1000) : null) : fallback?.reason ?? null,
+    },
+  };
+}
+
+async function canManageException(userId: string, orgId: string, trainerId: string, programmeId: string | null): Promise<boolean> {
+  if ((await isOrgStaff(userId)) || userId === trainerId) return true;
+  if (!programmeId) return false;
+  const grant = await db.userRole.findFirst({
+    where: { userId, programmeId, role: { name: { in: ["admin", "owner", "trainer"] } } },
+    select: { id: true },
+  }).catch(() => null);
+  return !!grant;
+}
+
+async function exceptionOverlaps(fields: ExceptionFields, orgId: string, excludeId?: string): Promise<boolean> {
+  const rows = await db.trainerAvailabilityException.findMany({
+    where: {
+      orgId,
+      trainerId: fields.trainerId,
+      date: new Date(`${fields.date}T00:00:00.000Z`),
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+    },
+    select: { startsAt: true, endsAt: true },
+  });
+  return rows.some((row) => {
+    if (!fields.startsAt || !row.startsAt) return true;
+    const rowEnd = row.endsAt ?? new Date(row.startsAt.getTime() + 30 * 60_000);
+    return fields.startsAt! < rowEnd && row.startsAt < fields.endsAt!;
+  });
+}
+
+function exceptionView(row: any) {
+  return {
+    id: row.id,
+    trainerId: row.trainerId,
+    programmeId: row.programmeId,
+    courseId: row.courseId,
+    date: new Date(row.date).toISOString().slice(0, 10),
+    startsAt: row.startsAt ? new Date(row.startsAt).toISOString() : null,
+    endsAt: row.endsAt ? new Date(row.endsAt).toISOString() : null,
+    isAvailable: row.isAvailable,
+    reason: row.reason,
+    createdAt: new Date(row.createdAt).toISOString(),
+  };
+}
+
+router.get("/trainer-availability-exceptions", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const trainerId = String(req.query.trainerId ?? "").trim();
+  const date = String(req.query.date ?? "").trim();
+  if (date && !/^\d{4}-\d{2}-\d{2}$/.test(date)) return res.status(400).json({ error: "date must be YYYY-MM-DD" });
+  const orgStaff = await isOrgStaff(me.id);
+  const grants = orgStaff ? [] : await db.userRole.findMany({
+    where: { userId: me.id, programmeId: { not: null }, role: { name: { in: ["admin", "owner", "trainer"] } } },
+    select: { programmeId: true },
+  }).catch(() => [] as Array<{ programmeId: string | null }>);
+  const programmeIds = grants.map((row) => row.programmeId).filter((id): id is string => !!id);
+  const rows = await db.trainerAvailabilityException.findMany({
+    where: {
+      orgId: scope.orgId,
+      ...(trainerId ? { trainerId } : {}),
+      ...(date ? { date: new Date(`${date}T00:00:00.000Z`) } : {}),
+      ...(orgStaff ? {} : { OR: [{ trainerId: me.id }, { programmeId: { in: programmeIds } }] }),
+    },
+    orderBy: [{ date: "asc" }, { startsAt: "asc" }],
+    take: 500,
+  }).catch(() => []);
+  return res.json(rows.map(exceptionView));
+});
+
+router.post("/trainer-availability-exceptions", async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const parsed = await parseExceptionFields(req.body, scope.orgId);
+  if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+  const fields = parsed.fields;
+  if (!(await canManageException((req as AuthedRequest).user!.id, scope.orgId, fields.trainerId, fields.programmeId))) {
+    return res.status(403).json({ error: "you are not allowed to manage this trainer's exceptions" });
+  }
+  const trainer = await db.userRole.findFirst({
+    where: { userId: fields.trainerId, role: { name: "trainer" }, user: { orgId: scope.orgId, isActive: true } },
+    select: { userId: true },
+  }).catch(() => null);
+  if (!trainer) return res.status(404).json({ error: "trainer not found in your organization" });
+  if (fields.programmeId) await assertProgrammeInOrg(fields.programmeId, scope.orgId);
+  if (fields.courseId) await assertCourseInOrg(fields.courseId, scope.orgId);
+  if (await exceptionOverlaps(fields, scope.orgId)) return res.status(409).json({ error: "an exception already covers this trainer/date range" });
+  const row = await db.trainerAvailabilityException.create({
+    data: { ...fields, orgId: scope.orgId, date: new Date(`${fields.date}T00:00:00.000Z`) },
+  });
+  return res.status(201).json(exceptionView(row));
+});
+
+router.patch("/trainer-availability-exceptions/:id", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const existing = await db.trainerAvailabilityException.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
+  if (!existing) return res.status(404).json({ error: "exception not found" });
+  if (!(await canManageException(me.id, scope.orgId, existing.trainerId, existing.programmeId))) return res.status(403).json({ error: "you are not allowed to manage this exception" });
+  const parsed = await parseExceptionFields(req.body, scope.orgId, existing);
+  if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+  const fields = parsed.fields;
+  if (fields.trainerId !== existing.trainerId) return res.status(400).json({ error: "trainerId cannot be changed" });
+  if (fields.programmeId) await assertProgrammeInOrg(fields.programmeId, scope.orgId);
+  if (fields.courseId) await assertCourseInOrg(fields.courseId, scope.orgId);
+  if (await exceptionOverlaps(fields, scope.orgId, existing.id)) return res.status(409).json({ error: "an exception already covers this trainer/date range" });
+  const row = await db.trainerAvailabilityException.update({
+    where: { id: existing.id },
+    data: { ...fields, date: new Date(`${fields.date}T00:00:00.000Z`) },
+  });
+  return res.json(exceptionView(row));
+});
+
+router.delete("/trainer-availability-exceptions/:id", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const existing = await db.trainerAvailabilityException.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
+  if (!existing) return res.status(404).json({ error: "exception not found" });
+  if (!(await canManageException(me.id, scope.orgId, existing.trainerId, existing.programmeId))) return res.status(403).json({ error: "you are not allowed to manage this exception" });
+  await db.trainerAvailabilityException.delete({ where: { id: existing.id } });
+  return res.status(204).send();
+});
+
 router.post("/bookings", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
@@ -4116,6 +4306,12 @@ router.post("/bookings", async (req, res) => {
     select: { userId: true, programmeId: true, user: { select: { name: true } } },
   }).catch(() => null);
   if (!grant) return res.status(404).json({ error: "trainer not found in your organization" });
+  const timeZoneRule = await db.trainerAvailability.findFirst({
+    where: { trainerId, orgId: scope.orgId, isActive: true },
+    select: { timeZone: true },
+    orderBy: { createdAt: "asc" },
+  }).catch(() => null);
+  const trainerTimeZone = resolveTimeZone(timeZoneRule?.timeZone);
   const programmeId = grant.programmeId!;
   const orgStaff = await isOrgStaff(me.id);
   const programmeStaff = orgStaff || await isProgrammeStaff(me.id, programmeId);
@@ -4141,16 +4337,17 @@ router.post("/bookings", async (req, res) => {
   let startsAt: Date | null = requestedStart && Number.isFinite(requestedStart.getTime()) ? requestedStart : null;
   let endsAt: Date | null = null;
   let durationMinutes = Math.min(Math.max(Number(req.body?.durationMinutes) || 30, 15), 240);
-  let timeZone = String(req.body?.timeZone ?? "UTC").slice(0, 64);
+  let timeZone = resolveTimeZone(String(req.body?.timeZone ?? trainerTimeZone).slice(0, 64), trainerTimeZone);
   if (!programmeStaff && (!availabilityId || !startsAt)) {
     return res.status(400).json({ error: "availabilityId and startsAt are required" });
   }
   if (availabilityId || startsAt) {
     if (!startsAt) return res.status(400).json({ error: "startsAt is required" });
     if (startsAt.getTime() <= Date.now()) return res.status(400).json({ error: "bookings must be in the future" });
-    const day = startsAt.toISOString().slice(0, 10);
+    const from = localDateKey(new Date(startsAt.getTime() - 86_400_000), trainerTimeZone);
+    const to = localDateKey(new Date(startsAt.getTime() + 86_400_000), trainerTimeZone);
     const programmeIds = await bookableProgrammeIds(me.id, scope.orgId, orgStaff);
-    const slots = await availableSlotsForTrainer({ orgId: scope.orgId, trainerId, from: day, to: day, programmeIds });
+    const slots = await availableSlotsForTrainer({ orgId: scope.orgId, trainerId, from, to, programmeIds });
     if ("error" in slots) return res.status(400).json({ error: slots.error });
     const slot = slots.slots.find((item) => item.available && item.availabilityId === availabilityId && item.startsAt === startsAt!.toISOString());
     if (!slot) return res.status(409).json({ error: "that slot is no longer available" });
@@ -4161,14 +4358,16 @@ router.post("/bookings", async (req, res) => {
   } else {
     const date = String(req.body?.date ?? "");
     const time = String(req.body?.time ?? "");
-    const parsedStart = new Date(`${date}T${time}:00`);
-    startsAt = Number.isFinite(parsedStart.getTime()) ? parsedStart : null;
+    const parsedStart = zonedTimeToUtc(date, time, trainerTimeZone);
+    startsAt = parsedStart;
     if (startsAt && startsAt.getTime() <= Date.now()) return res.status(400).json({ error: "bookings must be in the future" });
     endsAt = startsAt ? new Date(startsAt.getTime() + durationMinutes * 60_000) : null;
+    timeZone = trainerTimeZone;
   }
   if (!startsAt || !endsAt) return res.status(400).json({ error: "a valid date and time are required" });
-  const date = String(req.body?.date ?? startsAt.toISOString().slice(0, 10));
-  const time = String(req.body?.time ?? startsAt.toISOString().slice(11, 16));
+  const localFields = bookingLocalFields(startsAt, timeZone);
+  const date = localFields.date;
+  const time = localFields.time;
 
   let created;
   try {
@@ -4188,7 +4387,7 @@ router.post("/bookings", async (req, res) => {
         err.status = 401;
         throw err;
       }
-      if (await bookingConflicts({ trainerId, learnerId: me.id, startsAt, endsAt })) {
+      if (await bookingConflicts({ trainerId, learnerId: me.id, startsAt, endsAt, client: tx, lock: true })) {
         const err = new Error("this slot is no longer available") as Error & { status?: number };
         err.status = 409;
         throw err;
@@ -4223,10 +4422,28 @@ router.post("/bookings", async (req, res) => {
 router.post("/bookings/:id/cancel", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
-  const booking = await db.booking.findFirst({ where: { id: req.params.id, orgId: scope.orgId } }).catch(() => null);
+  const booking = await db.booking.findFirst({
+    where: { id: req.params.id, orgId: scope.orgId },
+    include: { courseRef: { select: { programmeId: true } }, availability: { select: { programmeId: true } } },
+  }).catch(() => null);
   if (!booking) return res.status(404).json({ error: "booking not found" });
-  const staff = (await isOrgStaff(me.id)) || (await hasAnyProgrammeStaffGrant(me.id));
-  if (!staff && booking.learnerId !== me.id && booking.trainerId !== me.id) return res.status(403).json({ error: "you cannot cancel this booking" });
+  let programmeId = booking.courseRef?.programmeId ?? booking.availability?.programmeId ?? null;
+  if (!programmeId && booking.trainerId) {
+    const grant = await db.userRole.findFirst({
+      where: { userId: booking.trainerId, role: { name: "trainer" }, user: { orgId: scope.orgId } },
+      select: { programmeId: true },
+    }).catch(() => null);
+    programmeId = grant?.programmeId ?? null;
+  }
+  const orgStaff = await isOrgStaff(me.id);
+  const programmeStaff = programmeId
+    ? !!(await db.userRole.findFirst({
+        where: { userId: me.id, programmeId, role: { name: { in: ["admin", "owner", "trainer"] } } },
+        select: { id: true },
+      }).catch(() => null))
+    : false;
+  const allowed = orgStaff || programmeStaff || booking.learnerId === me.id || booking.trainerId === me.id;
+  if (!allowed) return res.status(403).json({ error: "you cannot cancel this booking" });
   const updated = await db.booking.update({
     where: { id: booking.id },
     data: {

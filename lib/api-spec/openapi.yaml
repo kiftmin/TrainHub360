@@ -34,6 +34,7 @@ paths:
       operationId: healthCheck
       tags: [health]
       summary: Health check
+      security: []
       description: Returns server health status
       responses:
         "200":
@@ -989,6 +990,101 @@ paths:
                 $ref: "#/components/schemas/TrainerAvailability"
         "403":
           description: Not allowed to manage this trainer's availability
+  /trainer-availability-exceptions:
+    get:
+      operationId: listTrainerAvailabilityExceptions
+      tags: [engagement]
+      summary: List trainer availability exceptions visible to the current user
+      parameters:
+        - name: trainerId
+          in: query
+          required: false
+          schema: { type: string }
+        - name: date
+          in: query
+          required: false
+          schema: { type: string, format: date }
+      responses:
+        "200":
+          description: Availability exceptions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TrainerAvailabilityException"
+        "400":
+          description: Invalid date filter
+    post:
+      operationId: createTrainerAvailabilityException
+      tags: [engagement]
+      summary: Create a trainer availability exception
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrainerAvailabilityExceptionInput"
+      responses:
+        "201":
+          description: Created exception
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainerAvailabilityException"
+        "400":
+          description: Invalid exception range or timezone
+        "403":
+          description: Not allowed to manage this trainer's exceptions
+        "409":
+          description: Overlapping exception
+  /trainer-availability-exceptions/{exceptionId}:
+    patch:
+      operationId: updateTrainerAvailabilityException
+      tags: [engagement]
+      summary: Update a trainer availability exception
+      parameters:
+        - name: exceptionId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrainerAvailabilityExceptionInput"
+      responses:
+        "200":
+          description: Updated exception
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainerAvailabilityException"
+        "400":
+          description: Invalid exception range or timezone
+        "403":
+          description: Not allowed to manage this exception
+        "404":
+          description: Exception not found
+        "409":
+          description: Overlapping exception
+    delete:
+      operationId: deleteTrainerAvailabilityException
+      tags: [engagement]
+      summary: Delete a trainer availability exception
+      parameters:
+        - name: exceptionId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "204":
+          description: Deleted
+        "403":
+          description: Not allowed to manage this exception
+        "404":
+          description: Exception not found
   /bookings/{bookingId}/cancel:
     post:
       operationId: cancelBooking
@@ -1081,6 +1177,7 @@ paths:
       operationId: login
       tags: [auth]
       summary: Login with email/password (JWT)
+      security: []
       requestBody:
         required: true
         content:
@@ -1099,6 +1196,7 @@ paths:
       operationId: ssoLogin
       tags: [auth]
       summary: SSO/SAML token exchange
+      security: []
       requestBody:
         required: true
         content:
@@ -2215,6 +2313,7 @@ paths:
       operationId: activateAccount
       tags: [auth]
       summary: Set a password with an activation token
+      security: []
       description: Single use, 7-day expiry, same password policy as reset. The token is rejected after use or expiry.
       requestBody:
         required: true
@@ -2232,6 +2331,7 @@ paths:
       operationId: requestPasswordReset
       tags: [auth]
       summary: Request a reset link
+      security: []
       description: Always 200, so the endpoint does not reveal which addresses exist.
       requestBody:
         required: true
@@ -2250,6 +2350,7 @@ paths:
       operationId: resetPassword
       tags: [auth]
       summary: Reset a password with a token
+      security: []
       description: Bumps tokenVersion, so every existing session for that user is invalid.
       requestBody:
         required: true
@@ -2355,6 +2456,7 @@ paths:
       operationId: createOrganization
       tags: [governance]
       summary: Create an organization (self-service registration)
+      security: []
       requestBody:
         required: true
         content:
@@ -3726,6 +3828,32 @@ components:
         validFrom: { type: ["string", "null"], format: date-time }
         validTo: { type: ["string", "null"], format: date-time }
         isActive: { type: boolean }
+    TrainerAvailabilityException:
+      type: object
+      required: [id, trainerId, date, startsAt, endsAt, isAvailable, createdAt]
+      properties:
+        id: { type: string }
+        trainerId: { type: string }
+        programmeId: { type: ["string", "null"] }
+        courseId: { type: ["string", "null"] }
+        date: { type: string, format: date }
+        startsAt: { type: ["string", "null"], format: date-time }
+        endsAt: { type: ["string", "null"], format: date-time }
+        isAvailable: { type: boolean }
+        reason: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+    TrainerAvailabilityExceptionInput:
+      type: object
+      required: [date, isAvailable]
+      properties:
+        trainerId: { type: string, description: Required for create; ignored on update. }
+        programmeId: { type: ["string", "null"] }
+        courseId: { type: ["string", "null"] }
+        date: { type: string, format: date }
+        startsAt: { type: ["string", "null"], format: date-time }
+        endsAt: { type: ["string", "null"], format: date-time }
+        isAvailable: { type: boolean }
+        reason: { type: ["string", "null"] }
     BookableTrainer:
       type: object
       required: [id, name, email]
@@ -4068,7 +4196,7 @@ components:
         jobFunction: { type: [string, "null"] }
     LearnerDashboardSummary:
       type: object
-      required: [assignedCourses, completedCourses, overallProgress, outstandingActivities, pendingVerifications, unreadNotifications, unreadMessages]
+      required: [assignedCourses, completedCourses, overallProgress, outstandingActivities, pendingVerifications, unreadNotifications, unreadMessages, awaitingTrainerReplies, awaitingLearnerReplies, unreadMessageTracking]
       properties:
         assignedCourses: { type: integer }
         completedCourses: { type: integer }
@@ -4076,7 +4204,10 @@ components:
         outstandingActivities: { type: integer }
         pendingVerifications: { type: integer }
         unreadNotifications: { type: integer }
-        unreadMessages: { type: integer }
+        unreadMessages: { type: integer, description: "Always 0: per-message read state is not stored. Use awaitingTrainerReplies for actionable messages." }
+        awaitingTrainerReplies: { type: integer, description: "Threads whose latest message is from the learner and still needs a trainer reply." }
+        awaitingLearnerReplies: { type: integer, description: "Threads whose latest message is from a trainer and is waiting on the learner." }
+        unreadMessageTracking: { type: boolean, description: "False until per-message read state exists; unreadMessages is therefore not an unread count." }
     LearnerModuleProgress:
       type: object
       required: [id, title, total, completed, progress]
@@ -4215,7 +4346,7 @@ components:
         createdAt: { type: string, format: date-time }
     LearnerMessageSummary:
       type: object
-      required: [id, subject, courseId, courseTitle, urgent, lastMessageAt, lastMessagePreview, slaStatus, slaState, awaitingTrainerResponse, href]
+      required: [id, subject, courseId, courseTitle, urgent, lastMessageAt, lastMessagePreview, averageResponseTimeHours, slaStatus, slaState, awaitingTrainerResponse, href]
       properties:
         id: { type: string }
         subject: { type: string }
@@ -4224,8 +4355,9 @@ components:
         urgent: { type: boolean }
         lastMessageAt: { type: [string, "null"], format: date-time }
         lastMessagePreview: { type: [string, "null"] }
-        slaStatus: { type: string }
-        slaState: { type: string }
+        averageResponseTimeHours: { type: [number, "null"], description: "Average observed learner-message to trainer-reply gap in this thread." }
+        slaStatus: { type: string, description: "Learner-safe response status; staff escalation details are never included." }
+        slaState: { type: string, enum: [ok, reply_pending] }
         awaitingTrainerResponse: { type: boolean }
         href: { type: string }
     LearnerDashboard:

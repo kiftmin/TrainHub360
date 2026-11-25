@@ -108,7 +108,10 @@ export const GetLearnerDashboardResponse = zod.object({
   "outstandingActivities": zod.number().int(),
   "pendingVerifications": zod.number().int(),
   "unreadNotifications": zod.number().int(),
-  "unreadMessages": zod.number().int()
+  "unreadMessages": zod.number().int().describe('Always 0: per-message read state is not stored. Use awaitingTrainerReplies for actionable messages.'),
+  "awaitingTrainerReplies": zod.number().int().describe('Threads whose latest message is from the learner and still needs a trainer reply.'),
+  "awaitingLearnerReplies": zod.number().int().describe('Threads whose latest message is from a trainer and is waiting on the learner.'),
+  "unreadMessageTracking": zod.boolean().describe('False until per-message read state exists; unreadMessages is therefore not an unread count.')
 }),
   "courses": zod.array(zod.object({
   "enrolmentId": zod.string(),
@@ -226,8 +229,9 @@ export const GetLearnerDashboardResponse = zod.object({
   "urgent": zod.boolean(),
   "lastMessageAt": zod.coerce.date().nullable(),
   "lastMessagePreview": zod.string().nullable(),
-  "slaStatus": zod.string(),
-  "slaState": zod.string(),
+  "averageResponseTimeHours": zod.number().nullable().describe('Average observed learner-message to trainer-reply gap in this thread.'),
+  "slaStatus": zod.string().describe('Learner-safe response status; staff escalation details are never included.'),
+  "slaState": zod.enum(['ok', 'reply_pending']),
   "awaitingTrainerResponse": zod.boolean(),
   "href": zod.string()
 }))
@@ -1151,6 +1155,99 @@ export const CreateTrainerAvailabilityResponse = zod.object({
   "validFrom": zod.coerce.date().nullish(),
   "validTo": zod.coerce.date().nullish()
 })
+
+
+/**
+ * @summary List trainer availability exceptions visible to the current user
+ */
+export const ListTrainerAvailabilityExceptionsQueryParams = zod.object({
+  "trainerId": zod.coerce.string().optional(),
+  "date": zod.date().optional()
+})
+
+export const ListTrainerAvailabilityExceptionsResponseItem = zod.object({
+  "id": zod.string(),
+  "trainerId": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "date": zod.coerce.date(),
+  "startsAt": zod.coerce.date().nullable(),
+  "endsAt": zod.coerce.date().nullable(),
+  "isAvailable": zod.boolean(),
+  "reason": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})
+export const ListTrainerAvailabilityExceptionsResponse = zod.array(ListTrainerAvailabilityExceptionsResponseItem)
+
+
+/**
+ * @summary Create a trainer availability exception
+ */
+export const CreateTrainerAvailabilityExceptionBody = zod.object({
+  "trainerId": zod.string().optional().describe('Required for create; ignored on update.'),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "date": zod.coerce.date(),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "isAvailable": zod.boolean(),
+  "reason": zod.string().nullish()
+})
+
+export const CreateTrainerAvailabilityExceptionResponse = zod.object({
+  "id": zod.string(),
+  "trainerId": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "date": zod.coerce.date(),
+  "startsAt": zod.coerce.date().nullable(),
+  "endsAt": zod.coerce.date().nullable(),
+  "isAvailable": zod.boolean(),
+  "reason": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Update a trainer availability exception
+ */
+export const UpdateTrainerAvailabilityExceptionParams = zod.object({
+  "exceptionId": zod.coerce.string()
+})
+
+export const UpdateTrainerAvailabilityExceptionBody = zod.object({
+  "trainerId": zod.string().optional().describe('Required for create; ignored on update.'),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "date": zod.coerce.date(),
+  "startsAt": zod.coerce.date().nullish(),
+  "endsAt": zod.coerce.date().nullish(),
+  "isAvailable": zod.boolean(),
+  "reason": zod.string().nullish()
+})
+
+export const UpdateTrainerAvailabilityExceptionResponse = zod.object({
+  "id": zod.string(),
+  "trainerId": zod.string(),
+  "programmeId": zod.string().nullish(),
+  "courseId": zod.string().nullish(),
+  "date": zod.coerce.date(),
+  "startsAt": zod.coerce.date().nullable(),
+  "endsAt": zod.coerce.date().nullable(),
+  "isAvailable": zod.boolean(),
+  "reason": zod.string().nullish(),
+  "createdAt": zod.coerce.date()
+})
+
+
+/**
+ * @summary Delete a trainer availability exception
+ */
+export const DeleteTrainerAvailabilityExceptionParams = zod.object({
+  "exceptionId": zod.coerce.string()
+})
+
+export const DeleteTrainerAvailabilityExceptionResponse = zod.void()
 
 
 /**

@@ -13,5 +13,12 @@ export interface LearnerDashboardSummary {
   outstandingActivities: number;
   pendingVerifications: number;
   unreadNotifications: number;
+  /** Always 0: per-message read state is not stored. Use awaitingTrainerReplies for actionable messages. */
   unreadMessages: number;
+  /** Threads whose latest message is from the learner and still needs a trainer reply. */
+  awaitingTrainerReplies: number;
+  /** Threads whose latest message is from a trainer and is waiting on the learner. */
+  awaitingLearnerReplies: number;
+  /** False until per-message read state exists; unreadMessages is therefore not an unread count. */
+  unreadMessageTracking: boolean;
 }

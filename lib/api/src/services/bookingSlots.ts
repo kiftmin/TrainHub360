@@ -1,26 +1,22 @@
-import { db } from "../db.js";
+import { db, Prisma } from "../db.js";
+import {
+  addDays,
+  calendarDateKey,
+  localDateKey,
+  localTimeKey,
+  resolveTimeZone,
+  startOfLocalDay,
+  weekdayForDateKey,
+  zonedTimeToUtc,
+} from "./timeZone.js";
 
 const DAY_MS = 86_400_000;
-
-function dateKey(value: Date | string): string {
-  return new Date(value).toISOString().slice(0, 10);
-}
-
-function utcDate(value: string): Date | null {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return Number.isFinite(parsed.getTime()) ? parsed : null;
-}
 
 function minutes(time: string): number | null {
   const match = /^(\d{2}):(\d{2})$/.exec(time ?? "");
   if (!match) return null;
   const value = Number(match[1]) * 60 + Number(match[2]);
   return value >= 0 && value < 1440 ? value : null;
-}
-
-function atTime(day: Date, mins: number): Date {
-  return new Date(day.getTime() + mins * 60_000);
 }
 
 function overlaps(aStart: Date, aEnd: Date, bStart: Date | null, bEnd: Date | null): boolean {
@@ -36,14 +32,17 @@ export async function availableSlotsForTrainer(options: {
   to: string;
   programmeIds: string[] | null;
 }) {
-  const from = utcDate(options.from);
-  const to = utcDate(options.to);
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(options.from) ? options.from : null;
+  const to = /^\d{4}-\d{2}-\d{2}$/.test(options.to) ? options.to : null;
   if (!from || !to) return { error: "from and to must be YYYY-MM-DD" as const };
   if (to < from) return { error: "to must not be before from" as const };
-  const days = Math.min(Math.round((to.getTime() - from.getTime()) / DAY_MS) + 1, 35);
-  const rangeEnd = new Date(from.getTime() + days * DAY_MS);
 
-  const [availabilities, exceptions, bookings, sessions, trainer] = await Promise.all([
+  const [timeZoneRule, availabilities, exceptions, bookings, sessions, trainer] = await Promise.all([
+    db.trainerAvailability.findFirst({
+      where: { trainerId: options.trainerId, orgId: options.orgId, isActive: true },
+      select: { timeZone: true },
+      orderBy: { createdAt: "asc" },
+    }),
     db.trainerAvailability.findMany({
       where: {
         trainerId: options.trainerId,
@@ -56,7 +55,7 @@ export async function availableSlotsForTrainer(options: {
       where: {
         trainerId: options.trainerId,
         orgId: options.orgId,
-        date: { gte: from, lt: rangeEnd },
+        date: { gte: new Date(`${from}T00:00:00.000Z`), lte: new Date(`${to}T00:00:00.000Z`) },
         ...(options.programmeIds ? { OR: [{ programmeId: null }, { programmeId: { in: options.programmeIds } }] } : {}),
       },
     }),
@@ -64,7 +63,7 @@ export async function availableSlotsForTrainer(options: {
       where: {
         trainerId: options.trainerId,
         status: "confirmed",
-        startsAt: { not: null, gte: from, lt: rangeEnd },
+        startsAt: { not: null },
       },
       select: { startsAt: true, endsAt: true },
     }),
@@ -72,7 +71,7 @@ export async function availableSlotsForTrainer(options: {
       where: {
         trainerId: options.trainerId,
         status: "scheduled",
-        startsAt: { not: null, gte: from, lt: rangeEnd },
+        startsAt: { not: null },
       },
       select: { startsAt: true, endsAt: true },
     }),
@@ -80,7 +79,10 @@ export async function availableSlotsForTrainer(options: {
   ]);
   if (!trainer) return { error: "trainer not found in your organization" as const };
 
-  const busy = [...bookings, ...sessions];
+  const timeZone = resolveTimeZone(timeZoneRule?.timeZone);
+  const rangeStart = startOfLocalDay(from, timeZone) ?? new Date(`${from}T00:00:00.000Z`);
+  const rangeEnd = startOfLocalDay(addDays(to, 1), timeZone) ?? new Date(`${addDays(to, 1)}T00:00:00.000Z`);
+  const busy = [...bookings, ...sessions].filter((item) => item.startsAt && item.startsAt < rangeEnd && (item.endsAt ?? new Date(item.startsAt.getTime() + DAY_MS)) > rangeStart);
   const slots: Array<{
     availabilityId: string | null;
     startsAt: string;
@@ -90,21 +92,25 @@ export async function availableSlotsForTrainer(options: {
     available: boolean;
   }> = [];
 
+  const days = Math.min(Math.round((new Date(`${to}T00:00:00.000Z`).getTime() - new Date(`${from}T00:00:00.000Z`).getTime()) / DAY_MS) + 1, 35);
   for (let offset = 0; offset < days; offset += 1) {
-    const day = new Date(from.getTime() + offset * DAY_MS);
-    const key = dateKey(day);
+    const key = addDays(from, offset);
     for (const rule of availabilities) {
-      if (rule.dayOfWeek !== day.getUTCDay()) continue;
-      if (rule.validFrom && dateKey(rule.validFrom) > key) continue;
-      if (rule.validTo && dateKey(rule.validTo) < key) continue;
+      if (rule.dayOfWeek !== weekdayForDateKey(key)) continue;
+      const ruleTimeZone = resolveTimeZone(rule.timeZone, timeZone);
+      const validFrom = calendarDateKey(rule.validFrom);
+      const validTo = calendarDateKey(rule.validTo);
+      if (validFrom && validFrom > key) continue;
+      if (validTo && validTo < key) continue;
       const startMin = minutes(rule.startTime);
       const endMin = minutes(rule.endTime);
       if (startMin === null || endMin === null || endMin <= startMin) continue;
       for (let mins = startMin; mins + rule.slotMinutes <= endMin; mins += rule.slotMinutes) {
-        const startsAt = atTime(day, mins);
+        const startsAt = zonedTimeToUtc(key, `${String(Math.floor(mins / 60)).padStart(2, "0")}:${String(mins % 60).padStart(2, "0")}`, ruleTimeZone);
+        if (!startsAt) continue;
         const endsAt = new Date(startsAt.getTime() + rule.slotMinutes * 60_000);
         const blocked = exceptions.some((exception) => {
-          if (dateKey(exception.date) !== key || exception.isAvailable) return false;
+          if (calendarDateKey(exception.date) !== key || exception.isAvailable) return false;
           if (!exception.startsAt) return true;
           return overlaps(startsAt, endsAt, exception.startsAt, exception.endsAt);
         });
@@ -112,27 +118,27 @@ export async function availableSlotsForTrainer(options: {
           availabilityId: rule.id,
           startsAt: startsAt.toISOString(),
           endsAt: endsAt.toISOString(),
-          timeZone: rule.timeZone,
+          timeZone: ruleTimeZone,
           durationMinutes: rule.slotMinutes,
           available: !blocked && !busy.some((item) => overlaps(startsAt, endsAt, item.startsAt, item.endsAt)),
         });
       }
     }
-    for (const exception of exceptions.filter((item) => dateKey(item.date) === key && item.isAvailable && item.startsAt)) {
+    for (const exception of exceptions.filter((item) => calendarDateKey(item.date) === key && item.isAvailable && item.startsAt)) {
       const startsAt = new Date(exception.startsAt!);
       const endsAt = exception.endsAt ?? new Date(startsAt.getTime() + 30 * 60_000);
       slots.push({
         availabilityId: null,
         startsAt: startsAt.toISOString(),
         endsAt: endsAt.toISOString(),
-        timeZone: "UTC",
+        timeZone,
         durationMinutes: Math.max(15, Math.round((endsAt.getTime() - startsAt.getTime()) / 60_000)),
         available: !busy.some((item) => overlaps(startsAt, endsAt, item.startsAt, item.endsAt)),
       });
     }
   }
 
-  return { slots: slots.sort((a, b) => a.startsAt.localeCompare(b.startsAt)) };
+  return { timeZone, slots: slots.sort((a, b) => a.startsAt.localeCompare(b.startsAt)) };
 }
 
 export async function bookingConflicts(options: {
@@ -141,9 +147,30 @@ export async function bookingConflicts(options: {
   startsAt: Date;
   endsAt: Date;
   excludeBookingId?: string;
+  client?: Prisma.TransactionClient | typeof db;
+  lock?: boolean;
 }) {
+  const client = options.client ?? db;
+  if (options.lock) {
+    await client.$queryRaw`
+      SELECT id FROM dbo.bookings WITH (UPDLOCK, HOLDLOCK)
+      WHERE status = N'confirmed'
+        AND starts_at < ${options.endsAt}
+        AND ends_at > ${options.startsAt}
+        AND (trainer_id = ${options.trainerId} OR learner_id = ${options.learnerId})
+      ORDER BY id
+    `;
+    await client.$queryRaw`
+      SELECT id FROM dbo.sessions WITH (UPDLOCK, HOLDLOCK)
+      WHERE status = N'scheduled'
+        AND starts_at < ${options.endsAt}
+        AND ends_at > ${options.startsAt}
+        AND trainer_id = ${options.trainerId}
+      ORDER BY id
+    `;
+  }
   const [bookings, sessions] = await Promise.all([
-    db.booking.findMany({
+    client.booking.findMany({
       where: {
         status: "confirmed",
         id: options.excludeBookingId ? { not: options.excludeBookingId } : undefined,
@@ -154,7 +181,7 @@ export async function bookingConflicts(options: {
       select: { id: true },
       take: 1,
     }),
-    db.session.findMany({
+    client.session.findMany({
       where: {
         trainerId: options.trainerId,
         status: "scheduled",
@@ -166,4 +193,8 @@ export async function bookingConflicts(options: {
     }),
   ]);
   return bookings.length > 0 || sessions.length > 0;
+}
+
+export function bookingLocalFields(startsAt: Date, timeZone: string): { date: string; time: string } {
+  return { date: localDateKey(startsAt, timeZone), time: localTimeKey(startsAt, timeZone) };
 }

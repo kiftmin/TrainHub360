@@ -87,6 +87,7 @@ import type {
   ListNotificationsParams,
   ListProgrammeMembers200Item,
   ListSessionInvitableLearnersParams,
+  ListTrainerAvailabilityExceptionsParams,
   ListUsersParams,
   MarkContentProgressBody,
   MessageTemplate,
@@ -137,6 +138,8 @@ import type {
   ThreadMessage,
   ThreadMessageInput,
   TrainerAvailability,
+  TrainerAvailabilityException,
+  TrainerAvailabilityExceptionInput,
   TrainerAvailabilityInput,
   TrainingSession,
   UpdateAssessment200,
@@ -3109,6 +3112,304 @@ export const useCreateTrainerAvailability = <TError = ErrorType<void>,
         TContext
       > => {
       return useMutation(getCreateTrainerAvailabilityMutationOptions(options));
+    }
+
+export const getListTrainerAvailabilityExceptionsUrl = (params?: ListTrainerAvailabilityExceptionsParams,) => {
+  const normalizedParams = new URLSearchParams();
+
+  Object.entries(params || {}).forEach(([key, value]) => {
+
+    if (value !== undefined) {
+      normalizedParams.append(key, value === null ? 'null' : String(value))
+    }
+  });
+
+  const stringifiedParams = normalizedParams.toString();
+
+  return stringifiedParams.length > 0 ? `/api/trainer-availability-exceptions?${stringifiedParams}` : `/api/trainer-availability-exceptions`
+}
+
+/**
+ * @summary List trainer availability exceptions visible to the current user
+ */
+export const listTrainerAvailabilityExceptions = async (params?: ListTrainerAvailabilityExceptionsParams, options?: Parameters<typeof customFetch>[1]): Promise<TrainerAvailabilityException[]> => {
+
+  return customFetch<TrainerAvailabilityException[]>(getListTrainerAvailabilityExceptionsUrl(params),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getListTrainerAvailabilityExceptionsQueryKey = (params?: ListTrainerAvailabilityExceptionsParams,) => {
+    return [
+    `/api/trainer-availability-exceptions`, ...(params ? [params] : [])
+    ] as const;
+    }
+
+
+export const getListTrainerAvailabilityExceptionsQueryOptions = <TData = Awaited<ReturnType<typeof listTrainerAvailabilityExceptions>>, TError = ErrorType<void>>(params?: ListTrainerAvailabilityExceptionsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listTrainerAvailabilityExceptions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getListTrainerAvailabilityExceptionsQueryKey(params);
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof listTrainerAvailabilityExceptions>>> = ({ signal }) => listTrainerAvailabilityExceptions(params, { signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof listTrainerAvailabilityExceptions>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type ListTrainerAvailabilityExceptionsQueryResult = NonNullable<Awaited<ReturnType<typeof listTrainerAvailabilityExceptions>>>
+export type ListTrainerAvailabilityExceptionsQueryError = ErrorType<void>
+
+
+/**
+ * @summary List trainer availability exceptions visible to the current user
+ */
+
+export function useListTrainerAvailabilityExceptions<TData = Awaited<ReturnType<typeof listTrainerAvailabilityExceptions>>, TError = ErrorType<void>>(
+ params?: ListTrainerAvailabilityExceptionsParams, options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof listTrainerAvailabilityExceptions>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getListTrainerAvailabilityExceptionsQueryOptions(params,options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getCreateTrainerAvailabilityExceptionUrl = () => {
+
+
+
+
+  return `/api/trainer-availability-exceptions`
+}
+
+/**
+ * @summary Create a trainer availability exception
+ */
+export const createTrainerAvailabilityException = async (trainerAvailabilityExceptionInput: TrainerAvailabilityExceptionInput, options?: Parameters<typeof customFetch>[1]): Promise<TrainerAvailabilityException> => {
+
+  return customFetch<TrainerAvailabilityException>(getCreateTrainerAvailabilityExceptionUrl(),
+  {
+    ...options,
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(trainerAvailabilityExceptionInput)
+  }
+);}
+
+
+
+
+
+export const getCreateTrainerAvailabilityExceptionMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createTrainerAvailabilityException>>, TError,{data: BodyType<TrainerAvailabilityExceptionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof createTrainerAvailabilityException>>, TError,{data: BodyType<TrainerAvailabilityExceptionInput>}, TContext> => {
+
+const mutationKey = ['createTrainerAvailabilityException'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof createTrainerAvailabilityException>>, {data: BodyType<TrainerAvailabilityExceptionInput>}> = (props) => {
+          const {data} = props ?? {};
+
+          return  createTrainerAvailabilityException(data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type CreateTrainerAvailabilityExceptionMutationResult = NonNullable<Awaited<ReturnType<typeof createTrainerAvailabilityException>>>
+    export type CreateTrainerAvailabilityExceptionMutationBody = BodyType<TrainerAvailabilityExceptionInput>
+    export type CreateTrainerAvailabilityExceptionMutationError = ErrorType<void>
+
+    /**
+ * @summary Create a trainer availability exception
+ */
+export const useCreateTrainerAvailabilityException = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof createTrainerAvailabilityException>>, TError,{data: BodyType<TrainerAvailabilityExceptionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof createTrainerAvailabilityException>>,
+        TError,
+        {data: BodyType<TrainerAvailabilityExceptionInput>},
+        TContext
+      > => {
+      return useMutation(getCreateTrainerAvailabilityExceptionMutationOptions(options));
+    }
+
+export const getUpdateTrainerAvailabilityExceptionUrl = (exceptionId: string,) => {
+
+
+
+
+  return `/api/trainer-availability-exceptions/${exceptionId}`
+}
+
+/**
+ * @summary Update a trainer availability exception
+ */
+export const updateTrainerAvailabilityException = async (exceptionId: string,
+    trainerAvailabilityExceptionInput: TrainerAvailabilityExceptionInput, options?: Parameters<typeof customFetch>[1]): Promise<TrainerAvailabilityException> => {
+
+  return customFetch<TrainerAvailabilityException>(getUpdateTrainerAvailabilityExceptionUrl(exceptionId),
+  {
+    ...options,
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...options?.headers },
+    body: JSON.stringify(trainerAvailabilityExceptionInput)
+  }
+);}
+
+
+
+
+
+export const getUpdateTrainerAvailabilityExceptionMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateTrainerAvailabilityException>>, TError,{exceptionId: string;data: BodyType<TrainerAvailabilityExceptionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof updateTrainerAvailabilityException>>, TError,{exceptionId: string;data: BodyType<TrainerAvailabilityExceptionInput>}, TContext> => {
+
+const mutationKey = ['updateTrainerAvailabilityException'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof updateTrainerAvailabilityException>>, {exceptionId: string;data: BodyType<TrainerAvailabilityExceptionInput>}> = (props) => {
+          const {exceptionId,data} = props ?? {};
+
+          return  updateTrainerAvailabilityException(exceptionId,data,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type UpdateTrainerAvailabilityExceptionMutationResult = NonNullable<Awaited<ReturnType<typeof updateTrainerAvailabilityException>>>
+    export type UpdateTrainerAvailabilityExceptionMutationBody = BodyType<TrainerAvailabilityExceptionInput>
+    export type UpdateTrainerAvailabilityExceptionMutationError = ErrorType<void>
+
+    /**
+ * @summary Update a trainer availability exception
+ */
+export const useUpdateTrainerAvailabilityException = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof updateTrainerAvailabilityException>>, TError,{exceptionId: string;data: BodyType<TrainerAvailabilityExceptionInput>}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof updateTrainerAvailabilityException>>,
+        TError,
+        {exceptionId: string;data: BodyType<TrainerAvailabilityExceptionInput>},
+        TContext
+      > => {
+      return useMutation(getUpdateTrainerAvailabilityExceptionMutationOptions(options));
+    }
+
+export const getDeleteTrainerAvailabilityExceptionUrl = (exceptionId: string,) => {
+
+
+
+
+  return `/api/trainer-availability-exceptions/${exceptionId}`
+}
+
+/**
+ * @summary Delete a trainer availability exception
+ */
+export const deleteTrainerAvailabilityException = async (exceptionId: string, options?: Parameters<typeof customFetch>[1]): Promise<void> => {
+
+  return customFetch<void>(getDeleteTrainerAvailabilityExceptionUrl(exceptionId),
+  {
+    ...options,
+    method: 'DELETE'
+
+
+  }
+);}
+
+
+
+
+
+export const getDeleteTrainerAvailabilityExceptionMutationOptions = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteTrainerAvailabilityException>>, TError,{exceptionId: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+): UseMutationOptions<Awaited<ReturnType<typeof deleteTrainerAvailabilityException>>, TError,{exceptionId: string}, TContext> => {
+
+const mutationKey = ['deleteTrainerAvailabilityException'];
+const {mutation: mutationOptions, request: requestOptions} = options ?
+      options.mutation && 'mutationKey' in options.mutation && options.mutation.mutationKey ?
+      options
+      : {...options, mutation: {...options.mutation, mutationKey}}
+      : {mutation: { mutationKey, }, request: undefined};
+
+
+
+
+      const mutationFn: MutationFunction<Awaited<ReturnType<typeof deleteTrainerAvailabilityException>>, {exceptionId: string}> = (props) => {
+          const {exceptionId} = props ?? {};
+
+          return  deleteTrainerAvailabilityException(exceptionId,requestOptions)
+        }
+
+
+
+
+
+
+  return  { mutationFn, ...mutationOptions }}
+
+    export type DeleteTrainerAvailabilityExceptionMutationResult = NonNullable<Awaited<ReturnType<typeof deleteTrainerAvailabilityException>>>
+
+    export type DeleteTrainerAvailabilityExceptionMutationError = ErrorType<void>
+
+    /**
+ * @summary Delete a trainer availability exception
+ */
+export const useDeleteTrainerAvailabilityException = <TError = ErrorType<void>,
+    TContext = unknown>(options?: { mutation?:UseMutationOptions<Awaited<ReturnType<typeof deleteTrainerAvailabilityException>>, TError,{exceptionId: string}, TContext>, request?: SecondParameter<typeof customFetch>}
+ ): UseMutationResult<
+        Awaited<ReturnType<typeof deleteTrainerAvailabilityException>>,
+        TError,
+        {exceptionId: string},
+        TContext
+      > => {
+      return useMutation(getDeleteTrainerAvailabilityExceptionMutationOptions(options));
     }
 
 export const getCancelBookingUrl = (bookingId: string,) => {

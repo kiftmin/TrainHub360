@@ -37,6 +37,11 @@ const table = (name: string): SchemaObjectCheck => ({
   sql: `SELECT 1 AS present FROM sys.tables t JOIN sys.schemas s ON s.schema_id = t.schema_id WHERE s.name = N'dbo' AND t.name = N'${name}'`,
 });
 
+const view = (name: string): SchemaObjectCheck => ({
+  label: `view dbo.${name}`,
+  sql: `SELECT 1 AS present FROM sys.views v JOIN sys.schemas s ON s.schema_id = v.schema_id WHERE s.name = N'dbo' AND v.name = N'${name}'`,
+});
+
 export const schemaObjectChecks: SchemaObjectCheck[] = [
   column("notifications", "dedupe_key"),
   column("recognitions", "dedupe_key"),
@@ -59,6 +64,7 @@ export const schemaObjectChecks: SchemaObjectCheck[] = [
   column("session_rsvps", "removed_by"),
   column("session_rsvps", "removed_at"),
   column("session_rsvps", "removal_reason"),
+  view("v_feature53_booking_migration_review"),
 ];
 
 export async function findMissingSchemaObjects(query: SchemaQuery): Promise<string[]> {

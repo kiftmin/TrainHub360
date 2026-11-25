@@ -1,9 +1,5 @@
-import { useMemo, useState, type ReactNode } from 'react';
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { Link, Route, Switch, useLocation } from 'wouter';
-import { ErrorBoundary } from '@/components/error-boundary';
-import { Toaster } from '@/components/ui/toaster';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import { useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
@@ -15,16 +11,9 @@ import {
   useWorkspace,
   useDashboardSummary,
   useKpiSummary,
-  useProgrammes,
-  useCourses,
   useCreateCourse,
   useModules,
   useSessions,
-  useThreads,
-  useThreadMessages,
-  useSendMessage,
-  useCreateThread,
-  useProgrammeMembers,
   useBookings,
   useCreateBooking,
   useCalendarEvents,
@@ -34,11 +23,23 @@ import {
   useEnrolments,
   useCertificates,
   downloadReviewCreditCsv,
-  type Course,
-  type ReviewCreditSettings,
+  type MessageThread,
   type ThreadSlaState,
 } from '@/api/hooks';
-import { getToken, clearSession, getSessionUser } from '@/api/client';
+import {
+  getListCoursesQueryKey,
+  getListProgrammeMembersQueryKey,
+  getListThreadMessagesQueryKey,
+  useListMessageThreads,
+  useListProgrammes,
+  useListCourses,
+  useCreateThread,
+  useListProgrammeMembers,
+  useListThreadMessages,
+  useSendThreadMessage,
+  type MessageThread as GeneratedMessageThread,
+} from '@api-client';
+import { getSessionUser } from '@/api/client';
 import { MessageTemplatesPanel } from '@/components/MessageTemplatesPanel';
 import { ManualSlaRunButton, ThreadSlaControl, canEditThreadSla, canManageMessaging } from '@/components/MessagingStaffTools';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
@@ -53,7 +54,34 @@ import {
   ShieldCheck, SlidersHorizontal, Target, Users, X, Zap,
 } from 'lucide-react';
 
-const queryClient = new QueryClient();
+function asStaffThread(thread: GeneratedMessageThread): MessageThread {
+  return {
+    id: thread.id,
+    subject: thread.subject,
+    context: thread.context,
+    participant: thread.participant,
+    preview: thread.preview ?? '',
+    updatedAt: thread.updatedAt,
+    unread: thread.unread ?? false,
+    urgent: thread.urgent,
+    orgId: thread.orgId,
+    programmeId: thread.programmeId,
+    courseId: thread.courseId,
+    course: thread.course ? { id: thread.course.id ?? '', title: thread.course.title ?? '' } : null,
+    slaHours: thread.slaHours,
+    participants: thread.participants?.map((p) => ({ userId: p.userId ?? '', role: p.role ?? '' })),
+    isEscalated: thread.isEscalated,
+    escalatedAt: thread.escalatedAt,
+    lastLearnerMessageAt: thread.lastLearnerMessageAt,
+    lastTrainerResponseAt: thread.lastTrainerResponseAt,
+    metadataOnly: thread.metadataOnly,
+    averageResponseTimeHours: thread.averageResponseTimeHours,
+    slaStatus: thread.slaStatus,
+    slaState: thread.slaState,
+  };
+}
+
+type MemberOption = { userId?: string; role?: string; name?: string; email?: string };
 
 const nav = [
   { href: '/', label: 'Overview', icon: LayoutDashboard },
@@ -83,17 +111,21 @@ function slaTone(state?: ThreadSlaState): 'good' | 'warn' | 'bad' | 'neutral' {
 
 export function Messages() {
   const session = getSessionUser();
+  const queryClient = useQueryClient();
   const canManage = canManageMessaging(session);
   const [filterProgrammeId, setFilterProgrammeId] = useState('');
   const [filterCourseId, setFilterCourseId] = useState('');
   const [filterSlaStatus, setFilterSlaStatus] = useState<'' | ThreadSlaState>('');
-  const threads = useThreads({
+  const threads = useListMessageThreads({
     programmeId: filterProgrammeId || undefined,
     courseId: filterCourseId || undefined,
     slaStatus: filterSlaStatus || undefined,
   });
-  const programmes = useProgrammes();
-  const filterCourses = useCourses(filterProgrammeId || undefined, !!filterProgrammeId);
+  const programmes = useListProgrammes();
+  const filterCourseParams = filterProgrammeId ? { programmeId: filterProgrammeId } : undefined;
+  const filterCourses = useListCourses(filterCourseParams, {
+    query: { queryKey: getListCoursesQueryKey(filterCourseParams), enabled: !!filterProgrammeId },
+  });
   const createThread = useCreateThread();
   const [newOpen, setNewOpen] = useState(false);
   const [newSubject, setNewSubject] = useState('');
@@ -104,12 +136,20 @@ export function Messages() {
   const [newParticipants, setNewParticipants] = useState<string[]>([]);
   const [newUrgent, setNewUrgent] = useState(false);
   const [newError, setNewError] = useState<string | null>(null);
-  const members = useProgrammeMembers(newProgrammeId, newOpen && !!newProgrammeId);
-  const newCourses = useCourses(newProgrammeId || undefined, newOpen && !!newProgrammeId);
+  const newCourseParams = newProgrammeId ? { programmeId: newProgrammeId } : undefined;
+  const members = useListProgrammeMembers(newProgrammeId, {
+    query: { queryKey: getListProgrammeMembersQueryKey(newProgrammeId), enabled: newOpen && !!newProgrammeId },
+  });
+  const newCourses = useListCourses(newCourseParams, {
+    query: { queryKey: getListCoursesQueryKey(newCourseParams), enabled: newOpen && !!newProgrammeId },
+  });
   const meId = session?.id;
-  const canSetNewSla = !!session?.isOrgStaff || !!members.data?.some((m) => m.userId === meId && ['owner', 'admin'].includes(m.role));
+  const memberOptions = (members.data ?? []) as MemberOption[];
+  const canSetNewSla = !!session?.isOrgStaff || memberOptions.some((m) => m.userId === meId && ['owner', 'admin'].includes(m.role ?? ''));
   const isLearner = session?.role === 'learner';
-  const participantOptions = (members.data || []).filter((m) => m.userId !== meId && (!isLearner || ['trainer', 'facilitator'].includes(m.role)));
+  const participantOptions = memberOptions
+    .filter((m) => m.userId !== meId && (!isLearner || ['trainer', 'facilitator'].includes(m.role ?? '')))
+    .map((m) => ({ userId: m.userId ?? '', role: m.role ?? '', name: m.name ?? '', email: m.email ?? '' }));
   const submitThread = () => {
     if (!newSubject.trim() || !newBody.trim() || !newProgrammeId || !newParticipants.length) {
       setNewError('Subject, programme, body and at least one participant are required.');
@@ -122,12 +162,15 @@ export function Messages() {
     }
     setNewError(null);
     createThread.mutate({
-      subject: newSubject.trim(), body: newBody.trim(), programmeId: newProgrammeId,
-      participantIds: newParticipants, urgent: newUrgent,
-      ...(newCourseId ? { courseId: newCourseId } : {}),
-      ...(canSetNewSla ? { slaHours } : {}),
+      data: {
+        subject: newSubject.trim(), body: newBody.trim(), programmeId: newProgrammeId,
+        participantIds: newParticipants, urgent: newUrgent,
+        ...(newCourseId ? { courseId: newCourseId } : {}),
+        ...(canSetNewSla ? { slaHours } : {}),
+      },
     }, {
       onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: threads.queryKey });
         setNewOpen(false); setNewSubject(''); setNewBody(''); setNewParticipants([]); setNewProgrammeId(''); setNewCourseId(''); setNewSlaHours('24'); setNewUrgent(false);
       },
       onError: (e) => setNewError((e as Error).message),
@@ -137,13 +180,22 @@ export function Messages() {
   const [body, setBody] = useState('');
   const [urgent, setUrgent] = useState(false);
   const active = threads.data?.find((thread) => thread.id === selected) || threads.data?.[0];
-  const canEditSla = canEditThreadSla(session, active ?? null);
+  const staffThread = active ? asStaffThread(active) : null;
+  const canEditSla = canEditThreadSla(session, staffThread);
   const activeId = active?.id || '';
-  const messages = useThreadMessages(activeId, !!activeId && !active?.metadataOnly);
-  const send = useSendMessage(activeId);
+  const messages = useListThreadMessages(activeId, {
+    query: { queryKey: getListThreadMessagesQueryKey(activeId), enabled: !!activeId && !active?.metadataOnly },
+  });
+  const send = useSendThreadMessage();
   const sendMessage = () => {
     if (!body.trim() || !activeId) return;
-    send.mutate({ body: body.trim(), urgent }, { onSuccess: () => { setBody(''); setUrgent(false); } });
+    send.mutate({ threadId: activeId, data: { body: body.trim(), urgent } }, {
+      onSuccess: () => {
+        void queryClient.invalidateQueries({ queryKey: messages.queryKey });
+        void queryClient.invalidateQueries({ queryKey: threads.queryKey });
+        setBody(''); setUrgent(false);
+      },
+    });
   };
   return <div className="page-in">
     <PageHeading eyebrow="Workspace communication" title="Keep the context close." detail="Threaded conversations tied to programmes and courses, with urgency where it matters." action={
@@ -233,7 +285,7 @@ export function Messages() {
             {active.averageResponseTimeHours !== null && active.averageResponseTimeHours !== undefined && <p className="text-xs text-muted-foreground">Average trainer response: {active.averageResponseTimeHours.toFixed(1)} hours</p>}
             {active.metadataOnly && <p className="text-xs text-destructive" data-testid="metadata-only-notice">Metadata only — messages withheld by organization policy.</p>}
             <p className="text-xs text-muted-foreground" data-testid="sla-promise">Usually replies within {active.slaHours ?? 24} hours.</p>
-            {canEditSla && <ThreadSlaControl thread={active} />}
+            {canEditSla && staffThread && <ThreadSlaControl thread={staffThread} />}
             {canManage && <MessageTemplatesPanel onInsert={(value) => setBody(value)} />}
           </div>
           <div className="flex-1 space-y-3 p-4">
