@@ -69,6 +69,7 @@ export interface CourseInput {
   title: string;
   programmeId: string;
   category: string;
+  trainerId?: string | null;
   appliedThreshold?: number;
   dueDate?: string | null;
 }
@@ -516,6 +517,18 @@ export interface Module {
 
 export function useModules(programmeId: string, enabled = true) {
   return useQuery(queryOpts(qk.modules(programmeId), () => api<Module[]>(`/programmes/${programmeId}/modules`), enabled));
+}
+
+export function useCreateModule(programmeId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { courseId: string; title: string }) =>
+      api<Module>(`/programmes/${programmeId}/modules`, { method: 'POST', body: JSON.stringify(input) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: qk.modules(programmeId) });
+      qc.invalidateQueries({ queryKey: ['programmes'] });
+    },
+  });
 }
 
 export interface ProgrammeMember {

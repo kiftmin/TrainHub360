@@ -244,12 +244,14 @@ export function requireOrgOwner() {
 // covers their own programme. Business decision (Phase 2.3, confirmed
 // 2026-09-12): the `owner` bypass stays — owners are NOT hard-blocked from
 // training content.
-export function requireProgrammeRole(...roles: string[]) {
+type ProgrammeResolver = (req: AuthedRequest) => string | null | Promise<string | null>;
+
+export function requireProgrammeRoleIn(resolveProgramme: ProgrammeResolver, ...roles: string[]) {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
     const me = req.user;
     if (!me) return res.status(401).json({ error: "unauthorized" });
     if (await isOrgStaff(me.id)) return next();
-    const programmeId = await resolveProgrammeId(req).catch(() => null);
+    const programmeId = await Promise.resolve(resolveProgramme(req)).catch(() => null);
     if (!programmeId) return res.status(400).json({ error: "programme context required" });
     const grant = await db.userRole
       .findFirst({ where: { userId: me.id, programmeId, role: { name: { in: roles } } } })
@@ -257,4 +259,8 @@ export function requireProgrammeRole(...roles: string[]) {
     if (!grant) return res.status(403).json({ error: "forbidden for this programme" });
     return next();
   };
+}
+
+export function requireProgrammeRole(...roles: string[]) {
+  return requireProgrammeRoleIn(resolveProgrammeId, ...roles);
 }

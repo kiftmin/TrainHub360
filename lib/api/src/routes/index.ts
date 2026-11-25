@@ -6,6 +6,7 @@ import { verifyLoginPassword } from "../services/password.js";
 import { signToken } from "../middleware/auth.js";
 import {
   requireProgrammeRole,
+  requireProgrammeRoleIn,
   isProgrammeStaff,
   isOrgStaff,
   isOrgOwner,
@@ -1215,17 +1216,16 @@ router.get("/programmes/:id/modules", async (req, res) => {
   const includeArchived = req.query.includeArchived === "true" && canSeeArchived((req as AuthedRequest).user?.role);
   res.json(await db.module.findMany({ where: { course: { programmeId: req.params.id, programme: { orgId: scope.orgId } }, ...lifecycleFilter(includeArchived) } }).catch(() => []));
 });
-router.post("/programmes/:id/modules", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+router.post("/programmes/:id/modules", requireProgrammeRoleIn((req) => req.params.id ?? null, "admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.params.id, scope.orgId);
-  let courseId = req.body.courseId;
-  if (courseId) await assertCourseInOrg(courseId, scope.orgId);
-  if (!courseId) {
-    const first = await db.course.findFirst({ where: { programmeId: req.params.id, programme: { orgId: scope.orgId } } }).catch(() => null);
-    if (!first) return res.status(400).json({ error: "courseId required (no courses in programme yet)" });
-    courseId = first.id;
-  }
-  return res.status(201).json(await db.module.create({ data: { courseId, title: req.body.title ?? "New module" } }));
+  const courseId = typeof req.body.courseId === "string" ? req.body.courseId.trim() : "";
+  if (!courseId) return res.status(400).json({ error: "courseId required" });
+  const course = await assertCourseInOrg(courseId, scope.orgId);
+  if (course.programmeId !== req.params.id) return res.status(400).json({ error: "course does not belong to this programme" });
+  const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+  if (!title) return res.status(400).json({ error: "title required" });
+  return res.status(201).json(await db.module.create({ data: { courseId, title } }));
 });
 router.patch("/modules/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
@@ -1306,16 +1306,22 @@ router.get("/courses", async (req, res) => {
 });
 router.post("/courses", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
-  await assertProgrammeInOrg(req.body.programmeId, scope.orgId);
+  const programmeId = String(req.body.programmeId ?? "");
+  await assertProgrammeInOrg(programmeId, scope.orgId);
+  const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+  if (!title) return res.status(400).json({ error: "title required" });
+  const category = typeof req.body.category === "string" && req.body.category.trim() ? req.body.category.trim() : "General";
   let trainerId: string | null = null;
   let trainerName = String(req.body.trainer ?? "");
   if (req.body.trainerId) {
-    const t = await db.user.findFirst({ where: { id: String(req.body.trainerId), orgId: scope.orgId } });
-    if (!t) return res.status(404).json({ error: "trainer not found in your organization" });
-    trainerId = t.id;
-    trainerName = t.name;
+    const trainer = await db.user.findFirst({ where: { id: String(req.body.trainerId), orgId: scope.orgId, isActive: true } });
+    if (!trainer) return res.status(404).json({ error: "trainer not found in your organization" });
+    const grant = await db.userRole.findFirst({ where: { userId: trainer.id, programmeId, role: { name: "trainer" } } });
+    if (!grant) return res.status(400).json({ error: "trainer must be granted in this programme" });
+    trainerId = trainer.id;
+    trainerName = trainer.name;
   }
-  return res.status(201).json(await db.course.create({ data: { programmeId: req.body.programmeId, title: req.body.title, category: req.body.category ?? "General", trainerId, trainer: trainerName } }));
+  return res.status(201).json(await db.course.create({ data: { programmeId, title, category, trainerId, trainer: trainerName } }));
 });
 router.patch("/courses/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);

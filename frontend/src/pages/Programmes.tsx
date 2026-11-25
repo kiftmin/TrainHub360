@@ -19,6 +19,7 @@ import {
   useCourses,
   useCreateCourse,
   useModules,
+  useCreateModule,
   useSessions,
   useThreads,
   useThreadMessages,
@@ -137,9 +138,13 @@ export function ProgrammeDetail({ id }: { id: string }) {
   const updateCourse = useUpdateCourse();
   const requestContentDeletion = useRequestContentDeletion();
   const updateModule = useUpdateModule();
-  const canAuthorDetail = ['admin', 'owner', 'trainer'].includes(getSessionUser()?.role ?? '');
-  const canManageDetail = ['admin', 'owner'].includes(getSessionUser()?.role ?? '');
+  const createCourse = useCreateCourse();
+  const createModule = useCreateModule(id);
+  const sessionUser = getSessionUser();
+  const canAuthorDetail = ['admin', 'owner', 'trainer'].includes(sessionUser?.role ?? '');
+  const canManageDetail = ['admin', 'owner'].includes(sessionUser?.role ?? '');
   const members = useProgrammeMembers(id, canAuthorDetail);
+  const canCreateDetail = canManageDetail || (sessionUser?.role === 'trainer' && !!sessionUser?.id && (members.data || []).some((m) => m.userId === sessionUser.id && ['trainer', 'admin', 'owner'].includes(m.role)));
   const addMember = useAddProgrammeMember(id);
   const updateMember = useUpdateProgrammeMember(id);
   const removeMember = useRemoveProgrammeMember(id);
@@ -161,6 +166,12 @@ export function ProgrammeDetail({ id }: { id: string }) {
   const [bulkOpen, setBulkOpen] = useState(false);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [bulkResult, setBulkResult] = useState<null | { pendingApproval: boolean; removed: number; withdrawn: number; coursesUnassigned: number }>(null);
+  const [courseOpen, setCourseOpen] = useState(false);
+  const [courseForm, setCourseForm] = useState({ title: '', category: 'General', trainerId: '' });
+  const [courseError, setCourseError] = useState<string | null>(null);
+  const [moduleOpen, setModuleOpen] = useState(false);
+  const [moduleForm, setModuleForm] = useState({ courseId: '', title: '' });
+  const [moduleError, setModuleError] = useState<string | null>(null);
   const memberIds = useMemo(() => Array.from(new Set((members.data || []).map((m) => m.userId))), [members.data]);
   const allSelected = memberIds.length > 0 && selectedMembers.length === memberIds.length;
   const toggleMemberSelection = (userId: string) => setSelectedMembers((current) => current.includes(userId) ? current.filter((x) => x !== userId) : [...current, userId]);
@@ -215,7 +226,36 @@ export function ProgrammeDetail({ id }: { id: string }) {
     if (editingCourse?.trainer && !names.includes(editingCourse.trainer)) names.unshift(editingCourse.trainer);
     return Array.from(new Set(names));
   }, [members.data, editingCourse]);
+  const trainerOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return (members.data || []).filter((m) => m.role === 'trainer' && !seen.has(m.userId) && !!seen.add(m.userId)).map((m) => ({ userId: m.userId, name: m.name }));
+  }, [members.data]);
   const refreshDetail = () => { dqc.invalidateQueries({ queryKey: ['courses'] }); dqc.invalidateQueries({ queryKey: ['programmes'] }); dqc.invalidateQueries({ queryKey: ['programme-members', id] }); };
+  const submitCourse = () => {
+    setCourseError(null);
+    const title = courseForm.title.trim();
+    if (!title) { setCourseError('Course title is required.'); return; }
+    createCourse.mutate(
+      { title, programmeId: id, category: courseForm.category.trim() || 'General', ...(courseForm.trainerId ? { trainerId: courseForm.trainerId } : {}) },
+      {
+        onSuccess: () => { refreshDetail(); setCourseOpen(false); setCourseForm({ title: '', category: 'General', trainerId: '' }); },
+        onError: (e) => setCourseError((e as Error).message),
+      },
+    );
+  };
+  const submitModule = () => {
+    setModuleError(null);
+    const title = moduleForm.title.trim();
+    if (!moduleForm.courseId) { setModuleError('Select a course in this programme first.'); return; }
+    if (!title) { setModuleError('Module title is required.'); return; }
+    createModule.mutate(
+      { courseId: moduleForm.courseId, title },
+      {
+        onSuccess: () => { refreshDetail(); setModuleOpen(false); setModuleForm({ courseId: '', title: '' }); },
+        onError: (e) => setModuleError((e as Error).message),
+      },
+    );
+  };
   const programme = programmes.data?.find((p) => p.id === id);
   return <div className="page-in">
     <PageHeading eyebrow="Programme detail" title={programme?.name || 'Programme'} detail={programme ? `${programme.type} - ${programme.owner} - ${programme.learnerCount} learners` : 'Loading programme-'} action={<Link href="/programmes" className="text-xs font-semibold text-primary hover:underline">Back to portfolio</Link>} />
@@ -223,18 +263,44 @@ export function ProgrammeDetail({ id }: { id: string }) {
     : programmes.isError || courses.isError ? <ErrorState retry={() => { programmes.refetch(); courses.refetch(); }} />
     : !programme ? <EmptyState title="Programme not found" detail="It may have been archived." />
     : <div className="space-y-5"><PendingAssessmentResultsPanel /><div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
-      <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>
+      <section className="rounded-lg border border-border/80 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>{canCreateDetail && <Button size="sm" onClick={() => { setCourseError(null); setCourseOpen(true); }} data-testid="button-add-course"><Plus className="size-4" />Add course</Button>}</div>
         <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <div key={c.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-semibold">{c.title}</p><Status tone={c.status === 'published' ? 'good' : 'warn'}>{c.status}</Status></div><p className="mt-1 text-xs text-muted-foreground">{c.category} - {c.trainer}</p><div className="mt-3"><ProgressLine value={c.progress} /></div>{canAuthorDetail && <div className="mt-3 flex gap-2"><Button size="sm" variant="outline" onClick={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })}>Edit</Button>{canManageDetail && <Button size="sm" variant="outline" onClick={() => { requestDelete('courses', c.id, c.title); }}>Delete</Button>}</div>}</div>)}
         {!courses.data?.length && <EmptyState title="No courses yet" detail="Courses assigned to this programme will appear here." />}</div>
-        <Dialog open={!!editingCourse} onOpenChange={(v) => { if (!v) setEditingCourse(null); }}><DialogContent><DialogHeader><DialogTitle>Edit course</DialogTitle></DialogHeader>{editingCourse && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingCourse.title} onChange={(e) => setEditingCourse({ ...editingCourse, title: e.target.value })} /></label><label className="block text-xs font-semibold">Category<Input className="mt-2" value={editingCourse.category} onChange={(e) => setEditingCourse({ ...editingCourse, category: e.target.value })} /></label><label className="block text-xs font-semibold">Trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={editingCourse.trainer} onChange={(e) => setEditingCourse({ ...editingCourse, trainer: e.target.value })} data-testid="select-course-trainer"><option value="">Unassigned</option>{trainerNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>{!trainerNames.length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainers in this programme yet - add one under Members.</span>}</label><Button className="w-full" disabled={updateCourse.isPending} onClick={() => updateCourse.mutate({ id: editingCourse.id, patch: { title: editingCourse.title, category: editingCourse.category, trainer: editingCourse.trainer } }, { onSuccess: () => { refreshDetail(); setEditingCourse(null); } })}>{updateCourse.isPending ? 'Saving-' : 'Save changes'}</Button></div>}</DialogContent></Dialog></section>
-      <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Modules & concept help</p>
+        <Dialog open={!!editingCourse} onOpenChange={(v) => { if (!v) setEditingCourse(null); }}><DialogContent><DialogHeader><DialogTitle>Edit course</DialogTitle></DialogHeader>{editingCourse && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingCourse.title} onChange={(e) => setEditingCourse({ ...editingCourse, title: e.target.value })} /></label><label className="block text-xs font-semibold">Category<Input className="mt-2" value={editingCourse.category} onChange={(e) => setEditingCourse({ ...editingCourse, category: e.target.value })} /></label><label className="block text-xs font-semibold">Trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={editingCourse.trainer} onChange={(e) => setEditingCourse({ ...editingCourse, trainer: e.target.value })} data-testid="select-course-trainer"><option value="">Unassigned</option>{trainerNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>{!trainerNames.length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainers in this programme yet - add one under Members.</span>}</label><Button className="w-full" disabled={updateCourse.isPending} onClick={() => updateCourse.mutate({ id: editingCourse.id, patch: { title: editingCourse.title, category: editingCourse.category, trainer: editingCourse.trainer } }, { onSuccess: () => { refreshDetail(); setEditingCourse(null); } })}>{updateCourse.isPending ? 'Saving-' : 'Save changes'}</Button></div>}</DialogContent></Dialog>
+        <Dialog open={courseOpen} onOpenChange={(v) => { setCourseOpen(v); if (!v) { setCourseError(null); setCourseForm({ title: '', category: 'General', trainerId: '' }); } }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Add course</DialogTitle></DialogHeader>
+            <div className="space-y-4 pt-2">
+              <label className="block text-xs font-semibold">Course title<Input className="mt-2" placeholder="e.g. Induction" value={courseForm.title} onChange={(e) => setCourseForm({ ...courseForm, title: e.target.value })} data-testid="input-course-title" /></label>
+              <label className="block text-xs font-semibold">Category<Input className="mt-2" placeholder="General" value={courseForm.category} onChange={(e) => setCourseForm({ ...courseForm, category: e.target.value })} data-testid="input-course-category" /></label>
+              <label className="block text-xs font-semibold">Assigned trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={courseForm.trainerId} onChange={(e) => setCourseForm({ ...courseForm, trainerId: e.target.value })} data-testid="select-course-trainer-create"><option value="">Unassigned</option>{trainerOptions.map((t) => <option value={t.userId} key={t.userId}>{t.name}</option>)}</select>{!trainerOptions.length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainers in this programme yet - leave this unassigned or add one under Members.</span>}</label>
+              {courseError && <p className="text-xs text-destructive" data-testid="course-form-error">{courseError}</p>}
+              <Button className="w-full" disabled={createCourse.isPending} onClick={submitCourse} data-testid="button-submit-course">{createCourse.isPending ? 'Adding-' : 'Add course'}</Button>
+            </div>
+          </DialogContent>
+        </Dialog></section>
+      <section className="rounded-lg border border-border/80 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Modules & concept help</p>{canCreateDetail && <Button size="sm" onClick={() => { setModuleError(null); setModuleOpen(true); }} data-testid="button-add-module"><Plus className="size-4" />Add module</Button>}</div>
         <div className="mt-4 space-y-3">{(modules.data || []).map((m) => {
           const course = (courses.data || []).find((c) => c.id === m.courseId);
           return <div key={m.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{m.title}</p><p className="mt-1 text-xs text-muted-foreground">{course?.title ?? 'Course module'}</p></div><div className="flex shrink-0 gap-2"><Button size="sm" variant="outline" onClick={() => setHelpModuleId(helpModuleId === m.id ? null : m.id)} data-testid={`button-module-help-${m.id}`}>Stuck on this concept?</Button>{canAuthorDetail && <><Button size="sm" variant="outline" onClick={() => setContentModule({ id: m.id, title: m.title, courseId: m.courseId })}>Content</Button><Button size="sm" variant="outline" onClick={() => setEditingModule({ id: m.id, title: m.title })}>Edit</Button>{canManageDetail && <Button size="sm" variant="outline" onClick={() => { requestDelete('modules', m.id, m.title); }}>Delete</Button>}</>}</div></div>
           {helpModuleId === m.id && <div className="mt-3"><AiConceptExplainer courseId={m.courseId} moduleId={m.id} moduleTitle={m.title} /></div>}</div>;
         })}
         {!modules.data?.length && <EmptyState title="No modules yet" detail="Micro-learning modules will appear here once added." />}</div>
-        <Dialog open={!!editingModule} onOpenChange={(v) => { if (!v) setEditingModule(null); }}><DialogContent><DialogHeader><DialogTitle>Edit module</DialogTitle></DialogHeader>{editingModule && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingModule.title} onChange={(e) => setEditingModule({ ...editingModule, title: e.target.value })} /></label><Button className="w-full" disabled={updateModule.isPending} onClick={() => updateModule.mutate({ id: editingModule.id, patch: { title: editingModule.title } }, { onSuccess: () => { refreshDetail(); setEditingModule(null); } })}>{updateModule.isPending ? 'Saving-' : 'Save changes'}</Button></div>}</DialogContent></Dialog></section>
+        <Dialog open={!!editingModule} onOpenChange={(v) => { if (!v) setEditingModule(null); }}><DialogContent><DialogHeader><DialogTitle>Edit module</DialogTitle></DialogHeader>{editingModule && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingModule.title} onChange={(e) => setEditingModule({ ...editingModule, title: e.target.value })} /></label><Button className="w-full" disabled={updateModule.isPending} onClick={() => updateModule.mutate({ id: editingModule.id, patch: { title: editingModule.title } }, { onSuccess: () => { refreshDetail(); setEditingModule(null); } })}>{updateModule.isPending ? 'Saving-' : 'Save changes'}</Button></div>}</DialogContent></Dialog>
+        <Dialog open={moduleOpen} onOpenChange={(v) => { setModuleOpen(v); if (!v) { setModuleError(null); setModuleForm({ courseId: '', title: '' }); } }}>
+          <DialogContent>
+            <DialogHeader><DialogTitle>Add module</DialogTitle></DialogHeader>
+            {!courses.data?.length ? <div className="space-y-4 pt-2" data-testid="module-no-courses">
+              <p className="text-sm text-muted-foreground">Create a course in this programme before adding a module. Modules must belong to a course.</p>
+              <Button className="w-full" onClick={() => { setModuleOpen(false); setCourseError(null); setCourseOpen(true); }} data-testid="button-module-add-course">Add course</Button>
+            </div> : <div className="space-y-4 pt-2">
+              <label className="block text-xs font-semibold">Course<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={moduleForm.courseId} onChange={(e) => setModuleForm({ ...moduleForm, courseId: e.target.value })} data-testid="select-module-course"><option value="">Select a course</option>{(courses.data || []).map((c) => <option value={c.id} key={c.id}>{c.title}</option>)}</select></label>
+              <label className="block text-xs font-semibold">Module title<Input className="mt-2" placeholder="e.g. Core concepts" value={moduleForm.title} onChange={(e) => setModuleForm({ ...moduleForm, title: e.target.value })} data-testid="input-module-title" /></label>
+              {moduleError && <p className="text-xs text-destructive" data-testid="module-form-error">{moduleError}</p>}
+              <Button className="w-full" disabled={createModule.isPending || !moduleForm.courseId} onClick={submitModule} data-testid="button-submit-module">{createModule.isPending ? 'Adding-' : 'Add module'}</Button>
+            </div>}
+          </DialogContent>
+        </Dialog></section>
       <section className="rounded-lg border border-border/80 bg-card p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
