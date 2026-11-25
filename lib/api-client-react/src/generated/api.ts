@@ -141,6 +141,7 @@ import type {
   TrainerAvailabilityException,
   TrainerAvailabilityExceptionInput,
   TrainerAvailabilityInput,
+  TrainerDashboardSummary,
   TrainingSession,
   UpdateAssessment200,
   UpdateAssessmentBody,
@@ -411,6 +412,84 @@ export function useGetDashboardSummary<TData = Awaited<ReturnType<typeof getDash
  ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
 
   const queryOptions = getGetDashboardSummaryQueryOptions(options)
+
+  const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
+
+  return withQueryKey(query, queryOptions.queryKey);
+}
+
+
+
+
+
+
+
+export const getGetTrainerDashboardSummaryUrl = () => {
+
+
+
+
+  return `/api/trainer/dashboard/summary`
+}
+
+/**
+ * Programme-scoped trainer grants only. Organisation-wide KPIs are excluded.
+ * @summary Get the authenticated trainer's dashboard
+ */
+export const getTrainerDashboardSummary = async ( options?: Parameters<typeof customFetch>[1]): Promise<TrainerDashboardSummary> => {
+
+  return customFetch<TrainerDashboardSummary>(getGetTrainerDashboardSummaryUrl(),
+  {
+    ...options,
+    method: 'GET'
+
+
+  }
+);}
+
+
+
+
+
+export const getGetTrainerDashboardSummaryQueryKey = () => {
+    return [
+    `/api/trainer/dashboard/summary`
+    ] as const;
+    }
+
+
+export const getGetTrainerDashboardSummaryQueryOptions = <TData = Awaited<ReturnType<typeof getTrainerDashboardSummary>>, TError = ErrorType<void>>( options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getTrainerDashboardSummary>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+) => {
+
+const {query: queryOptions, request: requestOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetTrainerDashboardSummaryQueryKey();
+
+
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getTrainerDashboardSummary>>> = ({ signal }) => getTrainerDashboardSummary({ signal, ...requestOptions });
+
+
+
+
+
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getTrainerDashboardSummary>>, TError, TData> & { queryKey: QueryKey }
+}
+
+export type GetTrainerDashboardSummaryQueryResult = NonNullable<Awaited<ReturnType<typeof getTrainerDashboardSummary>>>
+export type GetTrainerDashboardSummaryQueryError = ErrorType<void>
+
+
+/**
+ * @summary Get the authenticated trainer's dashboard
+ */
+
+export function useGetTrainerDashboardSummary<TData = Awaited<ReturnType<typeof getTrainerDashboardSummary>>, TError = ErrorType<void>>(
+  options?: { query?:UseQueryOptions<Awaited<ReturnType<typeof getTrainerDashboardSummary>>, TError, TData>, request?: SecondParameter<typeof customFetch>}
+
+ ):  UseQueryResult<TData, TError> & { queryKey: QueryKey } {
+
+  const queryOptions = getGetTrainerDashboardSummaryQueryOptions(options)
 
   const query = useQuery(queryOptions) as  UseQueryResult<TData, TError> & { queryKey: QueryKey };
 

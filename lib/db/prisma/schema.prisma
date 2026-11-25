@@ -390,14 +390,6 @@ model UserRole {
   role        Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
   programmeId String? @map("programme_id")
 
-  // Two limits, both deliberate (recorded 2026-11-20, with the baseline migration):
-  //   - the surrogate `id` is the primary key, so a grant has a stable identity;
-  //   - the old pair stays unique, so a person cannot hold the same role twice.
-  // The pair, not the triple, is the limit: `@@unique([userId, roleId, programmeId])` cannot
-  // enforce "same role in two programmes" on SQL Server anyway, because a NULL programme_id
-  // compares as unknown and the unique index lets it through. Allowing a person to hold one role
-  // in several programmes is a separate change to this line, and needs its own migration.
-  @@unique([userId, roleId])
   @@index([programmeId])
   @@map("user_roles")
 }

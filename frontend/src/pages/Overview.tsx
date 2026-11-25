@@ -14,12 +14,10 @@ import { cn } from '@/lib/utils';
 import {
   useWorkspace,
   useDashboardSummary,
-  useKpiSummary,
   useProgrammes,
   useCourses,
   useCreateCourse,
   useModules,
-  useSessions,
   useThreads,
   useThreadMessages,
   useSendMessage,
@@ -35,6 +33,7 @@ import {
   type Course,
   type ReviewCreditSettings,
 } from '@/api/hooks';
+import { useGetTrainerDashboardSummary } from '@api-client';
 import { getToken, clearSession, getSessionUser } from '@/api/client';
 import { StakeholderDashboard } from '@/pages/StakeholderDashboard';
 import { Login } from '@/pages/Login';
@@ -80,6 +79,13 @@ function Delta({ value, label }: { value: number; label: string }) {
 }
 
 export function Overview() {
+  const role = getSessionUser()?.role;
+  if (role === 'trainer') return <TrainerOverview />;
+  if (role === 'learner') return <LearnerOverview />;
+  return <ManagerOverview />;
+}
+
+function ManagerOverview() {
   const [, setLocation] = useLocation();
   const summary = useDashboardSummary();
   const programmes = useProgrammes();
@@ -87,12 +93,7 @@ export function Overview() {
   const data = summary.data;
   const role = getSessionUser()?.role;
   const isOwnerOrAdmin = role === 'owner' || role === 'admin';
-  const isTrainer = role === 'trainer';
-  const isLearner = role === 'learner';
   const loading = summary.isLoading || programmes.isLoading || workspace.isLoading;
-
-  if (isTrainer) return <TrainerOverview />;
-  if (isLearner) return <LearnerOverview />;
 
   return <div className="page-in">
     <PageHeading
@@ -137,31 +138,73 @@ export function Overview() {
   </div>;
 }
 
+function errorStatus(error: unknown): number | null {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === 'number' ? status : null;
+}
+
 function TrainerOverview() {
-  const sessions = useSessions();
-  const workspace = useWorkspace();
-  const summary = useDashboardSummary();
-  const data = summary.data;
+  const dashboard = useGetTrainerDashboardSummary();
+  const status = errorStatus(dashboard.error);
+  if (dashboard.isPending) return <div className="page-in">
+    <PageHeading eyebrow="Trainer dashboard" title="Your sessions, your learners." detail="Programme-scoped view across your assigned programmes and learners." />
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">{[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-28" />)}</div>
+  </div>;
+  if (status === 401 || status === 403) return <div className="page-in" role="alert">
+    <PageHeading eyebrow="Trainer dashboard" title="Trainer access required" detail="This overview is available to active trainers with programme grants." />
+    <div className="flex min-h-44 flex-col items-center justify-center rounded-lg border border-destructive/25 bg-destructive/5 p-6 text-center">
+      <CircleAlert className="mb-3 size-6 text-destructive" />
+      <p className="font-semibold">Your account is not an authorised trainer</p>
+      <p className="mt-1 max-w-sm text-sm text-muted-foreground">Ask an organisation administrator to assign you as a trainer to a programme.</p>
+    </div>
+  </div>;
+  if (dashboard.isError || !dashboard.data) return <div className="page-in"><PageHeading eyebrow="Trainer dashboard" title="Your sessions, your learners." detail="Programme-scoped view across your assigned programmes and learners." /><ErrorState retry={() => void dashboard.refetch()} /></div>;
+  const data = dashboard.data;
+  const progressForLearner = (learnerId: string) => {
+    const rows = data.enrolments.filter((enrolment) => enrolment.learnerId === learnerId);
+    return rows.length ? Math.round(rows.reduce((sum, enrolment) => sum + enrolment.progress, 0) / rows.length) : 0;
+  };
   return <div className="page-in">
-    <PageHeading eyebrow="Trainer dashboard" title="Your sessions, your learners." detail={`Coaching view across ${workspace.data?.organization.name || 'your workspace'}.`} />
-    {summary.isLoading ? <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">{[1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-28" />)}</div>
-    : summary.isError ? <ErrorState retry={() => summary.refetch()} />
-    : <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-      <KpiCard label="Trainer utilization" value={pct(data?.trainerUtilization)} detail="Across all trainers" icon={Users} tone="accent" />
-      <KpiCard label="Time to competency" value={`${data?.timeToCompetency ?? 0}d`} detail="Average across learners" icon={Clock3} />
-      <KpiCard label="At-risk learners" value={`${data?.dropOffRate ?? 0}%`} detail="Need attention" icon={Activity} tone="warn" />
-      <KpiCard label="Sessions scheduled" value={`${sessions.data?.length ?? 0}`} detail="Upcoming sessions" icon={CalendarDays} />
-    </div>}
+    <PageHeading eyebrow="Trainer dashboard" title="Your sessions, your learners." detail="Programme-scoped view across your assigned programmes and learners." />
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <KpiCard label="Programmes" value={`${data.summary.programmeCount}`} detail="Assigned programmes" icon={GraduationCap} tone="accent" />
+      <KpiCard label="Courses" value={`${data.summary.courseCount}`} detail="Courses you teach" icon={BookOpen} />
+      <KpiCard label="Learners" value={`${data.summary.learnerCount}`} detail={`${data.summary.enrolmentCount} enrolments`} icon={Users} tone="good" />
+      <KpiCard label="Upcoming sessions" value={`${data.summary.upcomingSessionCount}`} detail="Scheduled for you" icon={CalendarDays} />
+    </div>
     <section className="mt-4 rounded-lg border border-border/80 bg-card p-4">
-      <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Upcoming sessions</p>
-      <h2 className="mt-1 text-base font-bold">Your schedule</h2>
-      <div className="mt-3 space-y-2">
-        {(sessions.data || []).slice(0, 5).map((s) => <div key={s.id} className="flex items-center gap-3 rounded-md bg-secondary/55 p-2.5">
-          <div className="grid size-7 place-items-center rounded-md bg-primary/10 text-primary"><CalendarDays className="size-3.5" /></div>
-          <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{s.title}</p><p className="text-xs text-muted-foreground">{fmtDate(s.date)} · {s.time} · {s.attendees} attendees</p></div>
-          <Status tone={s.status === 'confirmed' ? 'good' : 'neutral'}>{s.status}</Status>
+      <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Your scope</p>
+      <h2 className="mt-1 text-base font-bold">Assigned programmes</h2>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        {data.programmes.map((programme) => <div key={programme.id} className="rounded-md border border-border/70 p-3">
+          <div className="flex justify-between gap-3"><p className="truncate text-sm font-semibold">{programme.name}</p><Badge variant="outline">{programme.enrolmentCount} enrolments</Badge></div>
+          <p className="mt-1 text-xs text-muted-foreground">{programme.courseCount} courses · {programme.learnerCount} learners</p>
         </div>)}
-        {!sessions.data?.length && <EmptyState title="No sessions scheduled" detail="Book sessions from the calendar." />}
+        {!data.programmes.length && <EmptyState title="No assigned programmes" detail="Programme trainer grants appear here once assigned." />}
+      </div>
+    </section>
+    <section className="mt-4 rounded-lg border border-border/80 bg-card p-4">
+      <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Your schedule</p>
+      <h2 className="mt-1 text-base font-bold">Upcoming sessions</h2>
+      <div className="mt-3 space-y-2">
+        {data.sessions.slice(0, 5).map((session) => <div key={session.id} className="flex items-center gap-3 rounded-md bg-secondary/55 p-2.5">
+          <div className="grid size-7 place-items-center rounded-md bg-primary/10 text-primary"><CalendarDays className="size-3.5" /></div>
+          <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{session.title}</p><p className="text-xs text-muted-foreground">{fmtDate(session.startsAt ?? session.date)} · {session.time} · {session.programmeName}</p></div>
+          <Status tone={session.status === 'confirmed' ? 'good' : 'neutral'}>{session.status}</Status>
+        </div>)}
+        {!data.sessions.length && <EmptyState title="No sessions scheduled" detail="Your assigned sessions will appear here." />}
+      </div>
+    </section>
+    <section className="mt-4 rounded-lg border border-border/80 bg-card p-4">
+      <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Your learners</p>
+      <h2 className="mt-1 text-base font-bold">Progress in your programmes</h2>
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
+        {data.learners.slice(0, 8).map((learner) => <div key={`${learner.id}:${learner.programmeId}`} className="rounded-md border border-border/70 p-3">
+          <div className="flex justify-between gap-3"><p className="truncate text-sm font-semibold">{learner.name}</p><span className="font-mono text-xs">{pct(progressForLearner(learner.id))}</span></div>
+          <p className="mt-0.5 text-xs text-muted-foreground">{learner.programmeName} · {learner.enrolmentCount} enrolments</p>
+          <div className="mt-2"><ProgressLine value={progressForLearner(learner.id)} /></div>
+        </div>)}
+        {!data.learners.length && <EmptyState title="No learners yet" detail="Learners enrolled in your programmes appear here." />}
       </div>
     </section>
   </div>;

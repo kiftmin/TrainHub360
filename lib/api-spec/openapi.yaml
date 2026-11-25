@@ -68,6 +68,23 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DashboardSummary"
+  /trainer/dashboard/summary:
+    get:
+      operationId: getTrainerDashboardSummary
+      tags: [dashboard]
+      summary: Get the authenticated trainer's dashboard
+      description: Programme-scoped trainer grants only. Organisation-wide KPIs are excluded.
+      responses:
+        "200":
+          description: Trainer dashboard
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrainerDashboardSummary"
+        "401":
+          description: Authentication required
+        "403":
+          description: Trainer access required
   /me/learner-dashboard:
     get:
       operationId: getLearnerDashboard
@@ -3485,6 +3502,108 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/ExpiringCredential"
+    TrainerDashboardSummary:
+      type: object
+      required: [programmes, courses, learners, enrolments, sessions, summary]
+      properties:
+        programmes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrainerDashboardProgramme"
+        courses:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrainerDashboardCourse"
+        learners:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrainerDashboardLearner"
+        enrolments:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrainerDashboardEnrolment"
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrainerDashboardSession"
+        summary:
+          $ref: "#/components/schemas/TrainerDashboardCounts"
+    TrainerDashboardCounts:
+      type: object
+      required: [programmeCount, courseCount, learnerCount, enrolmentCount, activeEnrolmentCount, completedEnrolmentCount, upcomingSessionCount]
+      properties:
+        programmeCount: { type: integer }
+        courseCount: { type: integer }
+        learnerCount: { type: integer }
+        enrolmentCount: { type: integer }
+        activeEnrolmentCount: { type: integer }
+        completedEnrolmentCount: { type: integer }
+        upcomingSessionCount: { type: integer }
+    TrainerDashboardProgramme:
+      type: object
+      required: [id, name, courseCount, learnerCount, enrolmentCount]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        courseCount: { type: integer }
+        learnerCount: { type: integer }
+        enrolmentCount: { type: integer }
+    TrainerDashboardCourse:
+      type: object
+      required: [id, title, programmeId, programmeName, progress, status, dueDate, enrolmentCount, completedEnrolmentCount]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        programmeId: { type: string }
+        programmeName: { type: string }
+        progress: { type: number }
+        status: { type: string }
+        dueDate: { type: ["string", "null"] }
+        enrolmentCount: { type: integer }
+        completedEnrolmentCount: { type: integer }
+    TrainerDashboardLearner:
+      type: object
+      required: [id, name, programmeId, programmeName, enrolmentCount, activeEnrolmentCount, completedEnrolmentCount]
+      properties:
+        id: { type: string }
+        name: { type: string }
+        programmeId: { type: string }
+        programmeName: { type: string }
+        enrolmentCount: { type: integer }
+        activeEnrolmentCount: { type: integer }
+        completedEnrolmentCount: { type: integer }
+    TrainerDashboardEnrolment:
+      type: object
+      required: [id, learnerId, learnerName, programmeId, programmeName, courseId, courseTitle, status, progress, completionDate]
+      properties:
+        id: { type: string }
+        learnerId: { type: string }
+        learnerName: { type: string }
+        programmeId: { type: string }
+        programmeName: { type: string }
+        courseId: { type: string }
+        courseTitle: { type: string }
+        status: { type: string }
+        progress: { type: number }
+        completionDate: { type: ["string", "null"] }
+    TrainerDashboardSession:
+      type: object
+      required: [id, title, programmeId, programmeName, courseId, courseTitle, date, time, startsAt, endsAt, status, mode, attendees, capacity]
+      properties:
+        id: { type: string }
+        title: { type: string }
+        programmeId: { type: string }
+        programmeName: { type: string }
+        courseId: { type: ["string", "null"] }
+        courseTitle: { type: ["string", "null"] }
+        date: { type: string }
+        time: { type: string }
+        startsAt: { type: ["string", "null"] }
+        endsAt: { type: ["string", "null"] }
+        status: { type: string }
+        mode: { type: string }
+        attendees: { type: integer }
+        capacity: { type: ["integer", "null"] }
     ActivityPoint:
       type: object
       required: [label, active, completed]

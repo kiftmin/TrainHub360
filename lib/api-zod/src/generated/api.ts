@@ -90,6 +90,78 @@ export const GetDashboardSummaryResponse = zod.object({
 
 
 /**
+ * Programme-scoped trainer grants only. Organisation-wide KPIs are excluded.
+ * @summary Get the authenticated trainer's dashboard
+ */
+export const GetTrainerDashboardSummaryResponse = zod.object({
+  "programmes": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "courseCount": zod.number().int(),
+  "learnerCount": zod.number().int(),
+  "enrolmentCount": zod.number().int()
+})),
+  "courses": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "programmeId": zod.string(),
+  "programmeName": zod.string(),
+  "progress": zod.number(),
+  "status": zod.string(),
+  "dueDate": zod.string().nullable(),
+  "enrolmentCount": zod.number().int(),
+  "completedEnrolmentCount": zod.number().int()
+})),
+  "learners": zod.array(zod.object({
+  "id": zod.string(),
+  "name": zod.string(),
+  "programmeId": zod.string(),
+  "programmeName": zod.string(),
+  "enrolmentCount": zod.number().int(),
+  "activeEnrolmentCount": zod.number().int(),
+  "completedEnrolmentCount": zod.number().int()
+})),
+  "enrolments": zod.array(zod.object({
+  "id": zod.string(),
+  "learnerId": zod.string(),
+  "learnerName": zod.string(),
+  "programmeId": zod.string(),
+  "programmeName": zod.string(),
+  "courseId": zod.string(),
+  "courseTitle": zod.string(),
+  "status": zod.string(),
+  "progress": zod.number(),
+  "completionDate": zod.string().nullable()
+})),
+  "sessions": zod.array(zod.object({
+  "id": zod.string(),
+  "title": zod.string(),
+  "programmeId": zod.string(),
+  "programmeName": zod.string(),
+  "courseId": zod.string().nullable(),
+  "courseTitle": zod.string().nullable(),
+  "date": zod.string(),
+  "time": zod.string(),
+  "startsAt": zod.string().nullable(),
+  "endsAt": zod.string().nullable(),
+  "status": zod.string(),
+  "mode": zod.string(),
+  "attendees": zod.number().int(),
+  "capacity": zod.number().int().nullable()
+})),
+  "summary": zod.object({
+  "programmeCount": zod.number().int(),
+  "courseCount": zod.number().int(),
+  "learnerCount": zod.number().int(),
+  "enrolmentCount": zod.number().int(),
+  "activeEnrolmentCount": zod.number().int(),
+  "completedEnrolmentCount": zod.number().int(),
+  "upcomingSessionCount": zod.number().int()
+})
+})
+
+
+/**
  * Aggregates only the authenticated learner's enrolments and organisation records.
  * @summary Get the authenticated learner's dashboard
  */

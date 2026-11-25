@@ -17,6 +17,7 @@ import {
   canModifyOwner,
   isProgrammeAdmin,
   hasAnyProgrammeStaffGrant,
+  trainerProgrammeIds,
   requireOrgStaffOrProgrammeAdmin,
 } from "../middleware/rbac.js";
 import { loginKeys, isLoginLocked, recordLoginFailure, clearLoginFailures } from "../middleware/rateLimit.js";
@@ -44,6 +45,7 @@ import {
 } from "../services/uploads.js";
 import { recomputeEnrolmentProgress, providerForUrl, isSafeExternalUrl } from "../services/contentProgress.js";
 import { buildLearnerDashboard } from "../services/learnerDashboard.js";
+import { buildTrainerDashboardSummary } from "../services/trainerDashboard.js";
 import { availableSlotsForTrainer, bookingConflicts, bookingLocalFields } from "../services/bookingSlots.js";
 import { addDays, localDateKey, resolveTimeZone, zonedTimeToUtc } from "../services/timeZone.js";
 import { attemptStats, versionChain } from "../services/assessmentAttempts.js";
@@ -340,6 +342,13 @@ async function kpiPayload(orgId: string) {
 }
 router.get("/dashboard/summary", requireOrgStaff(), async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
 router.get("/kpi/summary", requireOrgStaff(), async (req, res) => res.json(await kpiPayload(orgIdOf(req as AuthedRequest))));
+router.get("/trainer/dashboard/summary", async (req, res) => {
+  const me = (req as AuthedRequest).user!;
+  const scope = orgScope(req as AuthedRequest);
+  const programmeIds = await trainerProgrammeIds(me.id, scope.orgId);
+  if (!programmeIds.length) return res.status(403).json({ error: "trainer access required" });
+  return res.json(await buildTrainerDashboardSummary(me.id, scope.orgId, programmeIds));
+});
 router.get("/me/learner-dashboard", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);

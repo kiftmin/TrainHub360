@@ -198,6 +198,92 @@ export interface DashboardSummary {
   expiringItems: ExpiringCredential[];
 }
 
+export interface TrainerDashboardProgramme {
+  id: string;
+  name: string;
+  courseCount: number;
+  learnerCount: number;
+  enrolmentCount: number;
+}
+
+export interface TrainerDashboardCourse {
+  id: string;
+  title: string;
+  programmeId: string;
+  programmeName: string;
+  progress: number;
+  status: string;
+  /** @nullable */
+  dueDate: string | null;
+  enrolmentCount: number;
+  completedEnrolmentCount: number;
+}
+
+export interface TrainerDashboardLearner {
+  id: string;
+  name: string;
+  programmeId: string;
+  programmeName: string;
+  enrolmentCount: number;
+  activeEnrolmentCount: number;
+  completedEnrolmentCount: number;
+}
+
+export interface TrainerDashboardEnrolment {
+  id: string;
+  learnerId: string;
+  learnerName: string;
+  programmeId: string;
+  programmeName: string;
+  courseId: string;
+  courseTitle: string;
+  status: string;
+  progress: number;
+  /** @nullable */
+  completionDate: string | null;
+}
+
+export interface TrainerDashboardSession {
+  id: string;
+  title: string;
+  programmeId: string;
+  programmeName: string;
+  /** @nullable */
+  courseId: string | null;
+  /** @nullable */
+  courseTitle: string | null;
+  date: string;
+  time: string;
+  /** @nullable */
+  startsAt: string | null;
+  /** @nullable */
+  endsAt: string | null;
+  status: string;
+  mode: string;
+  attendees: number;
+  /** @nullable */
+  capacity: number | null;
+}
+
+export interface TrainerDashboardCounts {
+  programmeCount: number;
+  courseCount: number;
+  learnerCount: number;
+  enrolmentCount: number;
+  activeEnrolmentCount: number;
+  completedEnrolmentCount: number;
+  upcomingSessionCount: number;
+}
+
+export interface TrainerDashboardSummary {
+  programmes: TrainerDashboardProgramme[];
+  courses: TrainerDashboardCourse[];
+  learners: TrainerDashboardLearner[];
+  enrolments: TrainerDashboardEnrolment[];
+  sessions: TrainerDashboardSession[];
+  summary: TrainerDashboardCounts;
+}
+
 export type TrainingSessionMode = typeof TrainingSessionMode[keyof typeof TrainingSessionMode];
 
 

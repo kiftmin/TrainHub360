@@ -198,6 +198,22 @@ export async function hasAnyProgrammeStaffGrant(userId: string): Promise<boolean
   return !!grant;
 }
 
+export async function trainerProgrammeIds(userId: string, orgId: string): Promise<string[]> {
+  const grants = await db.userRole.findMany({
+    where: {
+      userId,
+      programmeId: { not: null },
+      role: { name: "trainer" },
+      user: { orgId, isActive: true },
+    },
+    select: { programmeId: true },
+  });
+  const grantedIds = [...new Set(grants.map((grant) => grant.programmeId).filter((id): id is string => !!id))];
+  if (grantedIds.length === 0) return [];
+  const programmes = await db.programme.findMany({ where: { id: { in: grantedIds }, orgId }, select: { id: true } });
+  return programmes.map((programme) => programme.id);
+}
+
 export function requireOrgStaffOrProgrammeAdmin() {
   return async (req: AuthedRequest, res: Response, next: NextFunction) => {
     if (!req.user) return res.status(401).json({ error: "unauthorized" });
