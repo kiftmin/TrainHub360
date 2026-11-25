@@ -248,7 +248,7 @@ export function App() {
       ) : registering ? (
         <Register onDone={() => setRegistering(false)} onBack={() => setRegistering(false)} />
       ) : (
-        <Login onDone={() => setAuthed(true)} onRegister={() => setRegistering(true)} />
+        <Login onDone={() => { window.history.replaceState(null, '', '/'); window.location.reload(); }} onRegister={() => setRegistering(true)} />
       )}
       <Toaster />
     </TooltipProvider>
