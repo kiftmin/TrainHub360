@@ -63,6 +63,12 @@ function offsetAt(instantMs: number, timeZone: string): number {
   return asUtc - instant.getTime();
 }
 
+function wallTimeMatches(instantMs: number, dateKey: string, time: string, timeZone: string): boolean {
+  const parts = partsIn(new Date(instantMs), timeZone);
+  const local = `${part(parts, "year")}-${String(part(parts, "month")).padStart(2, "0")}-${String(part(parts, "day")).padStart(2, "0")}T${String(part(parts, "hour")).padStart(2, "0")}:${String(part(parts, "minute")).padStart(2, "0")}`;
+  return local === `${dateKey}T${time}`;
+}
+
 export function zonedTimeToUtc(dateKey: string, time: string, timeZone: string): Date | null {
   const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateKey);
   const clock = /^(\d{2}):(\d{2})$/.exec(time);
@@ -78,10 +84,18 @@ export function zonedTimeToUtc(dateKey: string, time: string, timeZone: string):
 
   let candidate = wall - offsetAt(wall, timeZone);
   candidate = wall - offsetAt(candidate, timeZone);
-  const parts = partsIn(new Date(candidate), timeZone);
-  const local = `${part(parts, "year")}-${String(part(parts, "month")).padStart(2, "0")}-${String(part(parts, "day")).padStart(2, "0")}T${String(part(parts, "hour")).padStart(2, "0")}:${String(part(parts, "minute")).padStart(2, "0")}`;
-  if (local !== `${dateKey}T${time}`) return null;
-  return new Date(candidate);
+  if (!wallTimeMatches(candidate, dateKey, time, timeZone)) return null;
+
+  const candidates = new Set<number>([candidate]);
+  const offsets = new Set<number>([
+    offsetAt(candidate - 2 * 60 * 60_000, timeZone),
+    offsetAt(candidate + 2 * 60 * 60_000, timeZone),
+  ]);
+  for (const offset of offsets) {
+    const alternative = wall - offset;
+    if (wallTimeMatches(alternative, dateKey, time, timeZone)) candidates.add(alternative);
+  }
+  return new Date(Math.min(...candidates));
 }
 
 export function startOfLocalDay(dateKey: string, timeZone: string): Date | null {

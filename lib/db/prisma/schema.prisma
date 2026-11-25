@@ -515,6 +515,7 @@ model Booking {
   startsAt          DateTime? @map("starts_at")
   endsAt            DateTime? @map("ends_at")
   timeZone          String  @default("UTC") @map("time_zone")
+  timezoneProvenance String? @map("timezone_provenance") @db.NVarChar(32)
   durationMinutes   Int     @default(30) @map("duration_minutes")
   duration          String  @default("30m")
   status            String  @default("confirmed")

@@ -884,11 +884,21 @@ router.post("/programmes", requireOrgStaff(), async (req, res) => {
 
 const MEMBER_ROLES = new Set(["admin", "trainer", "learner", "stakeholder"]);
 
-router.get("/programmes/:id/members", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+router.get("/programmes/:id/members", requireProgrammeRole("admin", "owner", "trainer", "learner"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const me = (req as AuthedRequest).user!;
+  const privilegedGrant = await db.userRole.findFirst({
+    where: { userId: me.id, programmeId: req.params.id, role: { name: { in: ["admin", "owner", "trainer", "facilitator"] } } },
+    select: { id: true },
+  }).catch(() => null);
+  const viewerIsLearner = !(await isOrgStaff(me.id)) && !privilegedGrant;
   const grants = await db.userRole.findMany({
-    where: { programmeId: req.params.id, user: { orgId: scope.orgId } },
+    where: {
+      programmeId: req.params.id,
+      user: { orgId: scope.orgId },
+      ...(viewerIsLearner ? { role: { name: { in: ["trainer", "facilitator"] } } } : {}),
+    },
     include: { user: { select: { id: true, name: true, email: true, department: true, jobFunction: true } }, role: true },
     orderBy: { user: { name: "asc" } },
   }).catch(() => []);
@@ -4405,6 +4415,7 @@ router.post("/bookings", async (req, res) => {
           startsAt,
           endsAt,
           timeZone,
+          timezoneProvenance: "VERIFIED_TRAINER_ZONE",
           durationMinutes,
           duration: `${durationMinutes}m`,
           availabilityId,
