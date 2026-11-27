@@ -115,7 +115,7 @@ export function MyLearning() {
                 <div className="mt-2 space-y-2">{module.contentItems.map((item) => <div key={item.id} className="rounded-md bg-secondary/40 p-3">
                   <div className="flex flex-wrap items-start justify-between gap-2">
                     <div className="min-w-0"><p className="truncate text-sm font-medium">{item.title}{item.required ? ' *' : ''}</p><p className="text-xs text-muted-foreground">{item.type.replace('_', ' ')} - {item.progress.status.replace('_', ' ')}</p></div>
-                    <Button size="sm" variant="outline" disabled={progress.isPending || upload.isPending || item.progress.status === 'completed' || item.progress.status === 'pending_verification'} onClick={() => {
+                    <Button size="sm" variant="outline" disabled={progress.isPending || upload.isPending || item.progress.status === 'completed' || item.progress.status === 'pending_verification' || (item.completionMode === 'trainer_verified' && !evidence[item.id]?.trim() && !evidenceFile[item.id])} onClick={() => {
                       setActionError(null);
                       progress.mutate({ contentId: item.id, data: { status: 'completed', evidenceNote: evidence[item.id], evidenceFileId: evidenceFile[item.id]?.id } }, { onError: (e) => setActionError((e as Error).message) });
                     }}>{item.progress.status === 'pending_verification' ? 'Awaiting verification' : 'Mark complete'}</Button>
