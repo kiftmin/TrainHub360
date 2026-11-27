@@ -43,6 +43,8 @@ import {
   useUpdateProgrammeMember,
   useRemoveProgrammeMember,
   useBulkRemoveProgrammeMembers,
+  useMemberCourseAssignments,
+  useUpdateMemberCourseAssignments,
   useUserDirectory,
   useModuleContent,
   useCourseContent,
@@ -134,14 +136,17 @@ export function Programmes() {
 
 function CourseCard({ course, modules, canAuthorDetail, canManageDetail, onEdit, onDelete }: { course: Course; modules: Module[]; canAuthorDetail: boolean; canManageDetail: boolean; onEdit: () => void; onDelete: () => void }) {
   const content = useCourseContent(course.id);
+  const enrolments = useEnrolments();
   const moduleCount = modules.filter((m) => m.courseId === course.id).length;
   const materialCount = (content.data && Array.isArray(content.data.modules) ? content.data.modules.reduce((sum, m) => sum + (m.contentItems?.length ?? 0), 0) : 0);
+  const enrolledCount = (enrolments.data || []).filter((e: any) => e.courseId === course.id && e.status !== 'withdrawn').length;
   return <div className="rounded-lg border border-border/70 p-4">
     <div className="flex items-center justify-between gap-3">
       <p className="truncate text-sm font-semibold">{course.title}</p>
       <Status tone={course.status === 'published' ? 'good' : 'warn'}>{course.status}</Status>
     </div>
     <p className="mt-1 text-xs text-muted-foreground">{course.category} - {course.trainer || 'Unassigned'}</p>
+    <p className="mt-1 text-xs text-muted-foreground">{enrolledCount} learners enrolled</p>
     <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
       <div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{moduleCount}</p><p className="text-[10px] text-muted-foreground">modules</p></div>
       <div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{materialCount}</p><p className="text-[10px] text-muted-foreground">materials</p></div>
@@ -152,6 +157,52 @@ function CourseCard({ course, modules, canAuthorDetail, canManageDetail, onEdit,
       <Link href={`/programmes/${course.programmeId}/courses/${course.id}`} className="inline-flex"><Button size="sm">Manage course</Button></Link>
       {canAuthorDetail && <Button size="sm" variant="outline" onClick={onEdit}>Edit</Button>}
       {canManageDetail && <Button size="sm" variant="outline" onClick={onDelete}>Delete</Button>}
+    </div>
+  </div>;
+}
+
+function CourseAssignmentEditor({ programmeId, member, courses, onClose }: { programmeId: string; member: { userId: string; name: string; email: string }; courses: Course[]; onClose: () => void }) {
+  const assignments = useMemberCourseAssignments(programmeId, member.userId);
+  const update = useUpdateMemberCourseAssignments(programmeId, member.userId);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [initialized, setInitialized] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  if (assignments.data && !initialized) {
+    setSelected(assignments.data.filter((a) => a.assigned).map((a) => a.courseId));
+    setInitialized(true);
+  }
+  const toggle = (id: string) => setSelected((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  const selectAll = () => setSelected(courses.map((c) => c.id));
+  const clearAll = () => setSelected([]);
+  const save = () => {
+    setMessage(null);
+    update.mutate(selected, {
+      onSuccess: (res) => { setMessage(`Course assignments updated. This learner is now enrolled in ${res.assignedCount} course${res.assignedCount === 1 ? '' : 's'}.`); },
+      onError: (e) => setMessage((e as Error).message),
+    });
+  };
+  return <div className="space-y-4 pt-2">
+    <p className="text-xs text-muted-foreground">{member.email}</p>
+    {assignments.isLoading ? <p className="text-xs text-muted-foreground">Loading assignments-</p>
+    : <div className="space-y-2">
+        <div className="flex gap-2">
+          <Button size="sm" variant="outline" onClick={selectAll}>Select all</Button>
+          <Button size="sm" variant="outline" onClick={clearAll}>Clear selection</Button>
+        </div>
+        <div className="max-h-64 space-y-2 overflow-y-auto">
+          {(assignments.data || []).map((a) => (
+            <label key={a.courseId} className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-2 text-sm">
+              <input type="checkbox" checked={selected.includes(a.courseId)} onChange={() => toggle(a.courseId)} data-testid={`checkbox-course-${a.courseId}`} />
+              <span className="flex-1">{a.title}</span>
+              <span className="text-xs text-muted-foreground">{a.status}</span>
+            </label>
+          ))}
+        </div>
+      </div>}
+    {message && <p className="text-xs text-muted-foreground" data-testid="assignment-message">{message}</p>}
+    <div className="flex gap-2">
+      <Button className="flex-1" variant="outline" onClick={onClose}>Cancel</Button>
+      <Button className="flex-1" disabled={update.isPending} onClick={save} data-testid="button-save-assignments">{update.isPending ? 'Saving-' : 'Save assignments'}</Button>
     </div>
   </div>;
 }
@@ -170,6 +221,7 @@ export function ProgrammeDetail({ id }: { id: string }) {
   const canAuthorDetail = ['admin', 'owner', 'trainer'].includes(sessionUser?.role ?? '');
   const canManageDetail = ['admin', 'owner'].includes(sessionUser?.role ?? '');
   const members = useProgrammeMembers(id, canAuthorDetail);
+  const enrolments = useEnrolments();
   const canCreateDetail = canManageDetail || (sessionUser?.role === 'trainer' && !!sessionUser?.id && (members.data || []).some((m) => m.userId === sessionUser.id && ['trainer', 'admin', 'owner'].includes(m.role)));
   const addMember = useAddProgrammeMember(id);
   const updateMember = useUpdateProgrammeMember(id);
@@ -182,6 +234,7 @@ export function ProgrammeDetail({ id }: { id: string }) {
   const [contentModule, setContentModule] = useState<null | { id: string; title: string; courseId: string }>(null);
   const [editingMember, setEditingMember] = useState<null | { userId: string; name: string; email: string; roles: ProgrammeMemberRole[] }>(null);
   const [memberOpen, setMemberOpen] = useState(false);
+  const [courseAssignMember, setCourseAssignMember] = useState<null | { userId: string; name: string; email: string }>(null);
   const [memberSearch, setMemberSearch] = useState('');
   const [memberForm, setMemberForm] = useState<{ userId: string; name: string; email: string; roles: ProgrammeMemberRole[] }>({ userId: '', name: '', email: '', roles: ['learner'] });
   const [memberError, setMemberError] = useState<string | null>(null);
@@ -361,14 +414,17 @@ export function ProgrammeDetail({ id }: { id: string }) {
         </div>}
         <div className="mt-4 overflow-x-auto">
           <table className="w-full text-sm">
-            <thead><tr className="border-b border-border/70 text-left font-mono text-[10px] uppercase tracking-[.12em] text-muted-foreground">{canManageDetail && <th className="w-8 py-2 pr-2"><input type="checkbox" aria-label="Select all members" checked={allSelected} onChange={(e) => setSelectedMembers(e.target.checked ? memberIds : [])} data-testid="checkbox-select-all-members" /></th>}<th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Email</th><th className="py-2 pr-3">Role</th><th className="py-2 text-right">Actions</th></tr></thead>
+            <thead><tr className="border-b border-border/70 text-left font-mono text-[10px] uppercase tracking-[.12em] text-muted-foreground">{canManageDetail && <th className="w-8 py-2 pr-2"><input type="checkbox" aria-label="Select all members" checked={allSelected} onChange={(e) => setSelectedMembers(e.target.checked ? memberIds : [])} data-testid="checkbox-select-all-members" /></th>}<th className="py-2 pr-3">Name</th><th className="py-2 pr-3">Email</th><th className="py-2 pr-3">Role</th><th className="py-2 pr-3">Assigned courses</th><th className="py-2 text-right">Actions</th></tr></thead>
             <tbody>
               {(members.data || []).map((m) => <tr key={`${m.userId}-${m.role}`} className="border-b border-border/50 last:border-0">
                 {canManageDetail && <td className="py-2 pr-2"><input type="checkbox" aria-label={`Select ${m.name}`} checked={selectedMembers.includes(m.userId)} onChange={() => toggleMemberSelection(m.userId)} data-testid={`checkbox-select-member-${m.userId}`} /></td>}
                 <td className="py-2 pr-3 font-medium">{m.name}</td>
                 <td className="py-2 pr-3 text-muted-foreground">{m.email}</td>
-                <td className="py-2 pr-3"><Status tone={m.role === 'admin' ? 'good' : 'neutral'}>{m.role}</Status></td>
-                <td className="py-2 text-right">{canManageDetail && <div className="flex justify-end gap-2"><Button size="sm" variant="outline" onClick={() => { setMemberEditError(null); setEditingMember({ userId: m.userId, name: m.name, email: m.email, roles: [m.role as ProgrammeMemberRole] }); }}>Edit</Button><Button size="sm" variant="outline" onClick={() => { setMemberRemoveError(null); setRemovingMember({ userId: m.userId, name: m.name, email: m.email, role: m.role as ProgrammeMemberRole }); }}>Remove</Button></div>}</td>
+<td className="py-2 pr-3"><Status tone={m.role === 'admin' ? 'good' : 'neutral'}>{m.role}</Status></td>
+<td className="py-2 pr-3">{m.role === 'learner' ? (() => { const count = (enrolments.data || []).filter((e: any) => e.learnerId === m.userId && e.status !== 'withdrawn').length; return <span className="text-xs text-muted-foreground">{count} of {courses.data?.length ?? 0}</span>; })() : <span className="text-xs text-muted-foreground">—</span>}</td>
+<td className="py-2 text-right"><div className="flex justify-end gap-2">
+{m.role === 'learner' && canAuthorDetail && <Button size="sm" variant="outline" onClick={() => { setCourseAssignMember({ userId: m.userId, name: m.name, email: m.email }); }} data-testid={`button-manage-courses-${m.userId}`}>Manage courses</Button>}
+{canManageDetail && <><Button size="sm" variant="outline" onClick={() => { setMemberEditError(null); setEditingMember({ userId: m.userId, name: m.name, email: m.email, roles: [m.role as ProgrammeMemberRole] }); }}>Edit</Button><Button size="sm" variant="outline" onClick={() => { setMemberRemoveError(null); setRemovingMember({ userId: m.userId, name: m.name, email: m.email, role: m.role as ProgrammeMemberRole }); }}>Remove</Button></>}</div></td>
               </tr>)}
             </tbody>
           </table>
@@ -431,6 +487,12 @@ export function ProgrammeDetail({ id }: { id: string }) {
       </section>
       <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Workspace detail</p><h2 className="mt-1 text-base font-bold">Progress {pct(programme.progress)}</h2><div className="mt-4"><ProgressLine value={programme.progress} color="bg-emerald-600" /></div><div className="mt-4 space-y-2 text-sm"><p className="flex justify-between"><span className="text-muted-foreground">Status</span><Status tone={programme.status === 'active' ? 'good' : 'neutral'}>{programme.status}</Status></p><p className="flex justify-between"><span className="text-muted-foreground">Learners</span><span className="font-semibold">{programme.learnerCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Courses</span><span className="font-semibold">{programme.courseCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Owner</span><span className="font-semibold">{programme.owner}</span></p></div></section>
     </div></div>}
+    <Dialog open={!!courseAssignMember} onOpenChange={(v) => { if (!v) setCourseAssignMember(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Manage courses{courseAssignMember ? ` - ${courseAssignMember.name}` : ''}</DialogTitle></DialogHeader>
+        {courseAssignMember && <CourseAssignmentEditor programmeId={id} member={courseAssignMember} courses={courses.data || []} onClose={() => setCourseAssignMember(null)} />}
+      </DialogContent>
+    </Dialog>
     <Dialog open={!!contentModule} onOpenChange={(v) => { if (!v) setContentModule(null); }}>
       <DialogContent>
         <DialogHeader><DialogTitle>{contentModule ? `Manage learning materials - ${contentModule.title}` : 'Manage learning materials'}</DialogTitle></DialogHeader>

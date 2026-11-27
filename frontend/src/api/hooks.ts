@@ -680,6 +680,32 @@ export function useUpdateProgrammeMember(programmeId: string) {
   });
 }
 
+export interface MemberCourseAssignment {
+  courseId: string;
+  title: string;
+  status: string;
+  assigned: boolean;
+  enrolmentId: string | null;
+}
+
+export function useMemberCourseAssignments(programmeId: string, userId: string, enabled = true) {
+  return useQuery(queryOpts(['member-courses', programmeId, userId], () => api<MemberCourseAssignment[]>(`/programmes/${programmeId}/members/${userId}/courses`), enabled && !!programmeId && !!userId));
+}
+
+export function useUpdateMemberCourseAssignments(programmeId: string, userId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (courseIds: string[]) =>
+      api<{ learnerId: string; programmeId: string; assignedCount: number }>(`/programmes/${programmeId}/members/${userId}/courses`, { method: 'PUT', body: JSON.stringify({ courseIds }) }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['member-courses', programmeId, userId] });
+      qc.invalidateQueries({ queryKey: ['enrolments'] });
+      qc.invalidateQueries({ queryKey: ['courses'] });
+      qc.invalidateQueries({ queryKey: ['programmes'] });
+    },
+  });
+}
+
 export function useRemoveProgrammeMember(programmeId: string) {
   const qc = useQueryClient();
   return useMutation({

@@ -424,20 +424,88 @@ router.get("/enrolments", async (req, res) => {
 });
 router.post("/enrolments", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
-  const course = await assertCourseInOrg(req.body.courseId, scope.orgId);
-  const learner = await db.user.findFirst({ where: { id: req.body.learnerId, orgId: scope.orgId } });
-  if (!learner) {
-    const err = new Error("learner not found in your organization") as Error & { status?: number };
-    err.status = 404;
-    throw err;
+  const courseId = String(req.body?.courseId ?? "").trim();
+  const learnerId = String(req.body?.learnerId ?? "").trim();
+  const programmeId = String(req.body?.programmeId ?? "").trim() || null;
+  if (!courseId || !learnerId) return res.status(400).json({ error: "courseId and learnerId are required" });
+  const course = await assertCourseInOrg(courseId, scope.orgId);
+  const learner = await db.user.findFirst({ where: { id: learnerId, orgId: scope.orgId } });
+  if (!learner) return res.status(404).json({ error: "learner not found in your organization" });
+  const pid = programmeId || course.programmeId;
+  await assertProgrammeInOrg(pid, scope.orgId);
+  if (course.programmeId !== pid) return res.status(400).json({ error: "course does not belong to this programme" });
+  if (course.deletedAt || course.isArchived) return res.status(400).json({ error: "course is not active" });
+  const hasLearnerRole = await db.userRole.findFirst({ where: { userId: learner.id, programmeId: pid, role: { name: "learner" } } });
+  if (!hasLearnerRole) return res.status(400).json({ error: "learner has no active learner role in this programme" });
+  const existing = await db.enrolment.findFirst({ where: { learnerId: learner.id, courseId: course.id } });
+  if (existing) {
+    if (existing.status !== "withdrawn" && !existing.withdrawnAt) {
+      return res.status(200).json(existing);
+    }
+    const reinstated = await db.enrolment.update({ where: { id: existing.id }, data: { status: "enrolled", withdrawnAt: null, withdrawnBy: null, programmeId: pid } });
+    await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "LEARNER_ASSIGNED_TO_COURSE", entity: "enrolment", entityId: reinstated.id, details: JSON.stringify({ learnerId, courseId, programmeId: pid }) } }).catch(() => null);
+    return res.status(200).json(reinstated);
   }
-  const e = await db.enrolment.create({ data: { learnerId: learner.id, courseId: course.id, programmeId: req.body.programmeId ?? course.programmeId, status: "enrolled", deadlineDate: req.body.deadlineDate ? new Date(req.body.deadlineDate) : null } });
-  if (e.programmeId) await assertProgrammeInOrg(e.programmeId, scope.orgId);
-  return res.status(201).json(e);
+  const created = await db.enrolment.create({ data: { learnerId: learner.id, courseId: course.id, programmeId: pid, status: "enrolled", deadlineDate: req.body?.deadlineDate ? new Date(req.body.deadlineDate) : null } });
+  await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "LEARNER_ASSIGNED_TO_COURSE", entity: "enrolment", entityId: created.id, details: JSON.stringify({ learnerId, courseId, programmeId: pid }) } }).catch(() => null);
+  return res.status(201).json(created);
 });
 // Round 9 / Phase 1.1. A strict whitelist, one role per field, and scores computed from the
 // stored row plus only the validated fields the caller was allowed to change. A learner cannot
 // touch status, dates or scores at all: progress comes from content progress and attempts.
+router.get("/programmes/:id/members/:userId/courses", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const learner = await db.user.findFirst({ where: { id: req.params.userId, orgId: scope.orgId } });
+  if (!learner) return res.status(404).json({ error: "learner not found in your organization" });
+  const courses = await db.course.findMany({ where: { programmeId: req.params.id, deletedAt: null, isArchived: false }, orderBy: { title: "asc" } }).catch(() => [] as any[]);
+  const enrolments = await db.enrolment.findMany({ where: { learnerId: learner.id, courseId: { in: courses.map((c: any) => c.id) } } }).catch(() => [] as any[]);
+  const byCourse = new Map(enrolments.map((e: any) => [e.courseId, e]));
+  return res.json(courses.map((c: any) => ({
+    courseId: c.id,
+    title: c.title,
+    status: c.status,
+    assigned: !!byCourse.get(c.id) && byCourse.get(c.id).status !== "withdrawn" && !byCourse.get(c.id).withdrawnAt,
+    enrolmentId: byCourse.get(c.id)?.id ?? null,
+  })));
+});
+
+router.put("/programmes/:id/members/:userId/courses", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
+  const scope = orgScope(req as AuthedRequest);
+  const me = (req as AuthedRequest).user!;
+  await assertProgrammeInOrg(req.params.id, scope.orgId);
+  const learner = await db.user.findFirst({ where: { id: req.params.userId, orgId: scope.orgId } });
+  if (!learner) return res.status(404).json({ error: "learner not found in your organization" });
+  const hasLearnerRole = await db.userRole.findFirst({ where: { userId: learner.id, programmeId: req.params.id, role: { name: "learner" } } });
+  if (!hasLearnerRole) return res.status(400).json({ error: "learner has no active learner role in this programme" });
+  const selected = Array.isArray(req.body?.courseIds) ? [...new Set((req.body.courseIds as unknown[]).map(String))] : [];
+  const courses = await db.course.findMany({ where: { programmeId: req.params.id, deletedAt: null, isArchived: false } }).catch(() => [] as any[]);
+  const courseIds = new Set(courses.map((c: any) => c.id));
+  if (selected.some((id) => !courseIds.has(id))) return res.status(400).json({ error: "one or more courses do not belong to this programme" });
+  let assigned = 0;
+  let withdrawn = 0;
+  await db.$transaction(async (tx) => {
+    for (const c of courses) {
+      const existing = await tx.enrolment.findFirst({ where: { learnerId: learner.id, courseId: c.id } });
+      const shouldAssign = selected.includes(c.id);
+      if (shouldAssign) {
+        if (!existing) {
+          await tx.enrolment.create({ data: { learnerId: learner.id, courseId: c.id, programmeId: req.params.id, status: "enrolled" } });
+          assigned++;
+        } else if (existing.status === "withdrawn" || existing.withdrawnAt) {
+          await tx.enrolment.update({ where: { id: existing.id }, data: { status: "enrolled", withdrawnAt: null, withdrawnBy: null } });
+          assigned++;
+        }
+      } else if (existing && existing.status !== "withdrawn" && !existing.withdrawnAt) {
+        await tx.enrolment.update({ where: { id: existing.id }, data: { status: "withdrawn", withdrawnAt: new Date(), withdrawnBy: me.id } });
+        withdrawn++;
+      }
+    }
+    await tx.auditLog.create({ data: { userId: me.id, action: "COURSE_ASSIGNMENTS_UPDATED", entity: "programme", entityId: req.params.id, details: JSON.stringify({ learnerId: learner.id, courseIds: selected }) } }).catch(() => null);
+  });
+  return res.json({ learnerId: learner.id, programmeId: req.params.id, assignedCount: selected.length, assigned, withdrawn });
+});
+
 router.patch("/enrolments/:id", async (req, res) => {
   const me = (req as AuthedRequest).user!;
   const scope = orgScope(req as AuthedRequest);
@@ -582,11 +650,14 @@ router.patch("/enrolments/:id", async (req, res) => {
   }
   return res.json(e);
 });
-router.delete("/enrolments/:id", requireProgrammeRole("admin", "owner"), async (req, res) => {
+router.delete("/enrolments/:id", requireProgrammeRole("admin", "owner", "trainer"), async (req, res) => {
   const scope = orgScope(req as AuthedRequest);
   const existing = await db.enrolment.findFirst({ where: { id: req.params.id, programme: { orgId: scope.orgId } } });
   if (!existing) return res.status(404).json({ error: "not found" });
-  await db.enrolment.delete({ where: { id: req.params.id } }).catch(() => null);
+  if (existing.status !== "withdrawn") {
+    await db.enrolment.update({ where: { id: existing.id }, data: { status: "withdrawn", withdrawnAt: new Date(), withdrawnBy: (req as AuthedRequest).user!.id } });
+    await db.auditLog.create({ data: { userId: (req as AuthedRequest).user!.id, action: "LEARNER_WITHDRAWN_FROM_COURSE", entity: "enrolment", entityId: existing.id, details: JSON.stringify({ learnerId: existing.learnerId, courseId: existing.courseId, programmeId: existing.programmeId }) } }).catch(() => null);
+  }
   return res.status(204).end();
 });
 async function loadEnrolmentForStaff(req: AuthedRequest, id: string) {
@@ -1038,7 +1109,7 @@ router.post("/programmes/:id/members", requireProgrammeRole("admin", "owner"), a
       const existing = await tx.userRole.findFirst({ where: { userId: user!.id, roleId: role.id, programmeId: req.params.id } });
       if (!existing) await tx.userRole.create({ data: { userId: user!.id, roleId: role.id, programmeId: req.params.id } });
     }
-    if (roleNames.includes("learner") && req.body?.enrol !== false) await ensureLearnerEnrolments(tx, user!.id, req.params.id);
+    // Flexible assignment: programme membership no longer auto-enrols learners in courses.
     await tx.auditLog.create({ data: { userId: me.id, action: "PROGRAMME_MEMBER_ADDED", entity: "programme", entityId: req.params.id, details: `${user!.email} as ${roleNames.join(",")}` } }).catch(() => null);
   });
   return res.status(201).json({ userId: user.id, name: user.name, email: user.email, role: roleName, roles: roleNames });
@@ -1094,7 +1165,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
       for (const role of resolved) {
         if (!currentNames.has(role.name)) await tx.userRole.create({ data: { userId: target.id, roleId: role.id, programmeId: req.params.id } });
       }
-      if (desired.includes("learner")) await ensureLearnerEnrolments(tx, target.id, req.params.id);
+      // Flexible assignment: programme membership no longer auto-enrols learners in courses.
       if (currentNames.has("trainer") && !desired.includes("trainer")) {
         const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
         coursesUnassigned += result.count;
@@ -1133,7 +1204,7 @@ router.patch("/programmes/:id/members/:userId", requireProgrammeRole("admin", "o
         }
         await tx.userRole.update({ where: { id: grant.id }, data: { roleId: role.id } });
         await tx.user.update({ where: { id: target.id }, data: { tokenVersion: { increment: 1 } } });
-        if (role.name === "learner" && req.body?.enrol !== false) await ensureLearnerEnrolments(tx, target.id, req.params.id);
+        // Flexible assignment: programme membership no longer auto-enrols learners in courses.
         const remainingTrainer = await tx.userRole.findFirst({ where: { userId: target.id, programmeId: req.params.id, role: { name: "trainer" } } });
         if (sourceRoleName === "trainer" && !remainingTrainer) {
           const result = await tx.course.updateMany({ where: { programmeId: req.params.id, OR: [{ trainerId: target.id }, { trainerId: null, trainer: target.name }] }, data: { trainerId: null, trainer: "" } });
