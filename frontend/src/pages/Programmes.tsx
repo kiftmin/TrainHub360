@@ -45,12 +45,14 @@ import {
   useBulkRemoveProgrammeMembers,
   useUserDirectory,
   useModuleContent,
+  useCourseContent,
   useCreateContent,
   useArchiveContent,
   useUploadContent,
   useRecalculationStatus,
   downloadReviewCreditCsv,
   type Course,
+  type Module,
   type UploadedFile,
   type ProgrammeMemberRole,
   type ReviewCreditSettings,
@@ -127,6 +129,30 @@ export function Programmes() {
     {actionError && <p className="mt-4 text-sm text-destructive">{actionError}</p>}
     {!programmes.isLoading && !programmes.isError && !programmes.data?.length && <EmptyState title="No programmes" detail="Programmes will appear here once created." />}
     <Dialog open={!!editing} onOpenChange={(v) => { if (!v) setEditing(null); }}><DialogContent><DialogHeader><DialogTitle>Edit programme</DialogTitle></DialogHeader>{editing && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Name<Input className="mt-2" value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} /></label><label className="block text-xs font-semibold">Type<Input className="mt-2" value={editing.type} onChange={(e) => setEditing({ ...editing, type: e.target.value })} /></label><label className="block text-xs font-semibold">Owner<Input className="mt-2" value={editing.owner} onChange={(e) => setEditing({ ...editing, owner: e.target.value })} /></label><label className="block text-xs font-semibold">Response window override (hours)<Input className="mt-2" type="number" min={1} max={720} placeholder="Use workspace default" value={editing.slaHours} onChange={(e) => setEditing({ ...editing, slaHours: e.target.value })} data-testid="input-programme-sla-hours" /></label><Button className="w-full" disabled={updateProgramme.isPending} onClick={saveEdit}>{updateProgramme.isPending ? 'Saving-' : 'Save changes'}</Button></div>}</DialogContent></Dialog>
+  </div>;
+}
+
+function CourseCard({ course, modules, canAuthorDetail, canManageDetail, onEdit, onDelete }: { course: Course; modules: Module[]; canAuthorDetail: boolean; canManageDetail: boolean; onEdit: () => void; onDelete: () => void }) {
+  const content = useCourseContent(course.id);
+  const moduleCount = modules.filter((m) => m.courseId === course.id).length;
+  const materialCount = (content.data && Array.isArray(content.data.modules) ? content.data.modules.reduce((sum, m) => sum + (m.contentItems?.length ?? 0), 0) : 0);
+  return <div className="rounded-lg border border-border/70 p-4">
+    <div className="flex items-center justify-between gap-3">
+      <p className="truncate text-sm font-semibold">{course.title}</p>
+      <Status tone={course.status === 'published' ? 'good' : 'warn'}>{course.status}</Status>
+    </div>
+    <p className="mt-1 text-xs text-muted-foreground">{course.category} - {course.trainer || 'Unassigned'}</p>
+    <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+      <div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{moduleCount}</p><p className="text-[10px] text-muted-foreground">modules</p></div>
+      <div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{materialCount}</p><p className="text-[10px] text-muted-foreground">materials</p></div>
+      <div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{Math.round(course.progress ?? 0)}%</p><p className="text-[10px] text-muted-foreground">progress</p></div>
+    </div>
+    <div className="mt-3"><ProgressLine value={course.progress} /></div>
+    <div className="mt-3 flex flex-wrap gap-2">
+      <Link href={`/programmes/${course.programmeId}/courses/${course.id}`} className="inline-flex"><Button size="sm">Manage course</Button></Link>
+      {canAuthorDetail && <Button size="sm" variant="outline" onClick={onEdit}>Edit</Button>}
+      {canManageDetail && <Button size="sm" variant="outline" onClick={onDelete}>Delete</Button>}
+    </div>
   </div>;
 }
 
@@ -264,8 +290,8 @@ export function ProgrammeDetail({ id }: { id: string }) {
     : !programme ? <EmptyState title="Programme not found" detail="It may have been archived." />
     : <div className="space-y-5"><PendingAssessmentResultsPanel /><div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
       <section className="rounded-lg border border-border/80 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>{canCreateDetail && <Button size="sm" onClick={() => { setCourseError(null); setCourseOpen(true); }} data-testid="button-add-course"><Plus className="size-4" />Add course</Button>}</div>
-        <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <div key={c.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><p className="truncate text-sm font-semibold">{c.title}</p><Status tone={c.status === 'published' ? 'good' : 'warn'}>{c.status}</Status></div><p className="mt-1 text-xs text-muted-foreground">{c.category} - {c.trainer}</p><div className="mt-3"><ProgressLine value={c.progress} /></div>{canAuthorDetail && <div className="mt-3 flex gap-2"><Button size="sm" variant="outline" onClick={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })}>Edit</Button>{canManageDetail && <Button size="sm" variant="outline" onClick={() => { requestDelete('courses', c.id, c.title); }}>Delete</Button>}</div>}</div>)}
-        {!courses.data?.length && <EmptyState title="No courses yet" detail="Courses assigned to this programme will appear here." />}</div>
+        <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <CourseCard key={c.id} course={c} modules={modules.data || []} canAuthorDetail={canAuthorDetail} canManageDetail={canManageDetail} onEdit={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })} onDelete={() => requestDelete('courses', c.id, c.title)} />)}
+        {!courses.data?.length && <EmptyState title="No courses yet" detail="Create the first course to start organising modules and learning materials." />}</div>
         <Dialog open={!!editingCourse} onOpenChange={(v) => { if (!v) setEditingCourse(null); }}><DialogContent><DialogHeader><DialogTitle>Edit course</DialogTitle></DialogHeader>{editingCourse && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingCourse.title} onChange={(e) => setEditingCourse({ ...editingCourse, title: e.target.value })} /></label><label className="block text-xs font-semibold">Category<Input className="mt-2" value={editingCourse.category} onChange={(e) => setEditingCourse({ ...editingCourse, category: e.target.value })} /></label><label className="block text-xs font-semibold">Trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={editingCourse.trainer} onChange={(e) => setEditingCourse({ ...editingCourse, trainer: e.target.value })} data-testid="select-course-trainer"><option value="">Unassigned</option>{trainerNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>{!trainerNames.length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainers in this programme yet - add one under Members.</span>}</label><Button className="w-full" disabled={updateCourse.isPending} onClick={() => updateCourse.mutate({ id: editingCourse.id, patch: { title: editingCourse.title, category: editingCourse.category, trainer: editingCourse.trainer } }, { onSuccess: () => { refreshDetail(); setEditingCourse(null); } })}>{updateCourse.isPending ? 'Saving-' : 'Save changes'}</Button></div>}</DialogContent></Dialog>
         <Dialog open={courseOpen} onOpenChange={(v) => { setCourseOpen(v); if (!v) { setCourseError(null); setCourseForm({ title: '', category: 'General', trainerId: '' }); } }}>
           <DialogContent>
@@ -279,28 +305,7 @@ export function ProgrammeDetail({ id }: { id: string }) {
             </div>
           </DialogContent>
         </Dialog></section>
-      <section className="rounded-lg border border-border/80 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Modules & concept help</p>{canCreateDetail && <Button size="sm" onClick={() => { setModuleError(null); setModuleOpen(true); }} data-testid="button-add-module"><Plus className="size-4" />Add module</Button>}</div>
-        <div className="mt-4 space-y-3">{(modules.data || []).map((m) => {
-          const course = (courses.data || []).find((c) => c.id === m.courseId);
-          return <div key={m.id} className="rounded-lg border border-border/70 p-4"><div className="flex items-center justify-between gap-3"><div className="min-w-0"><p className="truncate text-sm font-semibold">{m.title}</p><p className="mt-1 text-xs text-muted-foreground">{course?.title ?? 'Course module'}</p></div><div className="flex shrink-0 gap-2"><Button size="sm" variant="outline" onClick={() => setHelpModuleId(helpModuleId === m.id ? null : m.id)} data-testid={`button-module-help-${m.id}`}>Stuck on this concept?</Button>{canAuthorDetail && <><Button size="sm" variant="outline" onClick={() => setContentModule({ id: m.id, title: m.title, courseId: m.courseId })}>Content</Button><Button size="sm" variant="outline" onClick={() => setEditingModule({ id: m.id, title: m.title })}>Edit</Button>{canManageDetail && <Button size="sm" variant="outline" onClick={() => { requestDelete('modules', m.id, m.title); }}>Delete</Button>}</>}</div></div>
-          {helpModuleId === m.id && <div className="mt-3"><AiConceptExplainer courseId={m.courseId} moduleId={m.id} moduleTitle={m.title} /></div>}</div>;
-        })}
-        {!modules.data?.length && <EmptyState title="No modules yet" detail="Micro-learning modules will appear here once added." />}</div>
-        <Dialog open={!!editingModule} onOpenChange={(v) => { if (!v) setEditingModule(null); }}><DialogContent><DialogHeader><DialogTitle>Edit module</DialogTitle></DialogHeader>{editingModule && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingModule.title} onChange={(e) => setEditingModule({ ...editingModule, title: e.target.value })} /></label><Button className="w-full" disabled={updateModule.isPending} onClick={() => updateModule.mutate({ id: editingModule.id, patch: { title: editingModule.title } }, { onSuccess: () => { refreshDetail(); setEditingModule(null); } })}>{updateModule.isPending ? 'Saving-' : 'Save changes'}</Button></div>}</DialogContent></Dialog>
-        <Dialog open={moduleOpen} onOpenChange={(v) => { setModuleOpen(v); if (!v) { setModuleError(null); setModuleForm({ courseId: '', title: '' }); } }}>
-          <DialogContent>
-            <DialogHeader><DialogTitle>Add module</DialogTitle></DialogHeader>
-            {!courses.data?.length ? <div className="space-y-4 pt-2" data-testid="module-no-courses">
-              <p className="text-sm text-muted-foreground">Create a course in this programme before adding a module. Modules must belong to a course.</p>
-              <Button className="w-full" onClick={() => { setModuleOpen(false); setCourseError(null); setCourseOpen(true); }} data-testid="button-module-add-course">Add course</Button>
-            </div> : <div className="space-y-4 pt-2">
-              <label className="block text-xs font-semibold">Course<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={moduleForm.courseId} onChange={(e) => setModuleForm({ ...moduleForm, courseId: e.target.value })} data-testid="select-module-course"><option value="">Select a course</option>{(courses.data || []).map((c) => <option value={c.id} key={c.id}>{c.title}</option>)}</select></label>
-              <label className="block text-xs font-semibold">Module title<Input className="mt-2" placeholder="e.g. Core concepts" value={moduleForm.title} onChange={(e) => setModuleForm({ ...moduleForm, title: e.target.value })} data-testid="input-module-title" /></label>
-              {moduleError && <p className="text-xs text-destructive" data-testid="module-form-error">{moduleError}</p>}
-              <Button className="w-full" disabled={createModule.isPending || !moduleForm.courseId} onClick={submitModule} data-testid="button-submit-module">{createModule.isPending ? 'Adding-' : 'Add module'}</Button>
-            </div>}
-          </DialogContent>
-        </Dialog></section>
+      <section className="rounded-lg border border-border/80 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Course content</p><p className="text-xs text-muted-foreground">Open a course to manage its modules and learning materials.</p></div></section>
       <section className="rounded-lg border border-border/80 bg-card p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -428,12 +433,136 @@ export function ProgrammeDetail({ id }: { id: string }) {
     </div></div>}
     <Dialog open={!!contentModule} onOpenChange={(v) => { if (!v) setContentModule(null); }}>
       <DialogContent>
-        <DialogHeader><DialogTitle>{contentModule ? `Content - ${contentModule.title}` : 'Content'}</DialogTitle></DialogHeader>
+        <DialogHeader><DialogTitle>{contentModule ? `Manage learning materials - ${contentModule.title}` : 'Manage learning materials'}</DialogTitle></DialogHeader>
         {contentModule && <ModuleContentManager moduleId={contentModule.id} moduleTitle={contentModule.title} courseId={contentModule.courseId} />}
       </DialogContent>
     </Dialog>
   </div>;
 }
+
+export function CourseContentManager({ id, courseId: courseIdProp, programmeId: programmeIdProp }: { id?: string; courseId?: string; programmeId?: string } = {}) {
+  const cid = courseIdProp ?? id ?? '';
+  const courses = useCourses();
+  const course = (courses.data || []).find((c) => c.id === cid);
+  const programmeId = programmeIdProp ?? course?.programmeId ?? '';
+  const programmes = useProgrammes();
+  const programme = programmes.data?.find((p) => p.id === (programmeId || course?.programmeId));
+  const content = useCourseContent(cid);
+  const programmeModules = useModules(programmeId || '', !!programmeId);
+  const modulesFromProgramme = (programmeModules.data || []).filter((m) => m.courseId === cid).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  const modulesFromContent = (content.data?.modules ?? []).map((m) => ({ id: m.id, courseId: cid, title: m.title, order: m.order, contentItems: m.contentItems }));
+  const modules: any[] = (modulesFromProgramme.length ? modulesFromProgramme : modulesFromContent).map((m: any) => ({ ...m }));
+  const createModule = useCreateModule(programmeId || cid);
+  const updateModule = useUpdateModule();
+  const requestContentDeletion = useRequestContentDeletion();
+  const qc = useQueryClient();
+  const sessionUser = getSessionUser();
+  const canAuthor = ['admin', 'owner', 'trainer'].includes(sessionUser?.role ?? '');
+  const canManage = ['admin', 'owner'].includes(sessionUser?.role ?? '');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [moduleOpen, setModuleOpen] = useState(false);
+  const [moduleTitle, setModuleTitle] = useState('');
+  const [moduleError, setModuleError] = useState<string | null>(null);
+  const [editingModule, setEditingModule] = useState<null | { id: string; title: string }>(null);
+
+  const toggle = (id: string) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+  const expandAll = () => setExpanded(new Set(modules.map((m) => m.id)));
+  const collapseAll = () => setExpanded(new Set());
+
+  const submitModule = () => {
+    if (!moduleTitle.trim()) { setModuleError('Module title is required.'); return; }
+    if (!programmeId) { setModuleError('Course programme is unavailable.'); return; }
+    createModule.mutate(
+      { courseId: cid, title: moduleTitle.trim() },
+      {
+        onSuccess: () => { qc.invalidateQueries({ queryKey: ['course-content', cid] }); setModuleOpen(false); setModuleTitle(''); setModuleError(null); },
+        onError: (e) => setModuleError((e as Error).message),
+      },
+    );
+  };
+
+  const moveModule = (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= modules.length) return;
+    const a = modules[index];
+    const b = modules[target];
+    updateModule.mutate({ id: a.id, patch: { order: target } });
+    updateModule.mutate({ id: b.id, patch: { order: index } });
+  };
+
+  if (courses.isLoading || content.isLoading) return <div className="page-in"><Skeleton className="h-64" /></div>;
+  if (!course) return <div className="page-in"><EmptyState title="Course not found" detail="It may have been removed." /></div>;
+
+  return <div className="page-in">
+    <PageHeading eyebrow="Course content" title={course.title} detail="Organise the modules and learning materials learners will work through." action={<Link href="/programmes" className="text-xs font-semibold text-primary hover:underline">Back to programmes</Link>} />
+    <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <span>{programme?.name ?? course.programmeName}</span>
+      <span>-</span>
+      <span>{modules.length} module{modules.length === 1 ? '' : 's'}</span>
+      <span>-</span>
+      <span>{modules.reduce((s, m) => s + (m.contentItems?.length ?? 0), 0)} learning materials</span>
+    </div>
+    <div className="mb-4 flex flex-wrap gap-2">
+      <Button size="sm" onClick={() => { setModuleError(null); setModuleOpen(true); }} data-testid="button-add-module"><Plus className="size-4" />Add module</Button>
+      <Button size="sm" variant="outline" onClick={expandAll} data-testid="button-expand-all">Expand all</Button>
+      <Button size="sm" variant="outline" onClick={collapseAll} data-testid="button-collapse-all">Collapse all</Button>
+    </div>
+    <div className="space-y-3">
+      {modules.length === 0 && <EmptyState title="No modules yet" detail="Add the first module to start organising content." />}
+      {modules.map((m, index) => {
+        const isOpen = expanded.has(m.id);
+        const itemCount = m.contentItems?.length ?? 0;
+        return <div key={m.id} className="rounded-lg border border-border/80 bg-card p-4">
+          <div className="flex items-center justify-between gap-3">
+            <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => toggle(m.id)} aria-expanded={isOpen} data-testid={`button-toggle-module-${m.id}`}>
+              <span className="text-sm font-semibold">{isOpen ? '▾' : '▸'}</span>
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold">{m.title}</p>
+                <p className="text-xs text-muted-foreground">Module {index + 1} · {itemCount === 0 ? 'No learning materials added yet.' : `${itemCount} learning material${itemCount === 1 ? '' : 's'}`}</p>
+              </div>
+            </button>
+            <div className="flex shrink-0 gap-2">
+              <Button size="sm" variant="outline" onClick={() => moveModule(index, -1)} disabled={index === 0} aria-label="Move module up">Up</Button>
+              <Button size="sm" variant="outline" onClick={() => moveModule(index, 1)} disabled={index === modules.length - 1} aria-label="Move module down">Down</Button>
+              {canAuthor && <Button size="sm" variant="outline" onClick={() => setEditingModule({ id: m.id, title: m.title })}>Edit</Button>}
+              {canManage && <Button size="sm" variant="outline" onClick={() => requestContentDeletion.mutate({ target: 'modules', id: m.id, reason: undefined }, { onSuccess: () => qc.invalidateQueries({ queryKey: ['course-content', cid] }) })}>Delete</Button>}
+            </div>
+          </div>
+          {isOpen && <div className="mt-3 border-t border-border/60 pt-3">
+            <ModuleContentManager moduleId={m.id} moduleTitle={m.title} courseId={cid} />
+          </div>}
+        </div>;
+      })}
+    </div>
+    <Dialog open={moduleOpen} onOpenChange={(v) => { setModuleOpen(v); if (!v) { setModuleError(null); setModuleTitle(''); } }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Add module</DialogTitle></DialogHeader>
+        <div className="space-y-4 pt-2">
+          <label className="block text-xs font-semibold">Module title<Input className="mt-2" value={moduleTitle} onChange={(e) => setModuleTitle(e.target.value)} data-testid="input-module-title" /></label>
+          {moduleError && <p className="text-xs text-destructive" data-testid="module-form-error">{moduleError}</p>}
+          <Button className="w-full" disabled={createModule.isPending} onClick={submitModule} data-testid="button-submit-module">{createModule.isPending ? 'Adding-' : 'Add module'}</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+    <Dialog open={!!editingModule} onOpenChange={(v) => { if (!v) setEditingModule(null); }}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>Edit module</DialogTitle></DialogHeader>
+        {editingModule && <div className="space-y-4 pt-2">
+          <label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingModule.title} onChange={(e) => setEditingModule({ ...editingModule, title: e.target.value })} /></label>
+          <Button className="w-full" disabled={updateModule.isPending} onClick={() => updateModule.mutate({ id: editingModule.id, patch: { title: editingModule.title } }, { onSuccess: () => { qc.invalidateQueries({ queryKey: ['course-content', cid] }); setEditingModule(null); } })}>{updateModule.isPending ? 'Saving-' : 'Save changes'}</Button>
+        </div>}
+      </DialogContent>
+    </Dialog>
+  </div>;
+}
+
+// alias for compatibility
+export const CourseContentView = CourseContentManager;
+export const CourseContent = CourseContentManager;
 
 export function ModuleContentManager({ moduleId, moduleTitle, courseId }: { moduleId: string; moduleTitle: string; courseId: string }) {
   const content = useModuleContent(moduleId);
@@ -478,19 +607,19 @@ export function ModuleContentManager({ moduleId, moduleTitle, courseId }: { modu
             ? 'Recalculation complete — course progress is up to date.'
             : `Recalculating… ${recalculation.data?.job?.status ?? 'queued'} · ${recalculation.data?.attempts ?? 0} attempt(s)`}
     </div>}
-    <div className="max-h-48 space-y-2 overflow-y-auto">
-      {content.isLoading ? <p className="text-xs text-muted-foreground">Loading content-</p>
-      : !content.data?.length ? <p className="text-xs text-muted-foreground">No content yet.</p>
+    <div className="space-y-2">
+      {content.isLoading ? <p className="text-xs text-muted-foreground">Loading learning materials-</p>
+      : !content.data?.length ? <p className="text-xs text-muted-foreground">No learning materials added yet.</p>
       : content.data.map((item, index) => <div key={item.id} className="flex items-center justify-between gap-2 rounded-md border border-border/70 p-2 text-xs">
-        <span className="min-w-0 truncate"><span className="font-semibold">{index + 1}. {item.title}</span> <span className="text-muted-foreground">- {item.type}{item.required ? ' - required' : ''}</span></span>
+        <span className="min-w-0 truncate"><span className="font-semibold">{index + 1}. {item.title}</span> <span className="text-muted-foreground">- {item.type === 'native' ? 'Text lesson' : item.type === 'file' ? 'Document' : 'External resource'}{item.required ? ' - required' : ' - optional'}</span></span>
         <Button size="sm" variant="outline" onClick={() => archive.mutate(item.id, { onSuccess: () => setRecalcActive(true) })} disabled={archive.isPending}>Archive</Button>
       </div>)}
     </div>
     <div className="rounded-lg border border-border/70 p-4">
-      <p className="text-sm font-semibold">Add content</p>
+      <p className="text-sm font-semibold">Add learning material</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <label className="block text-xs font-semibold">Type<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={type} onChange={(e) => setType(e.target.value as 'native' | 'file' | 'external_link')} data-testid="select-content-type">
-          <option value="native">Native (text)</option><option value="file">File upload</option><option value="external_link">External link</option>
+          <option value="native">Text lesson</option><option value="file">Upload a document</option><option value="external_link">Add an external resource</option>
         </select></label>
         <label className="block text-xs font-semibold">Title<Input className="mt-2" value={title} onChange={(e) => setTitle(e.target.value)} data-testid="input-content-title" /></label>
       </div>
@@ -508,7 +637,8 @@ export function ModuleContentManager({ moduleId, moduleTitle, courseId }: { modu
       </div>}
       <label className="mt-3 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={required} onChange={(e) => setRequired(e.target.checked)} /> Required for completion</label>
       {error && <p className="mt-2 text-xs text-destructive">{error}</p>}
-      <Button className="mt-3 w-full" onClick={submit} disabled={create.isPending || upload.isPending} data-testid="button-add-content">{create.isPending ? 'Adding-' : 'Add content'}</Button>
+      <p className="mt-2 text-xs text-muted-foreground">{type === 'native' ? 'A text lesson written directly in TrainHub360.' : type === 'file' ? 'Upload a document, image, video or other file.' : 'Link to an external website or resource.'}</p>
+      <Button className="mt-3 w-full" onClick={submit} disabled={create.isPending || upload.isPending} data-testid="button-add-content">{create.isPending ? 'Adding-' : 'Add learning material'}</Button>
     </div>
   </div>;
 }

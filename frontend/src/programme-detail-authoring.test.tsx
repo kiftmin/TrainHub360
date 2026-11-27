@@ -3,7 +3,7 @@ import { describe, test, expect, afterEach, vi } from "vitest";
 import { render, cleanup, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { ProgrammeDetail } from "@/pages/Programmes";
+import { ProgrammeDetail, CourseContentManager } from "@/pages/Programmes";
 import type { Course, Module, ProgrammeMember } from "@/api/hooks";
 
 function Providers({ children }: { children: ReactNode }) {
@@ -102,7 +102,6 @@ describe("Programme Detail — course and module authoring", () => {
     harness({ role: "trainer" });
     render(<Providers><ProgrammeDetail id="p1" /></Providers>);
     expect(await screen.findByTestId("button-add-course")).toBeTruthy();
-    expect(await screen.findByTestId("button-add-module")).toBeTruthy();
     expect(screen.queryByTestId("button-submit-member")).toBeNull();
   });
 
@@ -112,15 +111,6 @@ describe("Programme Detail — course and module authoring", () => {
     await screen.findByText("Operations");
     expect(screen.queryByTestId("button-add-course")).toBeNull();
     expect(screen.queryByTestId("button-add-module")).toBeNull();
-  });
-
-  test("the module form requires a course selection", async () => {
-    harness();
-    render(<Providers><ProgrammeDetail id="p1" /></Providers>);
-    fireEvent.click(await screen.findByTestId("button-add-module"));
-    const select = await screen.findByTestId("select-module-course");
-    expect((select as HTMLSelectElement).value).toBe("");
-    expect((screen.getByTestId("button-submit-module") as HTMLButtonElement).disabled).toBe(true);
   });
 
   test("course creation posts the programme and selected trainer, then refreshes the list", async () => {
@@ -142,17 +132,16 @@ describe("Programme Detail — course and module authoring", () => {
 
   test("module creation posts an explicit course and refreshes the list", async () => {
     const calls = harness();
-    render(<Providers><ProgrammeDetail id="p1" /></Providers>);
+    render(<Providers><CourseContentManager courseId="c1" programmeId="p1" /></Providers>);
     fireEvent.click(await screen.findByTestId("button-add-module"));
-    fireEvent.change(await screen.findByTestId("select-module-course"), { target: { value: "c1" } });
-    fireEvent.change(screen.getByTestId("input-module-title"), { target: { value: "New module" } });
+    fireEvent.change(await screen.findByTestId("input-module-title"), { target: { value: "New module" } });
     fireEvent.click(screen.getByTestId("button-submit-module"));
     await waitFor(() => {
       expect(calls.some((c) => c.url === "/api/programmes/p1/modules" && c.method === "POST")).toBe(true);
     });
     const post = calls.find((c) => c.url === "/api/programmes/p1/modules" && c.method === "POST");
     expect(post?.body).toEqual({ courseId: "c1", title: "New module" });
-    expect(await screen.findByText("New module")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText("New module")).toBeTruthy());
     expect(screen.queryByTestId("input-module-title")).toBeNull();
   });
 
@@ -165,13 +154,4 @@ describe("Programme Detail — course and module authoring", () => {
     expect((await screen.findByTestId("course-form-error")).textContent).toContain("forbidden for this programme");
   });
 
-  test("a programme without courses explains that a course is required first", async () => {
-    harness({ courses: [] });
-    render(<Providers><ProgrammeDetail id="p1" /></Providers>);
-    fireEvent.click(await screen.findByTestId("button-add-module"));
-    expect((await screen.findByTestId("module-no-courses")).textContent).toContain("Create a course");
-    fireEvent.click(screen.getByTestId("button-module-add-course"));
-    expect(await screen.findByTestId("input-course-title")).toBeTruthy();
-    expect(screen.queryByTestId("select-module-course")).toBeNull();
-  });
 });

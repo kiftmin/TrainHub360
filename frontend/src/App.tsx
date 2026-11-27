@@ -87,7 +87,7 @@ const learnerNav = [
 ];
 import { Overview } from '@/pages/Overview';
 import { Learning } from '@/pages/Learning';
-import { Programmes, ProgrammeDetail } from '@/pages/Programmes';
+import { Programmes, ProgrammeDetail, CourseContentManager } from '@/pages/Programmes';
 import { People } from '@/pages/People';
 import { MyLearning } from '@/pages/MyLearning';
 import { Assessments } from '@/pages/Assessments';
@@ -189,6 +189,8 @@ function Router() {
     <Route path="/learning"><Protected path="/learning"><Learning /></Protected></Route>
     <Route path="/programmes"><Protected path="/programmes"><Programmes /></Protected></Route>
     <Route path="/programmes/:id">{(params) => <Protected path="/programmes/:id"><ProgrammeDetail id={params.id} /></Protected>}</Route>
+    <Route path="/programmes/:id/courses/:courseId">{(params) => <Protected path="/programmes/:id"><CourseContentManager courseId={params.courseId} programmeId={params.id} /></Protected>}</Route>
+    <Route path="/course-content/:courseId">{(params) => <Protected path="/course-content/:courseId"><CourseContentManager courseId={params.courseId} /></Protected>}</Route>
     <Route path="/people"><Protected path="/people"><People /></Protected></Route>
     <Route path="/my-learning"><Protected path="/my-learning"><MyLearning /></Protected></Route>
     <Route path="/assessments"><Protected path="/assessments"><Assessments /></Protected></Route>

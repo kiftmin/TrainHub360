@@ -488,6 +488,7 @@ export function useUpdateModule() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['programmes'] });
       qc.invalidateQueries({ queryKey: ['courses'] });
+      qc.invalidateQueries({ queryKey: ['course-content'] });
     },
   });
 }
@@ -513,6 +514,7 @@ export interface Module {
   id: string;
   courseId: string;
   title: string;
+  order?: number;
 }
 
 export function useModules(programmeId: string, enabled = true) {
