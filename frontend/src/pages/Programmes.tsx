@@ -190,13 +190,17 @@ function CourseAssignmentEditor({ programmeId, member, courses, onClose }: { pro
           <Button size="sm" variant="outline" onClick={clearAll}>Clear selection</Button>
         </div>
         <div className="max-h-64 space-y-2 overflow-y-auto">
-          {(assignments.data || []).map((a) => (
-            <label key={a.courseId} className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-2 text-sm">
-              <input type="checkbox" checked={selected.includes(a.courseId)} onChange={() => toggle(a.courseId)} data-testid={`checkbox-course-${a.courseId}`} />
-              <span className="flex-1">{a.title}</span>
-              <span className="text-xs text-muted-foreground">{a.status}</span>
-            </label>
-          ))}
+          {courses.length === 0 && <p className="text-xs text-muted-foreground">No courses in this programme yet.</p>}
+          {courses.map((c) => {
+            const a = (assignments.data || []).find((x) => x.courseId === c.id);
+            return (
+              <label key={c.id} className="flex items-center gap-2 rounded-md border border-border/70 px-3 py-2 text-sm">
+                <input type="checkbox" checked={selected.includes(c.id)} onChange={() => toggle(c.id)} data-testid={`checkbox-course-${c.id}`} />
+                <span className="flex-1">{c.title}</span>
+                <span className="text-xs text-muted-foreground">{a?.status ?? c.status}</span>
+              </label>
+            );
+          })}
         </div>
       </div>}
     {message && <p className="text-xs text-muted-foreground" data-testid="assignment-message">{message}</p>}
