@@ -77,18 +77,18 @@ export function pct(value?: number | null) { return `${Math.round(value ?? 0)}%`
 
 export function initials(name?: string) { return name?.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase() || 'TH'; }
 
-export function Skeleton({ className }: { className?: string }) { return <div className={cn('skeleton rounded-lg', className)} />; }
+export function Skeleton({ className }: { className?: string }) { return <div className={cn('skeleton rounded-xl', className)} />; }
 
 export function EmptyState({ title, detail, action }: { title: string; detail: string; action?: ReactNode }) {
-  return <div className="flex min-h-44 flex-col items-center justify-center rounded-lg border border-dashed border-border bg-card/55 p-6 text-center">
-    <div className="mb-3 grid size-10 place-items-center rounded-full bg-secondary text-muted-foreground"><FileCheck2 className="size-5" /></div>
-    <p className="font-semibold text-foreground">{title}</p><p className="mt-1 max-w-sm text-sm text-muted-foreground">{detail}</p>{action && <div className="mt-4">{action}</div>}
+  return <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-dashed border-border bg-card/40 p-8 text-center">
+    <div className="mb-3 grid size-12 place-items-center rounded-full bg-secondary text-muted-foreground"><FileCheck2 className="size-5" /></div>
+    <p className="text-sm font-semibold text-foreground">{title}</p><p className="mt-1 max-w-sm text-sm text-muted-foreground">{detail}</p>{action && <div className="mt-4">{action}</div>}
   </div>;
 }
 
 export function ErrorState({ retry }: { retry?: () => void }) {
-  return <div className="flex min-h-44 flex-col items-center justify-center rounded-lg border border-destructive/25 bg-destructive/5 p-6 text-center">
-    <CircleAlert className="mb-3 size-6 text-destructive" /><p className="font-semibold">Could not load this view</p><p className="mt-1 text-sm text-muted-foreground">The workspace service did not respond. Try again.</p>
+  return <div className="flex min-h-44 flex-col items-center justify-center rounded-xl border border-destructive/20 bg-destructive/5 p-8 text-center">
+    <CircleAlert className="mb-3 size-6 text-destructive" /><p className="text-sm font-semibold text-foreground">Could not load this view</p><p className="mt-1 text-sm text-muted-foreground">The workspace service did not respond. Try again.</p>
     {retry && <Button variant="outline" size="sm" className="mt-4" onClick={retry}>Retry</Button>}
   </div>;
 }
@@ -102,10 +102,10 @@ export function ProgressLine({ value, color = 'bg-primary' }: { value: number; c
 }
 
 export function PageHeading({ eyebrow, title, detail, action }: { eyebrow: string; title: string; detail: string; action?: ReactNode }) {
-  return <div className="mb-6 flex flex-col justify-between gap-4 md:flex-row md:items-end"><div><p className="mb-1.5 font-mono text-[10px] font-medium uppercase tracking-[.22em] text-primary">{eyebrow}</p><h1 className="text-2xl font-extrabold tracking-[-.04em] text-foreground md:text-[2rem]">{title}</h1><p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">{detail}</p></div>{action}</div>;
+  return <div className="mb-8 flex flex-col justify-between gap-4 border-b border-border/60 pb-6 md:flex-row md:items-end"><div><p className="mb-2 text-[11px] font-semibold uppercase tracking-[.16em] text-primary">{eyebrow}</p><h1 className="text-2xl font-bold tracking-[-.02em] text-foreground md:text-[2rem]">{title}</h1><p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">{detail}</p></div>{action && <div className="flex items-center gap-2">{action}</div>}</div>;
 }
 
 export function KpiCard({ label, value, detail, icon: Icon, tone = 'primary' }: { label: string; value: string; detail: string; icon: typeof Gauge; tone?: 'primary' | 'accent' | 'good' | 'warn' }) {
-  return <div className="rounded-lg border border-border/80 bg-card p-3"><div className="flex items-start justify-between"><p className="font-mono text-[10px] uppercase tracking-[.14em] text-muted-foreground">{label}</p><div className={cn('grid size-7 place-items-center rounded-md', tone === 'accent' ? 'bg-accent/20 text-foreground' : tone === 'good' ? 'bg-[hsl(var(--status-on-track))]/10 text-[hsl(var(--status-on-track))]' : tone === 'warn' ? 'bg-[hsl(var(--status-at-risk))]/10 text-[hsl(var(--status-at-risk))]' : 'bg-primary/10 text-primary')}><Icon className="size-3.5" /></div></div><p className="mt-3 text-xl font-extrabold tracking-[-.04em]">{value}</p><p className="mt-0.5 text-xs text-muted-foreground">{detail}</p></div>;
+  return <div className="rounded-xl border border-border/70 bg-card p-4 shadow-sm"><div className="flex items-start justify-between"><p className="text-[11px] font-semibold uppercase tracking-[.12em] text-muted-foreground">{label}</p><div className={cn('grid size-8 place-items-center rounded-xl', tone === 'accent' ? 'bg-accent/15 text-accent' : tone === 'good' ? 'bg-[hsl(var(--status-on-track))]/10 text-[hsl(var(--status-on-track))]' : tone === 'warn' ? 'bg-[hsl(var(--status-at-risk))]/10 text-[hsl(var(--status-at-risk))]' : 'bg-primary/10 text-primary')}><Icon className="size-4" /></div></div><p className="mt-3 text-2xl font-bold tracking-[-.02em] text-foreground">{value}</p><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>;
 }
 

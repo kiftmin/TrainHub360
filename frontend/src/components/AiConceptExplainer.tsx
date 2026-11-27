@@ -23,7 +23,7 @@ export function AiConceptExplainer({ courseId, moduleId, moduleTitle }: { course
   });
 
   return (
-    <div className="rounded-lg border border-border/80 bg-card p-4">
+    <div className="rounded-xl border border-border/70 bg-card p-4">
       <button onClick={() => setOpen((v) => !v)} className="flex w-full items-center gap-2 text-sm font-semibold" data-testid="button-ai-explainer">
         <LifeBuoy className="size-4 text-primary" /> Stuck on this concept?
       </button>
@@ -42,7 +42,7 @@ export function AiConceptExplainer({ courseId, moduleId, moduleTitle }: { course
           </Button>
           {explain.isError && <p className="text-xs text-destructive">Could not reach the explainer. Try again.</p>}
           {explain.data && (
-            <div className="rounded-lg bg-secondary/55 p-3 text-sm">
+            <div className="rounded-xl bg-secondary/55 p-3 text-sm">
               <p>{explain.data.explanation}</p>
               {explain.data.suggestedFollowUp.length > 0 && (
                 <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">

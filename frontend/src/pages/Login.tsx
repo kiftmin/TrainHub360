@@ -74,18 +74,19 @@ export function Login({ onDone, onRegister }: { onDone: () => void; onRegister?:
   }
 
   return (
-    <div className="flex min-h-[100dvh] items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-2xl border border-border/80 bg-card p-8 shadow-[0_20px_60px_rgba(25,51,57,.08)]">
+    <div className="relative flex min-h-[100dvh] items-center justify-center overflow-hidden bg-gradient-to-br from-secondary/40 via-background to-background p-6">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,hsl(var(--primary)/.08),transparent_45%)]" />
+      <div className="relative w-full max-w-md rounded-2xl border border-border/70 bg-card p-8 shadow-[0_24px_60px_-24px_rgba(15,23,42,.18)]">
         <div className="flex items-center gap-3">
-          <div className="grid size-10 place-items-center rounded-lg bg-primary text-primary-foreground"><ShieldCheck className="size-5" /></div>
+          <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground"><ShieldCheck className="size-5" /></div>
           <div>
-            <p className="text-lg font-extrabold tracking-[-.03em]">TrainHub<span className="text-primary">360</span></p>
+            <p className="text-lg font-bold tracking-[-.03em]">TrainHub<span className="text-primary">360</span></p>
             <p className="font-mono text-[9px] uppercase tracking-[.16em] text-muted-foreground">readiness OS</p>
           </div>
         </div>
-        <h1 className="mt-6 text-2xl font-extrabold tracking-[-.03em]">Welcome back.</h1>
+        <h1 className="mt-6 text-2xl font-bold tracking-[-.02em]">Welcome back.</h1>
         <p className="mt-1 text-sm text-muted-foreground">Sign in with your seeded admin email to open the workspace.</p>
-        {notice && <p className="mt-4 rounded-lg bg-emerald-50 p-3 text-xs text-emerald-800">{notice}</p>}
+        {notice && <p className="mt-4 rounded-xl bg-emerald-50 p-3 text-xs text-emerald-800">{notice}</p>}
         {mode === "login" && (
         <form onSubmit={submit} className="mt-6 space-y-4">
           <label className="block text-xs font-semibold">Work email

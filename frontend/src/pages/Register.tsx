@@ -27,15 +27,15 @@ export function Register({ onDone, onBack }: { onDone: () => void; onBack: () =>
 
   return (
     <div className="flex min-h-[100dvh] items-center justify-center p-6">
-      <div className="w-full max-w-md rounded-2xl border border-border/80 bg-card p-8 shadow-[0_20px_60px_rgba(25,51,57,.08)]">
+      <div className="w-full max-w-md rounded-2xl border border-border/70 bg-card p-8 shadow-[0_20px_60px_rgba(25,51,57,.08)]">
         <div className="flex items-center gap-3">
-          <div className="grid size-10 place-items-center rounded-lg bg-primary text-primary-foreground"><ShieldCheck className="size-5" /></div>
+          <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground"><ShieldCheck className="size-5" /></div>
           <div>
-            <p className="text-lg font-extrabold tracking-[-.03em]">TrainHub<span className="text-primary">360</span></p>
+            <p className="text-lg font-bold tracking-[-.03em]">TrainHub<span className="text-primary">360</span></p>
             <p className="font-mono text-[9px] uppercase tracking-[.16em] text-muted-foreground">readiness OS</p>
           </div>
         </div>
-        <h1 className="mt-6 text-2xl font-extrabold tracking-[-.03em]">Create your organization.</h1>
+        <h1 className="mt-6 text-2xl font-bold tracking-[-.03em]">Create your organization.</h1>
         <p className="mt-1 text-sm text-muted-foreground">Self-service workspace setup with domain verification.</p>
         <form onSubmit={submit} className="mt-6 space-y-4">
           <label className="block text-xs font-semibold">Organization name

@@ -116,61 +116,73 @@ function Shell({ children, onLogout }: { children: ReactNode; onLogout: () => vo
   const [mobileOpen, setMobileOpen] = useState(false);
   const workspace = useWorkspace();
   const user = workspace.data?.user;
-  return <div className="min-h-[100dvh]">
-    <aside className={cn('fixed inset-y-0 left-0 z-40 flex w-[244px] flex-col bg-sidebar px-4 py-5 text-sidebar-foreground transition-transform duration-300 lg:translate-x-0', mobileOpen ? 'translate-x-0' : '-translate-x-full')}>
-      <div className="flex items-center justify-between px-2">
+  return <div className="min-h-[100dvh] bg-background">
+    <aside className={cn('fixed inset-y-0 left-0 z-40 flex w-[260px] flex-col border-r border-sidebar-border bg-sidebar px-3 py-4 text-sidebar-foreground transition-transform duration-200 lg:translate-x-0', mobileOpen ? 'translate-x-0' : '-translate-x-full')}>
+      <div className="flex items-center gap-3 px-2 py-1">
         <button onClick={() => go('/')} className="flex items-center gap-3 text-left">
-          <div className="grid size-9 place-items-center rounded-lg bg-sidebar-primary text-sidebar-primary-foreground"><ShieldCheck className="size-5" /></div>
-          <div><p className="text-[15px] font-extrabold tracking-[-.03em]">TrainHub<span className="text-sidebar-primary">360</span></p><p className="font-mono text-[9px] uppercase tracking-[.16em] text-sidebar-foreground/45">readiness OS</p></div>
+          <div className="grid size-9 place-items-center rounded-xl bg-sidebar-primary text-sidebar-primary-foreground shadow-sm"><ShieldCheck className="size-5" /></div>
+          <div><p className="text-[15px] font-bold tracking-[-.02em]">TrainHub<span className="text-sidebar-primary">360</span></p><p className="text-[10px] font-medium tracking-wide text-sidebar-foreground/50">Workforce readiness</p></div>
         </button>
-        <button className="lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-5" /></button>
+        <button className="ml-auto rounded-md p-1.5 text-sidebar-foreground/60 hover:bg-sidebar-accent lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close navigation"><X className="size-5" /></button>
       </div>
-      <div className="mt-10 px-2"><p className="font-mono text-[9px] uppercase tracking-[.2em] text-sidebar-foreground/40">Workspace</p>
-        <div className="mt-2 flex items-center gap-2 rounded-lg bg-sidebar-accent px-3 py-2.5">
-          <div className="grid size-7 place-items-center rounded-md bg-sidebar-primary/15 text-xs font-bold text-sidebar-primary">{initials(workspace.data?.organization.name)}</div>
-          <div className="min-w-0"><p className="truncate text-xs font-semibold">{workspace.data?.organization.name || 'Loading workspace'}</p><p className="font-mono text-[9px] text-sidebar-foreground/45">{workspace.data?.organization.plan || '—'} plan</p></div>
-          <ChevronDown className="ml-auto size-3.5 text-sidebar-foreground/45" />
+      <div className="mt-5 rounded-xl border border-sidebar-border bg-sidebar-accent/50 p-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[.14em] text-sidebar-foreground/45">Workspace</p>
+        <div className="mt-2 flex items-center gap-2.5">
+          <div className="grid size-8 place-items-center rounded-lg bg-sidebar-primary/15 text-xs font-bold text-sidebar-primary">{initials(workspace.data?.organization.name)}</div>
+          <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{workspace.data?.organization.name || 'Loading workspace'}</p><p className="truncate text-[11px] text-sidebar-foreground/50">{workspace.data?.organization.plan || '—'} plan</p></div>
         </div>
-        {workspace.data && workspace.data.dataSource !== 'mssql' && <p className="mt-2 rounded-md border border-sidebar-primary/20 bg-sidebar-primary/10 px-2 py-1.5 font-mono text-[9px] leading-relaxed text-sidebar-primary">Demo workspace · SQL Server unavailable</p>}
+        {workspace.data && workspace.data.dataSource !== 'mssql' && <p className="mt-2.5 rounded-md border border-sidebar-primary/25 bg-sidebar-primary/10 px-2 py-1.5 text-[10px] leading-relaxed text-sidebar-primary">Demo workspace — SQL Server unavailable</p>}
       </div>
-      <nav className="mt-8 space-y-1" aria-label="Main navigation">
-        {visibleNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', (location === href || (href === '/programmes' && location.startsWith('/programmes'))) ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-sm' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px]" /><span>{label}</span>{label === 'Messages' && <span className="ml-auto size-1.5 rounded-full bg-sidebar-primary" />}</button>)}
+      <nav className="mt-6 space-y-0.5" aria-label="Main navigation">
+        <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-sidebar-foreground/40">Workspace</p>
+        {visibleNav.map(({ href, label, icon: Icon }) => {
+          const isActive = location === href || (href === '/programmes' && location.startsWith('/programmes'));
+          return <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors', isActive ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-sm' : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px] shrink-0" /><span className="truncate">{label}</span>{label === 'Messages' && <span className="ml-auto size-1.5 rounded-full bg-sidebar-primary" />}</button>;
+        })}
       </nav>
-      <div className="my-7 h-px bg-sidebar-border" />
-      <p className="px-3 font-mono text-[9px] uppercase tracking-[.2em] text-sidebar-foreground/40">Governance</p>
-      <nav className="mt-2 space-y-1">
-        {visibleAdminNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors', location === href ? 'bg-sidebar-primary text-sidebar-primary-foreground' : 'text-sidebar-foreground/65 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px]" /><span>{label}</span></button>)}
-      </nav>
-      <div className="mt-auto rounded-lg border border-sidebar-border bg-sidebar-accent/60 p-3">
-        <div className="flex items-center gap-2">
+      {visibleAdminNav.length > 0 && <>
+        <div className="my-4 h-px bg-sidebar-border" />
+        <nav className="space-y-0.5" aria-label="Governance navigation">
+          <p className="px-2 pb-1.5 text-[10px] font-semibold uppercase tracking-[.14em] text-sidebar-foreground/40">Governance</p>
+          {visibleAdminNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} className={cn('group flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-sm font-medium transition-colors', location === href ? 'bg-sidebar-primary text-sidebar-primary-foreground shadow-sm' : 'text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground')}><Icon className="size-[17px] shrink-0" /><span className="truncate">{label}</span></button>)}
+        </nav>
+      </>}
+      <div className="mt-auto rounded-xl border border-sidebar-border bg-sidebar-accent/40 p-3">
+        <div className="flex items-center gap-2.5">
           <div className="grid size-8 place-items-center rounded-full bg-sidebar-primary text-xs font-bold text-sidebar-primary-foreground">{user?.initials || 'TH'}</div>
-          <div className="min-w-0"><p className="truncate text-xs font-semibold">{user?.name || 'Workspace user'}</p><p className="truncate text-[10px] text-sidebar-foreground/45">{user?.role || 'Manager'}</p></div>
-          <MoreHorizontal className="ml-auto size-4 text-sidebar-foreground/40" />
+          <div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{user?.name || 'Workspace user'}</p><p className="truncate text-[11px] capitalize text-sidebar-foreground/50">{user?.role || 'Manager'}</p></div>
         </div>
-        <button onClick={onLogout} className="mt-3 w-full rounded-md border border-sidebar-border px-2 py-1.5 text-xs text-sidebar-foreground/70 hover:bg-sidebar-accent">Sign out</button>
+        <button onClick={onLogout} className="mt-3 w-full rounded-lg border border-sidebar-border px-3 py-1.5 text-xs font-medium text-sidebar-foreground/75 transition-colors hover:bg-sidebar-accent">Sign out</button>
       </div>
     </aside>
-    {mobileOpen && <button className="fixed inset-0 z-30 bg-sidebar/40 lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close menu" />}
-    <div className="lg:pl-[244px]">
-      <header className="sticky top-0 z-20 flex h-[68px] items-center justify-between border-b border-border/70 bg-background/85 px-5 backdrop-blur-xl md:px-8">
+    {mobileOpen && <button className="fixed inset-0 z-30 bg-foreground/30 backdrop-blur-sm lg:hidden" onClick={() => setMobileOpen(false)} aria-label="Close menu" />}
+    <div className="lg:pl-[260px]">
+      <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-border/70 bg-background/90 px-4 backdrop-blur-md md:px-8">
         <div className="flex items-center gap-3">
-          <button className="rounded-md p-2 hover:bg-secondary lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu className="size-5" /></button>
-          <div className="hidden items-center gap-2 text-xs text-muted-foreground md:flex"><span>Operations</span><span className="text-border">/</span><span className="font-medium text-foreground">{active?.label || location.slice(1) || 'Overview'}</span></div>
+          <button className="rounded-lg p-2 text-muted-foreground hover:bg-secondary lg:hidden" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu className="size-5" /></button>
+          <div className="hidden items-center gap-2 text-sm text-muted-foreground md:flex">
+            <span className="text-muted-foreground/70">TrainHub360</span>
+            <span className="text-border">/</span>
+            <span className="font-medium text-foreground">{active?.label || location.slice(1) || 'Overview'}</span>
+          </div>
         </div>
         <div className="flex items-center gap-2">
-          <button className="hidden rounded-md border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground md:flex md:items-center md:gap-2"><Search className="size-3.5" />Search <kbd className="rounded border border-border px-1 font-mono text-[9px]">⌘ K</kbd></button>
+          <div className="hidden items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground md:flex">
+            <Search className="size-3.5" />
+            <span>Search</span>
+            <kbd className="ml-2 rounded border border-border bg-muted px-1 font-mono text-[9px]">⌘K</kbd>
+          </div>
           <NotificationBell onNavigate={go} />
-          <button onClick={() => go('/profile')} className="ml-1 grid size-8 place-items-center rounded-full bg-primary text-[11px] font-bold text-primary-foreground" aria-label="Open profile" data-testid="header-profile">{user?.initials || 'TH'}</button>
+          <button onClick={() => go('/profile')} className="ml-1 grid size-9 place-items-center rounded-full bg-primary text-xs font-bold text-primary-foreground shadow-sm transition-transform hover:scale-[1.02]" aria-label="Open profile" data-testid="header-profile">{user?.initials || 'TH'}</button>
         </div>
       </header>
-      <main className={cn('mx-auto max-w-[1480px] px-5 pt-8 md:px-8', isLearner ? 'pb-24 lg:pb-8' : 'pb-8')}>{children}</main>
+      <main className={cn('mx-auto max-w-[1440px] px-4 pt-6 md:px-8', isLearner ? 'pb-24 lg:pb-8' : 'pb-8')}>{children}</main>
     </div>
-    {isLearner && <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-border/80 bg-background/95 backdrop-blur-xl lg:hidden" aria-label="Learner mobile navigation" data-testid="mobile-learner-nav">
-      {learnerNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} aria-current={location === href ? 'page' : undefined} className={cn('flex min-h-16 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold', location === href ? 'text-primary' : 'text-muted-foreground')} data-testid={`mobile-nav-${label.toLowerCase().replace(' ', '-')}`}><Icon className="size-5" /><span>{label}</span></button>)}
+    {isLearner && <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-4 border-t border-border/80 bg-background/95 backdrop-blur-md lg:hidden" aria-label="Learner mobile navigation" data-testid="mobile-learner-nav">
+      {learnerNav.map(({ href, label, icon: Icon }) => <button key={href} onClick={() => go(href)} aria-current={location === href ? 'page' : undefined} className={cn('flex min-h-16 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold transition-colors', location === href ? 'text-primary' : 'text-muted-foreground hover:text-foreground')} data-testid={`mobile-nav-${label.toLowerCase().replace(' ', '-')}`}><Icon className="size-5" /><span>{label}</span></button>)}
     </nav>}
   </div>;
 }
-
 function NotFound() {
   return <div className="flex min-h-[70vh] flex-col items-center justify-center text-center"><Gauge className="size-8 text-primary" /><h1 className="mt-4 text-3xl font-extrabold">That page is off the map.</h1><p className="mt-2 text-sm text-muted-foreground">Return to your workspace overview.</p><Link className="mt-5 text-sm font-semibold text-primary hover:underline" href="/">Back to overview</Link></div>;
 }

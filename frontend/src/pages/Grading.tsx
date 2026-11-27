@@ -26,7 +26,7 @@ export function GradingQueuePage() {
   return <div className="page-in">
     <PageHeading eyebrow="Marking" title="Grading queue." detail="Attempts with a scenario or short answer wait here until a person marks them. A learner never sees a score before that."
       action={<Button variant="outline" size="sm" onClick={() => queue.refetch()} disabled={queue.isFetching}><RefreshCw className={cn('size-3.5', queue.isFetching && 'animate-spin')} />Refresh</Button>} />
-    <section className="rounded-lg border border-border/80 bg-card p-5">
+    <section className="rounded-xl border border-border/70 bg-card p-5">
       {queue.isLoading ? <div className="space-y-2"><Skeleton className="h-14" /><Skeleton className="h-14" /><Skeleton className="h-14" /></div>
       : queue.isError ? <ErrorState retry={() => queue.refetch()} />
       : !queue.data?.length ? <EmptyState title="Nothing waiting" detail="Every submitted attempt has been marked. New submissions appear here." />
@@ -95,7 +95,7 @@ export function GradingAttemptPage({ attemptId }: { attemptId: string }) {
 
   if (result) return <div className="page-in">
     <PageHeading eyebrow="Marking" title="Attempt marked." detail="The learner has been notified. A certificate is issued automatically if this result completes the course." />
-    <section className="max-w-xl rounded-lg border border-border/80 bg-card p-5">
+    <section className="max-w-xl rounded-xl border border-border/70 bg-card p-5">
       <p className="text-lg font-bold">{result.passed ? 'Passed' : 'Not passed'} — {result.score}%</p>
       <p className="mt-1 text-sm text-muted-foreground">{result.earnedPoints}/{result.totalPoints} points · pass mark {result.passMark}% · {result.competenceMet ? 'competence met' : 'competence not yet met'}</p>
       <p className="mt-1 text-sm text-muted-foreground">{result.certificateIssued ? 'A certificate was issued.' : 'No certificate was issued by this result.'}</p>
@@ -110,7 +110,7 @@ export function GradingAttemptPage({ attemptId }: { attemptId: string }) {
       {data.questions.map((q, i) => {
         const isManual = MANUAL_KINDS.has(q.kind);
         const mark = marks[q.id] ?? { points: '', comment: '' };
-        return <section key={q.id} className="rounded-lg border border-border/80 bg-card p-4">
+        return <section key={q.id} className="rounded-xl border border-border/70 bg-card p-4">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="font-mono text-[10px] uppercase tracking-[.12em] text-muted-foreground">Question {i + 1} · {q.kind.replace('_', ' ')}</p>

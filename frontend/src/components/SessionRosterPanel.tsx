@@ -166,7 +166,7 @@ export function SessionRosterPanel({ sessionId, sessionTitle }: { sessionId: str
 
   const busy = invite.isPending || remove.isPending || update.isPending || cancel.isPending;
 
-  return <section className="mt-5 rounded-lg border border-border/80 bg-card p-5" data-testid="session-roster-panel">
+  return <section className="mt-5 rounded-xl border border-border/70 bg-card p-5" data-testid="session-roster-panel">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
         <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Trainer tools</p>
@@ -190,7 +190,7 @@ export function SessionRosterPanel({ sessionId, sessionTitle }: { sessionId: str
       <div className="flex items-end"><Button variant="outline" disabled={busy} onClick={cancelSession} data-testid="button-cancel-session">Cancel session</Button></div>
     </div>
 
-    <div className="mt-5 rounded-lg border border-border/70 p-3">
+    <div className="mt-5 rounded-xl border border-border/70 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div><h3 className="text-sm font-bold">Invite learners</h3><p className="text-[11px] text-muted-foreground" data-testid="invitable-total">{total} eligible</p></div>
         <div className="flex items-center gap-2">

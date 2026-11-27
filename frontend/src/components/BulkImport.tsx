@@ -49,7 +49,7 @@ export function BulkImportButton() {
           </Button>
           {imp.isError && <p className="text-xs text-destructive">Import failed — check the CSV format.</p>}
           {imp.data && (
-            <div className="rounded-lg bg-secondary/55 p-3 text-xs" data-testid="import-results">
+            <div className="rounded-xl bg-secondary/55 p-3 text-xs" data-testid="import-results">
               <p><strong>{imp.data.created}</strong> created · <strong>{imp.data.updated}</strong> updated · <strong>{imp.data.failed}</strong> failed</p>
               {imp.data.errors.map((e) => <p key={e.row} className="mt-1 text-destructive">Row {e.row + 1} ({e.email}): {e.error}</p>)}
               {imp.data.warnings.map((w) => <p key={w.row} className="mt-1 text-amber-700">Row {w.row + 1}: {w.warning}</p>)}

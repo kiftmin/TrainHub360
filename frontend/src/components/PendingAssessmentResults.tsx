@@ -25,7 +25,7 @@ export function PendingAssessmentResultsPanel() {
   const rows = pending(enrolments.data ?? []);
   const busy = accept.isPending || reject.isPending;
 
-  return <section className="rounded-lg border border-border/80 bg-card p-4">
+  return <section className="rounded-xl border border-border/70 bg-card p-4">
     <div className="flex items-center justify-between gap-3 border-b border-border/70 pb-3">
       <div>
         <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Score source</p>

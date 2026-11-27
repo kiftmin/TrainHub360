@@ -59,7 +59,7 @@ export function MessageTemplatesPanel({ onInsert }: { onInsert?: (body: string) 
   };
 
   return (
-    <div className="space-y-3 rounded-lg border border-border/70 bg-secondary/30 p-3" data-testid="message-templates-panel">
+    <div className="space-y-3 rounded-xl border border-border/70 bg-secondary/30 p-3" data-testid="message-templates-panel">
       <div className="flex items-center justify-between">
         <div>
           <p className="text-sm font-bold">Canned responses</p>

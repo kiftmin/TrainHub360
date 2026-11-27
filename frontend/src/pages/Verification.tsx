@@ -42,13 +42,13 @@ export function VerificationPage() {
   return <div className="page-in">
     <PageHeading eyebrow="Content evidence" title="Verification queue." detail="External-link proof from your programmes waits here. Confirm it, or send it back with what needs to change."
       action={<Button variant="outline" size="sm" onClick={() => queue.refetch()} disabled={queue.isFetching}><RefreshCw className={cn('size-3.5', queue.isFetching && 'animate-spin')} />Refresh</Button>} />
-    <section className="rounded-lg border border-border/80 bg-card p-5">
+    <section className="rounded-xl border border-border/70 bg-card p-5">
       {error && <p className="mb-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive" data-testid="verification-error">{error}</p>}
       {queue.isLoading ? <div className="space-y-2"><Skeleton className="h-14" /><Skeleton className="h-14" /><Skeleton className="h-14" /></div>
       : queue.isError ? <ErrorState retry={() => queue.refetch()} />
       : !queue.data?.length ? <EmptyState title="Nothing to verify" detail="Evidence submitted against trainer-verified content will appear here." />
       : <div className="space-y-4">
-        {queue.data.map((row) => <div key={row.id} className="rounded-lg border border-border/70 p-4" data-testid={`verification-row-${row.id}`}>
+        {queue.data.map((row) => <div key={row.id} className="rounded-xl border border-border/70 p-4" data-testid={`verification-row-${row.id}`}>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold">{row.contentItem.title}</p>

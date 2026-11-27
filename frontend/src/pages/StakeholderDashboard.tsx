@@ -23,7 +23,7 @@ export function StakeholderDashboard() {
             <KpiCard label="Completion" value={pct(kpis.data?.completionRate)} detail="Courses finished" icon={Users} />
             <KpiCard label="At-risk" value={`${kpis.data?.dropOffRate ?? 0}%`} detail="Require intervention" icon={Activity} />
           </div>
-          <section className="mt-4 rounded-lg border border-border/80 bg-card p-4">
+          <section className="mt-4 rounded-xl border border-border/70 bg-card p-4">
             <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Coverage</p>
             <h2 className="mt-1 text-base font-bold">Programme progress</h2>
             <div className="mt-3 space-y-3">

@@ -81,7 +81,7 @@ function QuestionField({ question, value, disabled, onChange }: {
     if (single) return onChange({ ...value, optionIds: [optionId] });
     onChange({ ...value, optionIds: optionIds.includes(optionId) ? optionIds.filter((id) => id !== optionId) : [...optionIds, optionId] });
   };
-  return <div className="rounded-lg bg-primary-foreground/10 p-3">
+  return <div className="rounded-xl bg-primary-foreground/10 p-3">
     {question.scenarioContext && <p className="mb-1 rounded bg-primary-foreground/10 p-2 text-xs italic text-primary-foreground/80">{question.scenarioContext}</p>}
     <p className="text-sm font-semibold">{question.prompt} <span className="ml-1 text-[10px] font-normal text-primary-foreground/60">({question.points} pt{question.points === 1 ? '' : 's'})</span></p>
     {(single || multi) && <div className="mt-2 space-y-1">{question.options.map((o) => <label key={o.id} className="flex items-center gap-2 text-xs">
@@ -93,13 +93,13 @@ function QuestionField({ question, value, disabled, onChange }: {
 
 function AttemptResult({ result, onClose }: { result: AttemptSubmission; onClose: () => void }) {
   if (result.status === 'grading') {
-    return <div className="mt-4 rounded-lg bg-primary-foreground/10 p-4 text-sm">
+    return <div className="mt-4 rounded-xl bg-primary-foreground/10 p-4 text-sm">
       <p className="font-bold">Submitted — waiting for marking</p>
       <p className="mt-1 text-xs text-primary-foreground/70">{result.awaitingGrading ?? 1} answer(s) need a person to mark them. The score, pass mark and result appear once marking is complete.</p>
       <Button variant="secondary" className="mt-3 w-full" onClick={onClose}>Close</Button>
     </div>;
   }
-  return <div className="mt-4 rounded-lg bg-primary-foreground/10 p-4 text-sm">
+  return <div className="mt-4 rounded-xl bg-primary-foreground/10 p-4 text-sm">
     <p className="font-bold">{result.passed ? 'Passed' : 'Not passed'} — {result.score}%</p>
     <p className="mt-1 text-xs text-primary-foreground/70">{result.earnedPoints}/{result.totalPoints} points · pass mark {result.passMark}% · {result.competenceMet ? 'competence met' : 'competence not yet met'}</p>
     {!!result.results?.length && <ul className="mt-3 space-y-1 text-xs">
@@ -187,14 +187,14 @@ export function Assessments() {
     <PageHeading eyebrow="Competence assurance" title="Assessments with evidence." detail="A passing completion is not the same as competence. Scores come from stored answers and a person marks what a key cannot."
       action={canAuthor ? <Link href="/assessments/grading"><Button variant="outline" size="sm">Grading queue</Button></Link> : undefined} />
     <div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
-      <section className="rounded-lg border border-border/80 bg-card p-5">
+      <section className="rounded-xl border border-border/70 bg-card p-5">
         <div className="flex items-center justify-between"><div><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Assessment queue</p><h2 className="mt-1 text-base font-bold">Courses ready for review</h2></div><Status tone="warn">{courses.data?.length || 0} courses</Status></div>
         {courses.isLoading ? <div className="mt-4 space-y-2"><Skeleton className="h-16" /><Skeleton className="h-16" /></div>
         : courses.isError ? <div className="mt-4"><ErrorState retry={() => courses.refetch()} /></div>
-        : <div className="mt-4 space-y-2">{courses.data?.map((course) => <button key={course.id} onClick={() => { setSelectedId(course.id); setResult(null); setAttempt(null); setAnswers({}); setError(null); }} className={cn('w-full rounded-lg border p-4 text-left transition-colors hover:border-primary/40 hover:bg-secondary/35', selected?.id === course.id ? 'border-primary/50 bg-primary/5' : 'border-border/70')}><div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-lg bg-accent/25 text-primary"><Target className="size-4" /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{course.title}</p><p className="mt-1 text-xs text-muted-foreground">{course.programmeName} · pass mark from assessment or course threshold</p></div></div></button>)}</div>}
+        : <div className="mt-4 space-y-2">{courses.data?.map((course) => <button key={course.id} onClick={() => { setSelectedId(course.id); setResult(null); setAttempt(null); setAnswers({}); setError(null); }} className={cn('w-full rounded-xl border p-4 text-left transition-colors hover:border-primary/40 hover:bg-secondary/35', selected?.id === course.id ? 'border-primary/50 bg-primary/5' : 'border-border/70')}><div className="flex items-center gap-3"><div className="grid size-9 place-items-center rounded-xl bg-accent/25 text-primary"><Target className="size-4" /></div><div className="min-w-0 flex-1"><p className="truncate text-sm font-semibold">{course.title}</p><p className="mt-1 text-xs text-muted-foreground">{course.programmeName} · pass mark from assessment or course threshold</p></div></div></button>)}</div>}
         {!courses.data?.length && !courses.isLoading && !courses.isError && <div className="mt-4"><EmptyState title="Assessment queue is clear" detail="New courses will appear here when ready for evidence." /></div>}
       </section>
-      <section className="rounded-lg border border-primary/20 bg-primary p-5 text-primary-foreground">
+      <section className="rounded-xl border border-primary/20 bg-primary p-5 text-primary-foreground">
         <p className="font-mono text-[10px] uppercase tracking-[.15em] text-primary-foreground/60">Submission panel</p>
         <h2 className="mt-1 text-base font-bold">{selected ? selected.title : 'Select a course'}</h2>
         {!selected ? <p className="mt-3 text-sm text-primary-foreground/70">Choose a course from the queue to start an assessment.</p>
@@ -218,7 +218,7 @@ export function Assessments() {
               {assessments.isLoading ? <p className="text-xs text-primary-foreground/70">Loading assessments…</p>
               : assessments.isError ? <p className="text-xs text-primary-foreground/80">{messageOf(assessments.error)}</p>
               : !assessments.data?.length ? <p className="text-xs text-primary-foreground/70">No published assessments for this course yet.</p>
-              : assessments.data.map((a) => <div key={a.id} data-testid={`assessment-row-${a.id}`} className="rounded-lg bg-primary-foreground/10 p-3">
+              : assessments.data.map((a) => <div key={a.id} data-testid={`assessment-row-${a.id}`} className="rounded-xl bg-primary-foreground/10 p-3">
                 <div className="flex items-center justify-between gap-2">
                   <div>
                     <p className="text-sm font-semibold">{a.title || `${a.type} assessment`}</p>
@@ -367,7 +367,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
     });
   };
 
-  return <section className="mt-5 rounded-lg border border-border/80 bg-card p-5">
+  return <section className="mt-5 rounded-xl border border-border/70 bg-card p-5">
     <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Assessment builder</p>
     <h2 className="mt-1 text-base font-bold">Draft questions, then publish</h2>
     <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -392,7 +392,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
       <option value="">Select assessment</option>{moduleAssessments.data.map((a) => <option key={a.id} value={a.id}>{versionLabelOf(a, moduleAssessments.data ?? [])}</option>)}
     </select></label>}
 
-    {assessmentId && detail.data && <div className="mt-4 space-y-3 rounded-lg border border-border/70 p-4">
+    {assessmentId && detail.data && <div className="mt-4 space-y-3 rounded-xl border border-border/70 p-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p data-testid="builder-version-state" className="text-sm font-semibold">
           {supersededSelected ? `Superseded — version ${detail.data.version ?? 1}; no new attempts` : isPublished ? `Published — live version ${detail.data.version ?? 1}, questions locked` : 'Draft — add your questions'}
@@ -406,7 +406,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
         </div>
       </div>
 
-      {needsChangeKind && <div data-testid="publish-choice" className="space-y-2 rounded-lg border border-border/70 p-3">
+      {needsChangeKind && <div data-testid="publish-choice" className="space-y-2 rounded-xl border border-border/70 p-3">
         <p className="text-xs font-semibold">Choose what this publication means</p>
         <label data-testid="publish-change-kind-minor" className={cn('block cursor-pointer rounded-md border p-3 text-xs', changeKind === 'minor' ? 'border-primary bg-primary/5' : 'border-border/70')}>
           <span className="flex items-center gap-2 font-semibold"><input type="radio" name="publish-change-kind" checked={changeKind === 'minor'} onChange={() => setChangeKind('minor')} />Minor correction</span>
@@ -419,7 +419,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
         {publishImpact.isError && <p className="text-[11px] text-destructive">Could not load the impact counts: {messageOf(publishImpact.error)}</p>}
       </div>}
 
-      {recalcActive && <div data-testid="recalculation-status" className="rounded-lg border border-border/60 bg-secondary/40 p-3 text-xs">
+      {recalcActive && <div data-testid="recalculation-status" className="rounded-xl border border-border/60 bg-secondary/40 p-3 text-xs">
         {recalculation.isError ? `Could not check recalculation: ${messageOf(recalculation.error)}`
           : recalculation.data?.stale || recalculation.data?.job?.status === 'failed'
             ? `Recalculation stalled${recalculation.data?.lastError ? `: ${recalculation.data.lastError}` : ''}. Check the evaluation queue.`
@@ -427,7 +427,7 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
               ? 'Recalculation complete — scores are up to date.'
               : `Recalculating… ${recalculation.data?.job?.status ?? 'queued'} · ${recalculation.data?.attempts ?? 0} attempt(s)`}
       </div>}
-      {!!publishProblems.length && <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-xs">
+      {!!publishProblems.length && <div className="rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-xs">
         <p className="flex items-center gap-1 font-semibold text-destructive"><TriangleAlert className="size-3.5" />Fix these before publishing</p>
         <ul className="mt-1 list-disc space-y-1 pl-5 text-destructive/90">{publishProblems.map((p) => <li key={p}>{p}</li>)}</ul>
       </div>}
@@ -474,13 +474,13 @@ function AssessmentBuilder({ courseId, programmeId }: { courseId: string; progra
         {!detail.data.questions.length && <p className="text-xs text-muted-foreground">No questions yet.</p>}
       </div>
 
-      {isPublished && !supersededSelected && <div className="rounded-lg border border-border/60 p-3">
+      {isPublished && !supersededSelected && <div className="rounded-xl border border-border/60 p-3">
         <p className="text-xs font-semibold">Change this paper</p>
         <p className="mt-1 text-[11px] text-muted-foreground">Saving an edit opens draft version {(detail.data.version ?? 1) + 1}. Learners stay on this live paper until the draft is published.</p>
         <div className="mt-2 flex gap-2"><Button size="sm" variant="outline" onClick={() => setConfirmVersion(true)} disabled={updateAssessment.isPending}>Open draft with these details</Button></div>
       </div>}
 
-      {!!superseded.length && <div className="rounded-lg border border-border/60 p-3">
+      {!!superseded.length && <div className="rounded-xl border border-border/60 p-3">
         <p className="text-xs font-semibold">Earlier versions</p>
         <ul className="mt-1 space-y-1 text-[11px] text-muted-foreground">{superseded.map((a) => <li key={a.id}>v{a.version ?? 1} — {a.title || 'untitled'} (superseded)</li>)}</ul>
       </div>}

@@ -235,7 +235,7 @@ export function Messages() {
         </DialogContent>
       </Dialog>
     } />
-    <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-border/70 bg-card p-3" data-testid="thread-filters">
+    <div className="mb-4 flex flex-wrap items-end gap-3 rounded-xl border border-border/70 bg-card p-3" data-testid="thread-filters">
       <label className="block text-xs font-semibold">Programme<select className="mt-1 h-9 w-44 rounded-md border border-input bg-background px-2 text-sm font-normal" value={filterProgrammeId} onChange={(e) => { setFilterProgrammeId(e.target.value); setFilterCourseId(''); setSelected(null); }} data-testid="filter-thread-programme">
         <option value="">All programmes</option>
         {(programmes.data || []).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -254,8 +254,8 @@ export function Messages() {
     </div>
     {threads.isLoading ? <Skeleton className="h-[590px]" />
     : threads.isError ? <ErrorState retry={() => threads.refetch()} />
-    : <div className="grid min-h-[590px] overflow-hidden rounded-lg border border-border/80 bg-card lg:grid-cols-[340px_1fr]">
-      <section className="border-b border-border/80 lg:border-b-0 lg:border-r">
+    : <div className="grid min-h-[590px] overflow-hidden rounded-xl border border-border/70 bg-card lg:grid-cols-[340px_1fr]">
+      <section className="border-b border-border/70 lg:border-b-0 lg:border-r">
         <div className="flex items-center justify-between border-b border-border/70 p-4"><div><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Inbox</p><p className="mt-1 text-sm font-bold">{threads.data?.filter((t) => t.unread).length || 0} unread threads</p></div><button className="rounded-md p-2 text-muted-foreground hover:bg-secondary" aria-label="Thread options"><MoreHorizontal className="size-4" /></button></div>
         <div className="divide-y divide-border/70">{threads.data?.map((thread) => (
           <button onClick={() => setSelected(thread.id)} key={thread.id} className={cn('w-full p-4 text-left transition-colors hover:bg-secondary/40', active?.id === thread.id && 'bg-primary/5')} data-testid={`thread-row-${thread.id}`}>
@@ -293,7 +293,7 @@ export function Messages() {
             : messages.isError ? <ErrorState retry={() => messages.refetch()} />
             : active.metadataOnly ? <EmptyState title="Messages withheld" detail="Only thread metadata is available for this conversation." />
             : !(messages.data?.length) ? <EmptyState title="No messages yet" detail="Start the conversation below." />
-            : messages.data.map((m) => <div key={m.id} className="rounded-lg border border-border/70 bg-secondary/40 p-3"><div className="flex items-center gap-2 text-xs"><span className="font-bold">{m.author}</span>{m.urgent && <Status tone="warn">urgent</Status>}<span className="ml-auto text-muted-foreground">{fmtDate(m.createdAt)}</span></div><p className="mt-2 text-sm">{m.body}</p></div>)}
+            : messages.data.map((m) => <div key={m.id} className="rounded-xl border border-border/70 bg-secondary/40 p-3"><div className="flex items-center gap-2 text-xs"><span className="font-bold">{m.author}</span>{m.urgent && <Status tone="warn">urgent</Status>}<span className="ml-auto text-muted-foreground">{fmtDate(m.createdAt)}</span></div><p className="mt-2 text-sm">{m.body}</p></div>)}
           </div>
           {active.metadataOnly ? <div className="border-t border-border/70 p-4"><p className="text-xs text-muted-foreground">Replies are disabled for metadata-only threads.</p></div>
           : <div className="border-t border-border/70 p-4"><div className="flex items-center gap-2"><Textarea placeholder="Write a reply-" aria-label="Write a reply" value={body} onChange={(e) => setBody(e.target.value)} className="min-h-11" /><Button onClick={sendMessage} disabled={send.isPending || !body.trim()}><Send className="size-4" /></Button></div><label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={urgent} onChange={(e) => setUrgent(e.target.checked)} /> Mark as urgent</label></div>}

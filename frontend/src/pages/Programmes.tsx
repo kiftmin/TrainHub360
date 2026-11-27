@@ -126,7 +126,7 @@ export function Programmes() {
     {programmes.isLoading ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{[1, 2, 3].map((i) => <Skeleton key={i} className="h-48" />)}</div>
     : programmes.isError ? <ErrorState retry={() => programmes.refetch()} />
     : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-      {(programmes.data || []).map((p) => <div key={p.id} className="rounded-lg border border-border/80 bg-card p-5 transition-transform hover:-translate-y-0.5"><Link href={`/programmes/${p.id}`} className="block"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-lg bg-primary/10 text-primary"><GraduationCap className="size-5" /></div><div className="min-w-0 flex-1"><p className="truncate font-bold">{p.name}</p><p className="text-xs text-muted-foreground">{p.type} - {p.owner}</p></div><Status tone={p.status === 'active' ? 'good' : 'neutral'}>{p.status}</Status></div><div className="mt-4 grid grid-cols-3 gap-2 text-center"><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{p.learnerCount}</p><p className="text-[10px] text-muted-foreground">learners</p></div><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{p.courseCount}</p><p className="text-[10px] text-muted-foreground">courses</p></div><div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{pct(p.progress)}</p><p className="text-[10px] text-muted-foreground">progress</p></div></div><div className="mt-4"><ProgressLine value={p.progress} /></div></Link>{canManage && <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setEditing({ id: p.id, name: p.name, type: p.type, owner: p.owner, slaHours: p.slaHours == null ? '' : String(p.slaHours) })}>Edit</Button><Button size="sm" variant="outline" disabled={requestDeletion.isPending} onClick={() => { setActionError(null); const reason = window.prompt(`Request deletion approval for "${p.name}"? Optionally give a reason:`); if (reason === null) return; requestDeletion.mutate({ programmeId: p.id, reason: reason || undefined }, { onSuccess: () => setActionError(null), onError: (e) => setActionError(`Request failed (${(e as Error).message}).`) }); }}>Request deletion</Button></div>}</div>)}
+      {(programmes.data || []).map((p) => <div key={p.id} className="rounded-xl border border-border/70 bg-card p-5 transition-transform hover:-translate-y-0.5"><Link href={`/programmes/${p.id}`} className="block"><div className="flex items-center gap-3"><div className="grid size-10 place-items-center rounded-xl bg-primary/10 text-primary"><GraduationCap className="size-5" /></div><div className="min-w-0 flex-1"><p className="truncate font-bold">{p.name}</p><p className="text-xs text-muted-foreground">{p.type} - {p.owner}</p></div><Status tone={p.status === 'active' ? 'good' : 'neutral'}>{p.status}</Status></div><div className="mt-4 grid grid-cols-3 gap-2 text-center"><div className="rounded-xl bg-secondary/55 p-2"><p className="font-bold">{p.learnerCount}</p><p className="text-[10px] text-muted-foreground">learners</p></div><div className="rounded-xl bg-secondary/55 p-2"><p className="font-bold">{p.courseCount}</p><p className="text-[10px] text-muted-foreground">courses</p></div><div className="rounded-xl bg-secondary/55 p-2"><p className="font-bold">{pct(p.progress)}</p><p className="text-[10px] text-muted-foreground">progress</p></div></div><div className="mt-4"><ProgressLine value={p.progress} /></div></Link>{canManage && <div className="mt-3 flex flex-wrap gap-2"><Button size="sm" variant="outline" onClick={() => setEditing({ id: p.id, name: p.name, type: p.type, owner: p.owner, slaHours: p.slaHours == null ? '' : String(p.slaHours) })}>Edit</Button><Button size="sm" variant="outline" disabled={requestDeletion.isPending} onClick={() => { setActionError(null); const reason = window.prompt(`Request deletion approval for "${p.name}"? Optionally give a reason:`); if (reason === null) return; requestDeletion.mutate({ programmeId: p.id, reason: reason || undefined }, { onSuccess: () => setActionError(null), onError: (e) => setActionError(`Request failed (${(e as Error).message}).`) }); }}>Request deletion</Button></div>}</div>)}
     </div>}
     {actionError && <p className="mt-4 text-sm text-destructive">{actionError}</p>}
     {!programmes.isLoading && !programmes.isError && !programmes.data?.length && <EmptyState title="No programmes" detail="Programmes will appear here once created." />}
@@ -140,7 +140,7 @@ function CourseCard({ course, modules, canAuthorDetail, canManageDetail, onEdit,
   const moduleCount = modules.filter((m) => m.courseId === course.id).length;
   const materialCount = (content.data && Array.isArray(content.data.modules) ? content.data.modules.reduce((sum, m) => sum + (m.contentItems?.length ?? 0), 0) : 0);
   const enrolledCount = (enrolments.data || []).filter((e: any) => e.courseId === course.id && e.status !== 'withdrawn').length;
-  return <div className="rounded-lg border border-border/70 p-4">
+  return <div className="rounded-xl border border-border/70 p-4">
     <div className="flex items-center justify-between gap-3">
       <p className="truncate text-sm font-semibold">{course.title}</p>
       <Status tone={course.status === 'published' ? 'good' : 'warn'}>{course.status}</Status>
@@ -148,9 +148,9 @@ function CourseCard({ course, modules, canAuthorDetail, canManageDetail, onEdit,
     <p className="mt-1 text-xs text-muted-foreground">{course.category} - {course.trainer || 'Unassigned'}</p>
     <p className="mt-1 text-xs text-muted-foreground">{enrolledCount} learners enrolled</p>
     <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
-      <div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{moduleCount}</p><p className="text-[10px] text-muted-foreground">modules</p></div>
-      <div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{materialCount}</p><p className="text-[10px] text-muted-foreground">materials</p></div>
-      <div className="rounded-lg bg-secondary/55 p-2"><p className="font-bold">{Math.round(course.progress ?? 0)}%</p><p className="text-[10px] text-muted-foreground">progress</p></div>
+      <div className="rounded-xl bg-secondary/55 p-2"><p className="font-bold">{moduleCount}</p><p className="text-[10px] text-muted-foreground">modules</p></div>
+      <div className="rounded-xl bg-secondary/55 p-2"><p className="font-bold">{materialCount}</p><p className="text-[10px] text-muted-foreground">materials</p></div>
+      <div className="rounded-xl bg-secondary/55 p-2"><p className="font-bold">{Math.round(course.progress ?? 0)}%</p><p className="text-[10px] text-muted-foreground">progress</p></div>
     </div>
     <div className="mt-3"><ProgressLine value={course.progress} /></div>
     <div className="mt-3 flex flex-wrap gap-2">
@@ -346,7 +346,7 @@ export function ProgrammeDetail({ id }: { id: string }) {
     : programmes.isError || courses.isError ? <ErrorState retry={() => { programmes.refetch(); courses.refetch(); }} />
     : !programme ? <EmptyState title="Programme not found" detail="It may have been archived." />
     : <div className="space-y-5"><PendingAssessmentResultsPanel /><div className="grid gap-5 xl:grid-cols-[1.2fr_.8fr]">
-      <section className="rounded-lg border border-border/80 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>{canCreateDetail && <Button size="sm" onClick={() => { setCourseError(null); setCourseOpen(true); }} data-testid="button-add-course"><Plus className="size-4" />Add course</Button>}</div>
+      <section className="rounded-xl border border-border/70 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Courses in this programme</p>{canCreateDetail && <Button size="sm" onClick={() => { setCourseError(null); setCourseOpen(true); }} data-testid="button-add-course"><Plus className="size-4" />Add course</Button>}</div>
         <div className="mt-4 space-y-3">{(courses.data || []).map((c) => <CourseCard key={c.id} course={c} modules={modules.data || []} canAuthorDetail={canAuthorDetail} canManageDetail={canManageDetail} onEdit={() => setEditingCourse({ id: c.id, title: c.title, category: c.category, trainer: c.trainer })} onDelete={() => requestDelete('courses', c.id, c.title)} />)}
         {!courses.data?.length && <EmptyState title="No courses yet" detail="Create the first course to start organising modules and learning materials." />}</div>
         <Dialog open={!!editingCourse} onOpenChange={(v) => { if (!v) setEditingCourse(null); }}><DialogContent><DialogHeader><DialogTitle>Edit course</DialogTitle></DialogHeader>{editingCourse && <div className="space-y-4 pt-2"><label className="block text-xs font-semibold">Title<Input className="mt-2" value={editingCourse.title} onChange={(e) => setEditingCourse({ ...editingCourse, title: e.target.value })} /></label><label className="block text-xs font-semibold">Category<Input className="mt-2" value={editingCourse.category} onChange={(e) => setEditingCourse({ ...editingCourse, category: e.target.value })} /></label><label className="block text-xs font-semibold">Trainer<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={editingCourse.trainer} onChange={(e) => setEditingCourse({ ...editingCourse, trainer: e.target.value })} data-testid="select-course-trainer"><option value="">Unassigned</option>{trainerNames.map((name) => <option value={name} key={name}>{name}</option>)}</select>{!trainerNames.length && <span className="mt-1 block text-[11px] font-normal text-muted-foreground">No trainers in this programme yet - add one under Members.</span>}</label><Button className="w-full" disabled={updateCourse.isPending} onClick={() => updateCourse.mutate({ id: editingCourse.id, patch: { title: editingCourse.title, category: editingCourse.category, trainer: editingCourse.trainer } }, { onSuccess: () => { refreshDetail(); setEditingCourse(null); } })}>{updateCourse.isPending ? 'Saving-' : 'Save changes'}</Button></div>}</DialogContent></Dialog>
@@ -362,8 +362,8 @@ export function ProgrammeDetail({ id }: { id: string }) {
             </div>
           </DialogContent>
         </Dialog></section>
-      <section className="rounded-lg border border-border/80 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Course content</p><p className="text-xs text-muted-foreground">Open a course to manage its modules and learning materials.</p></div></section>
-      <section className="rounded-lg border border-border/80 bg-card p-5">
+      <section className="rounded-xl border border-border/70 bg-card p-5"><div className="flex items-start justify-between gap-3"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Course content</p><p className="text-xs text-muted-foreground">Open a course to manage its modules and learning materials.</p></div></section>
+      <section className="rounded-xl border border-border/70 bg-card p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Members</p>
@@ -489,7 +489,7 @@ export function ProgrammeDetail({ id }: { id: string }) {
           </DialogContent>
         </Dialog>
       </section>
-      <section className="rounded-lg border border-border/80 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Workspace detail</p><h2 className="mt-1 text-base font-bold">Progress {pct(programme.progress)}</h2><div className="mt-4"><ProgressLine value={programme.progress} color="bg-emerald-600" /></div><div className="mt-4 space-y-2 text-sm"><p className="flex justify-between"><span className="text-muted-foreground">Status</span><Status tone={programme.status === 'active' ? 'good' : 'neutral'}>{programme.status}</Status></p><p className="flex justify-between"><span className="text-muted-foreground">Learners</span><span className="font-semibold">{programme.learnerCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Courses</span><span className="font-semibold">{programme.courseCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Owner</span><span className="font-semibold">{programme.owner}</span></p></div></section>
+      <section className="rounded-xl border border-border/70 bg-card p-5"><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Workspace detail</p><h2 className="mt-1 text-base font-bold">Progress {pct(programme.progress)}</h2><div className="mt-4"><ProgressLine value={programme.progress} color="bg-emerald-600" /></div><div className="mt-4 space-y-2 text-sm"><p className="flex justify-between"><span className="text-muted-foreground">Status</span><Status tone={programme.status === 'active' ? 'good' : 'neutral'}>{programme.status}</Status></p><p className="flex justify-between"><span className="text-muted-foreground">Learners</span><span className="font-semibold">{programme.learnerCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Courses</span><span className="font-semibold">{programme.courseCount}</span></p><p className="flex justify-between"><span className="text-muted-foreground">Owner</span><span className="font-semibold">{programme.owner}</span></p></div></section>
     </div></div>}
     <Dialog open={!!courseAssignMember} onOpenChange={(v) => { if (!v) setCourseAssignMember(null); }}>
       <DialogContent>
@@ -582,7 +582,7 @@ export function CourseContentManager({ id, courseId: courseIdProp, programmeId: 
       {modules.map((m, index) => {
         const isOpen = expanded.has(m.id);
         const itemCount = m.contentItems?.length ?? 0;
-        return <div key={m.id} className="rounded-lg border border-border/80 bg-card p-4">
+        return <div key={m.id} className="rounded-xl border border-border/70 bg-card p-4">
           <div className="flex items-center justify-between gap-3">
             <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={() => toggle(m.id)} aria-expanded={isOpen} data-testid={`button-toggle-module-${m.id}`}>
               <span className="text-sm font-semibold">{isOpen ? '▾' : '▸'}</span>
@@ -665,7 +665,7 @@ export function ModuleContentManager({ moduleId, moduleTitle, courseId }: { modu
   };
   return <div className="space-y-4 pt-2">
     <p className="text-xs text-muted-foreground">{moduleTitle} - learners see items in this order.</p>
-    {recalcActive && <div data-testid="recalculation-status" className="rounded-lg border border-border/60 bg-secondary/40 p-3 text-xs">
+    {recalcActive && <div data-testid="recalculation-status" className="rounded-xl border border-border/60 bg-secondary/40 p-3 text-xs">
       {recalculation.isError ? `Could not check recalculation: ${(recalculation.error as Error)?.message ?? 'unknown error'}`
         : recalculation.data?.stale || recalculation.data?.job?.status === 'failed'
           ? `Recalculation stalled${recalculation.data?.lastError ? `: ${recalculation.data.lastError}` : ''}. Check the evaluation queue.`
@@ -681,7 +681,7 @@ export function ModuleContentManager({ moduleId, moduleTitle, courseId }: { modu
         <Button size="sm" variant="outline" onClick={() => archive.mutate(item.id, { onSuccess: () => setRecalcActive(true) })} disabled={archive.isPending}>Archive</Button>
       </div>)}
     </div>
-    <div className="rounded-lg border border-border/70 p-4">
+    <div className="rounded-xl border border-border/70 p-4">
       <p className="text-sm font-semibold">Add learning material</p>
       <div className="mt-3 grid gap-3 md:grid-cols-2">
         <label className="block text-xs font-semibold">Type<select className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm font-normal" value={type} onChange={(e) => setType(e.target.value as 'native' | 'file' | 'external_link')} data-testid="select-content-type">

@@ -90,7 +90,7 @@ export function NotificationBell({ onNavigate }: { onNavigate: (path: string) =>
       {open && (
         <>
           <button type="button" className="fixed inset-0 z-30 cursor-default" aria-label="Close notifications" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 z-40 mt-2 w-[360px] overflow-hidden rounded-lg border border-border bg-card shadow-xl">
+          <div className="absolute right-0 z-40 mt-2 w-[360px] overflow-hidden rounded-xl border border-border bg-card shadow-xl">
             <div className="flex items-center justify-between border-b border-border px-4 py-2.5">
               <p className="text-xs font-semibold">Notifications</p>
               <button

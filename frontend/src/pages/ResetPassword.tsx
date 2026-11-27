@@ -51,11 +51,11 @@ export function ResetPassword({ onDone }: { onDone: () => void }) {
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="w-full max-w-md rounded-xl border border-border bg-card p-8 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="grid size-10 place-items-center rounded-lg bg-primary text-primary-foreground">
+          <div className="grid size-10 place-items-center rounded-xl bg-primary text-primary-foreground">
             {state === 'done' ? <CheckCircle2 className="size-5" /> : <ShieldCheck className="size-5" />}
           </div>
           <div>
-            <p className="text-[15px] font-extrabold tracking-[-.03em]">
+            <p className="text-[15px] font-bold tracking-[-.03em]">
               TrainHub<span className="text-primary">360</span>
             </p>
             <p className="font-mono text-[9px] uppercase tracking-[.16em] text-muted-foreground">password reset</p>

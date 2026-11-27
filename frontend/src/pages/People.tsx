@@ -108,7 +108,7 @@ export function People() {
       <KpiCard label="Invited" value={`${invitedCount}`} detail="Have not activated yet" icon={UserCheck} tone="warn" />
       <KpiCard label="Org staff" value={`${staffCount}`} detail="Owners and administrators" icon={ShieldCheck} tone="accent" />
     </div>
-    <section className="mt-4 overflow-hidden rounded-lg border border-border/80 bg-card">
+    <section className="mt-4 overflow-hidden rounded-xl border border-border/70 bg-card">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 p-4">
         <div><p className="font-mono text-[10px] uppercase tracking-[.15em] text-muted-foreground">Directory</p><h2 className="mt-1 text-base font-bold">Everyone in the organization</h2></div>
         <div className="relative"><Search className="absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" /><Input className="w-64 pl-8" placeholder="Search name, email, department…" value={search} onChange={(e) => setSearch(e.target.value)} data-testid="input-directory-search" /></div>

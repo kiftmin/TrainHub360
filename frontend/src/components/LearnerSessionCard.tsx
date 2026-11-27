@@ -12,7 +12,7 @@ export function LearnerSessionCard({ session, onRsvp, pending }: {
 }) {
   const cancelled = session.status === 'cancelled';
   const tone = cancelled ? 'bad' : session.myRsvpStatus === 'waitlisted' ? 'warn' : 'good';
-  return <article data-testid={`learner-session-${session.id}`} className="rounded-lg border border-border/70 p-3">
+  return <article data-testid={`learner-session-${session.id}`} className="rounded-xl border border-border/70 p-3">
     <div className="flex flex-wrap items-start justify-between gap-2">
       <div className="min-w-0">
         <p className="truncate text-sm font-semibold">{session.title}</p>
