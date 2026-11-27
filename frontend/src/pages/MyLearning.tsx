@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { fmtDate, pct, EmptyState, ErrorState, ProgressLine, PageHeading, Skeleton, Status } from '@/components/shared';
+import { downloadContent } from '@/api/client';
 import { BookOpen, CalendarDays, CheckCircle2, Clock3, Download, FileCheck2, MessageSquare, Target } from 'lucide-react';
 
 type Tab = 'overview' | 'progress' | 'results' | 'certificates';
@@ -121,7 +122,7 @@ export function MyLearning() {
                   </div>
                   {item.progress.status === 'pending_verification' && <p className="mt-2 flex items-center gap-1 text-xs text-amber-700"><Clock3 className="size-3" /> Submitted for trainer verification</p>}
                   {item.type === 'external_link' && item.url && <a href={item.url} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs font-semibold text-primary underline">Open link</a>}
-                  {item.type === 'file' && <a href={`/api/content/${item.id}/download`} className="mt-2 inline-block text-xs font-semibold text-primary underline">Download</a>}
+                  {item.type === 'file' && <button type="button" onClick={() => void downloadContent(item.id)} className="mt-2 inline-block text-xs font-semibold text-primary underline">Download</button>}
                   {item.type === 'native' && item.body && <p className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{item.body}</p>}
                   {item.completionMode === 'trainer_verified' && item.progress.status !== 'completed' && item.progress.status !== 'pending_verification' && <div className="mt-2 space-y-1">
                     <Input placeholder="Evidence note for trainer verification" value={evidence[item.id] ?? ''} onChange={(e) => setEvidence({ ...evidence, [item.id]: e.target.value })} />

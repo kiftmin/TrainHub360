@@ -27,6 +27,26 @@ export function getSessionUser(): { id?: string; role?: string; name?: string; e
   }
 }
 
+export async function downloadContent(contentId: string): Promise<void> {
+  const token = getToken();
+  const res = await fetch(`/api/content/${contentId}/download`, {
+    headers: token ? { authorization: `Bearer ${token}` } : {},
+  });
+  if (!res.ok) throw new Error(`Could not download file (${res.status})`);
+  const blob = await res.blob();
+  const disposition = res.headers.get('content-disposition') || '';
+  const match = disposition.match(/filename="?([^";]+)"?/);
+  const filename = match ? match[1] : `download-${contentId}`;
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function downloadSessionIcs(sessionId: string): Promise<void> {
   const token = getToken();
   const res = await fetch(`/api/sessions/${sessionId}/ics`, {
